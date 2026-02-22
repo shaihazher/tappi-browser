@@ -607,12 +607,10 @@ export class TabManager {
   }
 
   showAllViews() {
-    // Add non-active tabs first, active tab last so it sits on top
-    for (const [id, tab] of this.tabs) {
-      if (id !== this.activeId) {
-        this.window.contentView.addChildView(tab.view);
-      }
-    }
+    // Only re-add the active tab — inactive tabs stay hidden.
+    // The old BrowserView code re-added everything, which caused the Aria tab
+    // to "peek through" in the agent strip gap. With WebContentsView, only
+    // the active tab should ever be a child view.
     if (this.activeId) {
       const active = this.tabs.get(this.activeId);
       if (active) {
