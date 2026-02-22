@@ -1,0 +1,788 @@
+/**
+ * agent.ts — The agent loop (Phase 8.1: Deep Mode).
+ *
+ * Wires the agent panel to tools through an LLM via Vercel AI SDK v6.
+ * Deep Mode: decomposes complex tasks into focused subtasks.
+ * Two deep modes: Action (multi-step DO) and Research (gather + compile).
+ */
+
+import { streamText, generateText } from 'ai';
+import type { BrowserWindow, WebContents } from 'electron';
+import { EventEmitter } from 'events';
+import { createModel, buildProviderOptions, getModelConfig, type LLMConfig } from './llm-client';
+import { createTools, TOOL_USAGE_GUIDE } from './tool-registry';
+import * as browserTools from './browser-tools';
+import * as httpTools from './http-tools';
+import * as toolManagerMod from './tool-manager';
+import { loadProfile } from './user-profile';
+import type { BrowserContext } from './browser-tools';
+
+// Global event emitter for API server to subscribe to agent output
+export const agentEvents = new EventEmitter();
+agentEvents.setMaxListeners(50);
+
+// Phase 8.40: Progress tracking data (read by API server for /api/status)
+export interface AgentProgressData {
+  running: boolean;
+  elapsed: number;
+  toolCalls: number;
+  timeoutMs: number;
+}
+export let agentProgressData: AgentProgressData = { running: false, elapsed: 0, toolCalls: 0, timeoutMs: 0 };
+
+import {
+  getWindow, addMessage, addMessages,
+  clearHistory as clearConversation,
+  getUnsummarizedEvictedMessages, setEvictionSummary,
+  buildSummaryPrompt,
+  type ChatMessage,
+} from './conversation';
+
+import {
+  addConversationMessage,
+  generateAutoTitle,
+  getConversationMessageCount,
+} from './conversation-store';
+
+import { decomposeTask } from './decompose';
+import { runDeepMode } from './subtask-runner';
+import { getLoginHint } from './login-state';
+import { profileManager } from './profile-manager';
+import { sessionManager } from './session-manager';
+import { listIdentities } from './password-vault';
+
+export { clearConversation as clearHistory };
+
+/**
+ * Assemble minimal context for the LLM.
+ *
+ * 🚨 ZERO PAGE CONTENT. The page is a black box.
+ * The LLM calls `elements`, `text`, `grep` tools when it wants to see the page.
+ * Only browser state (title, URL, tab count) and API services are injected.
+ */
+function assembleContext(browserCtx: BrowserContext, llmConfig?: LLMConfig): string {
+  const parts: string[] = [];
+
+  // Current time + timezone (~20 tokens)
+  const now = new Date();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  parts.push(`Time: ${now.toLocaleString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' })} (${tz})`);
+
+  // Model context injection (Phase 8.85)
+  if (llmConfig) {
+    const primaryLabel = `${llmConfig.provider}/${llmConfig.model}`;
+    const secondaryLabel = llmConfig.secondaryModel
+      ? `${llmConfig.secondaryProvider || llmConfig.provider}/${llmConfig.secondaryModel}`
+      : primaryLabel;
+    parts.push(`Models: primary=${primaryLabel}, secondary=${secondaryLabel}`);
+  }
+
+  // Browser state — title, URL, tab count (~50 tokens)
+  try {
+    parts.push(browserTools.getBrowserState(browserCtx));
+  } catch (e) {
+    parts.push('Page: (unavailable)');
+  }
+
+  // API services context (only if services are configured)
+  const apiContext = httpTools.getServiceContext();
+  if (apiContext) parts.push('', apiContext);
+
+  // CLI tools context (only if tools are registered)
+  const toolsContext = toolManagerMod.getToolsContext();
+  if (toolsContext) parts.push('', toolsContext);
+
+  // User profile injection (~200 tokens) — only when browsing data access is enabled
+  try {
+    const config = (browserCtx as any).config as { privacy?: { agentBrowsingDataAccess?: boolean } } | undefined;
+    const accessEnabled = config?.privacy?.agentBrowsingDataAccess === true;
+    if (accessEnabled) {
+      const profile = loadProfile();
+      if (profile) {
+        // Omit updated_at from the injected JSON to save tokens
+        const { updated_at, ...compactProfile } = profile;
+        parts.push('', `[User Profile: ${JSON.stringify(compactProfile)}]`);
+      }
+    }
+  } catch (e) {
+    // Non-fatal — profile injection is optional
+    console.error('[agent] Failed to inject user profile:', e);
+  }
+
+  // Login detection hint (Phase 8.4.3)
+  // If the active tab has a detected login form, inject a credential hint (~30 tokens).
+  // This lets the agent proactively offer autofill without being asked.
+  try {
+    const wc = browserCtx.tabManager.activeWebContents;
+    if (wc) {
+      const loginHint = getLoginHint(wc.id);
+      if (loginHint) parts.push('', loginHint);
+    }
+  } catch {
+    // Non-fatal — agent works fine without the hint
+  }
+
+  // Active profile hint (Phase 8.4.4)
+  try {
+    const pName = profileManager.activeProfile;
+    if (pName && pName !== 'default') {
+      parts.push('', `[🪪 Browser Profile: ${pName}]`);
+    }
+  } catch {
+    // Non-fatal
+  }
+
+  // Multi-identity site hint (Phase 8.4.6)
+  // If current page has multiple identities stored, tell the agent about them.
+  try {
+    const wc = browserCtx.tabManager.activeWebContents;
+    if (wc) {
+      const url = wc.getURL();
+      if (url) {
+        const domain = new URL(url).hostname.replace(/^www\./, '');
+        const identities = listIdentities(domain);
+        const activeIdentities = sessionManager.getSiteIdentities(domain);
+        if (identities.length >= 2) {
+          const activeUser = activeIdentities[0]?.username;
+          const others = identities.filter(u => u !== activeUser);
+          let hint = `[👤 ${domain}: `;
+          if (activeUser) {
+            hint += `signed in as @${activeUser}.`;
+            if (others.length > 0) hint += ` Also available: ${others.map(u => '@' + u).join(', ')}`;
+          } else {
+            hint += `${identities.length} identities stored: ${identities.map(u => '@' + u).join(', ')}`;
+          }
+          hint += ']';
+          parts.push('', hint);
+        }
+      }
+    }
+  } catch {
+    // Non-fatal
+  }
+
+  return parts.join('\n');
+}
+
+const SYSTEM_PROMPT = `You are Aria 🪷, an AI agent built into a web browser. You control the browser through tools.
+
+## Core Rule: The Page Is a Black Box
+
+You NEVER see raw DOM, HTML, or page content in your context. The page is opaque until you explicitly query it with tools. This is by design — it keeps you fast and token-efficient across any page, from a simple blog to Google Maps.
+
+**Your first move on any task involving the current page:** call \`elements\` to see what's there, or \`text\` to read content. Don't assume — look.
+
+## Tools Are Your Eyes
+
+| Want to... | Use |
+|------------|-----|
+| See interactive elements (buttons, links, inputs) | \`elements()\` — viewport, ~20-40 items |
+| Find a specific element | \`elements({ grep: "checkout" })\` — searches ALL including offscreen |
+| Read page content | \`text()\` — ~1.5KB overview |
+| Find specific text | \`text({ grep: "refund policy" })\` — searches entire page |
+| Interact with an element | \`click(index)\`, \`type(index, text)\`, \`paste(index, text)\` |
+| Navigate | \`navigate(url)\`, \`search(query)\`, \`back_forward()\` |
+| Recall earlier conversation | \`history({ grep: "what I said" })\` |
+
+## The Grep Philosophy
+
+grep > scroll > read-all. Always.
+
+You can guess what to search for based on context. Shopping page? grep "cart" or "checkout". Login page? grep "email" or "sign in". This is Ctrl+F intuition — you don't need to see everything, just find what you need.
+
+\`elements\` shows viewport elements. If it says "(N offscreen)", grep to find specific things rather than scrolling.
+
+## How elements work
+- \`elements()\` — viewport interactive elements, compact indexed list
+- \`elements({ grep: "text" })\` — searches ALL elements (including offscreen) by text match
+- After navigation or clicks that change the page, call \`elements()\` again
+- For canvas apps (Sheets, Docs, Figma), use \`keys\` instead of click/type
+
+## How text works
+- \`text()\` — ~1.5KB of page text
+- \`text({ selector: "article" })\` — targeted section (up to 4KB)
+- \`text({ grep: "keyword" })\` — searches entire page, returns matching passages
+
+## How APIs work
+- \`register_api\` + \`api_key_store\` to configure. Then \`http_request\` with \`auth: "@service"\`.
+- After browsing API docs, use \`document_endpoint\` to save request + response schemas. Persisted — learn an API once, use forever.
+- Before calling an API, use \`get_endpoint_docs\` to recall schemas. Your registered APIs appear in context every turn (just method+path — schemas via get_endpoint_docs).
+- **Responses are saved to files**, not returned inline. You get: status, file path, preview (500 chars), JSON top-level keys. Use \`file_read\` or \`file_read(path, { grep: "keyword" })\` for the full response.
+
+## Tool Registry
+After installing a CLI tool via shell, call \`register_tool\` so you remember it exists across sessions.
+After configuring auth for a tool (\`vercel login\`, \`gh auth login\`, etc.), call \`update_tool\` to set authStatus.
+Your registered tools appear in context every turn — use them without re-discovering.
+
+## Shell Access (Developer Mode)
+If shell tools (\`exec\`, \`exec_bg\`, etc.) are available, you have full shell access.
+- Output is **always truncated**: you see the first 20 + last 20 lines. Full output is stored and searchable.
+- Use \`exec_grep\` to search command output — same grep philosophy as page elements.
+- \`exec_bg\` for long-running processes (servers, builds). Check with \`exec_status\`, stop with \`exec_kill\`.
+- Working directory defaults to ~/tappi-workspace/. Use \`cwd\` param to change.
+- You can spawn sub-agents (\`spawn_agent\`) for parallel/complex work.
+
+## File Reading
+Large files (>20K tokens) are NOT returned directly — you get a size report with options.
+- **grep first** — \`file_read(path, { grep: "error" })\` searches without loading the full file. Same grep intuition as page elements.
+- **head/tail** — \`file_head(path, 50)\` / \`file_tail(path, 50)\` when you know which end matters (logs → tail, configs → head).
+- **chunked reading** — \`file_read(path, { offset: 0, limit: 80000 })\` for sub-agents processing slices in parallel.
+- **Never silently truncated** — you always know when you're seeing a partial view.
+
+## Cron Jobs
+You can schedule recurring tasks with \`cron_add\`. Jobs run as isolated agent sessions with full tool access.
+- \`cron_add\` — create a job (interval, daily at HH:MM, or cron expression)
+- \`cron_list\` — list all jobs with status
+- \`cron_update\` — change name, task, schedule, or enable/disable
+- \`cron_delete\` — remove a job
+Schedule kinds: "interval" (intervalMs), "daily" (timeOfDay "HH:MM"), "cron" (cronExpr "*/30 * * * *").
+Jobs only run while the browser is open.
+
+## Style
+- Concise. Say what you did and what happened.
+- Narrate briefly: "Navigating to X" / "Found 3 results" / "Clicked sign-in"
+- If something fails, try an alternative before giving up
+- Always respond with text after tool calls
+`;
+
+interface AgentRunOptions {
+  userMessage: string;
+  browserCtx: BrowserContext;
+  llmConfig: LLMConfig;
+  window: BrowserWindow;
+  sessionId?: string;
+  developerMode?: boolean;
+  deepMode?: boolean;  // true = decompose complex tasks, false = always direct
+  codingMode?: boolean; // true = team tools + coding system prompt (Phase 8.38)
+  worktreeIsolation?: boolean; // Phase 8.39: git worktree isolation enabled
+  agentBrowsingDataAccess?: boolean; // Phase 8.4.1: grant agent access to history/bookmarks/downloads
+  conversationId?: string;  // Phase 8.35: SQLite conversation ID for persistence
+  ariaWebContents?: WebContents | null; // Phase 8.35: Aria tab webcontents for broadcast
+}
+
+const CODING_MODE_SYSTEM_PROMPT_ADDENDUM = `
+
+## Coding Mode
+
+You are in **Coding Mode** with Agent Team capabilities.
+
+### Team Orchestration
+When given a complex coding task, you can spawn a team:
+1. Use \`team_create\` to create a team with specialized teammates (e.g. @backend, @frontend, @tester)
+2. Use \`team_task_add\` to define the task list with dependencies
+3. Use \`team_run_teammate\` to assign teammates their work
+4. Use \`team_status\` to monitor progress
+5. Use \`team_message\` to communicate with teammates
+6. Use \`team_dissolve\` when all work is done
+
+### When to use teams
+- Multi-file refactors spanning frontend + backend
+- Feature implementations with multiple layers
+- Parallel investigations (e.g. debugging with competing hypotheses)
+- Research + implementation (one researches, another codes)
+
+### Teammate models
+Teammates can use cheaper/faster models. Specify \`model\` in team_create teammates config.
+
+### Git Worktree Isolation (Phase 8.39)
+When working in a git repository with worktree isolation enabled:
+- \`team_create\` automatically creates isolated worktrees for each teammate
+- Each teammate edits their own branch — zero file conflicts
+- Use \`worktree_status\` and \`worktree_diff\` to review changes
+- Use \`worktree_merge\` to merge teammate branches back to main
+- Use \`worktree_remove\` for cleanup after merging
+
+### Coding Standards
+- Always check file contents before editing
+- Preserve existing code style
+- Run tests after changes
+- Report which files were modified
+`;
+
+let activeRun: AbortController | null = null;
+let _lastStopReason: string | null = null; // Phase 8.40: track why agent stopped
+
+function sendChunk(mainWindow: BrowserWindow, text: string, done: boolean, extraWC?: WebContents | null) {
+  try { mainWindow.webContents.send('agent:stream-chunk', { text, done }); } catch {}
+  try { if (extraWC && !extraWC.isDestroyed()) extraWC.send('agent:stream-chunk', { text, done }); } catch {}
+  // Emit to API server listeners (Phase 8.45)
+  try { agentEvents.emit('chunk', { text, done }); } catch {}
+}
+
+function sendError(mainWindow: BrowserWindow, msg: string, extraWC?: WebContents | null) {
+  console.error('[agent] Error:', msg);
+  try { mainWindow.webContents.send('agent:stream-start', {}); } catch {}
+  try { if (extraWC && !extraWC.isDestroyed()) extraWC.send('agent:stream-start', {}); } catch {}
+  sendChunk(mainWindow, `❌ ${msg}`, true, extraWC);
+}
+
+export async function runAgent(opts: AgentRunOptions): Promise<void> {
+  const { userMessage, browserCtx, llmConfig, window: mainWindow, sessionId = 'default', developerMode = false, deepMode = true, codingMode = false, worktreeIsolation = true, agentBrowsingDataAccess = false, conversationId, ariaWebContents } = opts;
+
+  // Helper: broadcast to both chrome UI and Aria tab
+  function broadcast(channel: string, data?: any) {
+    try { mainWindow.webContents.send(channel, data); } catch {}
+    try { if (ariaWebContents && !ariaWebContents.isDestroyed()) ariaWebContents.send(channel, data); } catch {}
+  }
+
+  if (activeRun) { activeRun.abort(); activeRun = null; }
+  const abortController = new AbortController();
+  activeRun = abortController;
+
+  // ─── Deep Mode Gate ───────────────────────────────────────────────────────
+  // If deep mode is ON, try to decompose the task. The LLM decides if it's
+  // simple (direct loop) or complex (action/research deep mode).
+  if (deepMode !== false) {
+    try {
+      console.log('[agent] Deep mode ON — attempting decomposition...');
+      broadcast('agent:stream-start', {});
+      sendChunk(mainWindow, '🧠 Analyzing task complexity...', false, ariaWebContents);
+
+      const decomposition = await decomposeTask(userMessage, llmConfig);
+
+      if (decomposition) {
+        console.log('[agent] Decomposed into', decomposition.subtasks.length, 'subtasks, mode:', decomposition.mode);
+        // BUG-T13: Do NOT send done=true here — that would make the API resolve with an empty string
+        // before deep mode has even run. The API stays open until we emit the final output below.
+
+        // Add user message to history
+        addMessage(sessionId, { role: 'user', content: userMessage });
+
+        // BUG-T13: Pass codingMode so subtask runner can load team tools
+        const result = await runDeepMode({
+          decomposition,
+          originalTask: userMessage,
+          browserCtx,
+          llmConfig,
+          window: mainWindow,
+          sessionId,
+          developerMode,
+          codingMode,
+          agentBrowsingDataAccess,
+          abortSignal: abortController.signal,
+        });
+
+        // Add summary to conversation history
+        const summary = result.aborted
+          ? `[Deep mode aborted — ${result.subtasks.filter(s => s.status === 'done').length}/${result.subtasks.length} steps completed]`
+          : `[Deep mode ${result.mode}: ${result.subtasks.length} steps completed in ${result.durationSeconds.toFixed(1)}s]\n\n${result.finalOutput.slice(0, 2000)}`;
+        addMessage(sessionId, { role: 'assistant' as const, content: summary });
+
+        // Send completion to UI
+        broadcast('agent:deep-complete', {
+          mode: result.mode,
+          durationSeconds: result.durationSeconds,
+          outputDir: result.outputDir,
+          aborted: result.aborted,
+          completedSteps: result.subtasks.filter(s => s.status === 'done').length,
+          totalSteps: result.subtasks.length,
+        });
+
+        // BUG-T13: Emit final output via agentEvents so API listeners get the real response
+        const deepFinalText = result.aborted
+          ? `[Task aborted — ${result.subtasks.filter(s => s.status === 'done').length}/${result.subtasks.length} steps completed]`
+          : result.finalOutput || '[Deep mode complete]';
+        sendChunk(mainWindow, deepFinalText, true, ariaWebContents);
+
+        activeRun = null;
+        return;
+      }
+
+      // Task is simple — fall through to direct loop
+      console.log('[agent] Task is simple — using direct agent loop');
+      // Clear the "analyzing" message WITHOUT closing the stream (done=false)
+      // The direct loop below will send its own done=true when complete.
+      // Sending done=true here would close SSE connections before the actual response.
+      sendChunk(mainWindow, '\n', false, ariaWebContents);
+
+    } catch (decomposeErr: any) {
+      console.error('[agent] Decomposition failed, falling back to direct:', decomposeErr?.message);
+      // Clear analyzing message WITHOUT closing the stream
+      sendChunk(mainWindow, '\n', false, ariaWebContents);
+    }
+  }
+
+  // ─── Direct Agent Loop (existing) ─────────────────────────────────────────
+
+  let errorSent = false;
+  const toolsUsed: string[] = [];
+
+  try {
+    const model = createModel(llmConfig);
+    const tools = createTools(browserCtx, sessionId, { developerMode, llmConfig, codingMode, worktreeIsolation, agentBrowsingDataAccess });
+    const browserContext = assembleContext(browserCtx, llmConfig);
+    const activeSystemPrompt = codingMode
+      ? SYSTEM_PROMPT + CODING_MODE_SYSTEM_PROMPT_ADDENDUM
+      : SYSTEM_PROMPT;
+    console.log('[agent] Run starting:', Object.keys(tools).length, 'tools,', browserContext.length, 'chars context (ZERO page elements), devMode:', developerMode, 'deepMode:', deepMode, 'codingMode:', codingMode);
+
+    // Add user message to history
+    addMessage(sessionId, { role: 'user', content: userMessage });
+
+    // Build messages for LLM from the rolling window
+    const history = getWindow(sessionId);
+
+    // Inject browser state into the last user message as a lightweight system note
+    const messages: ChatMessage[] = [];
+    for (let i = 0; i < history.length; i++) {
+      const msg = history[i];
+      if (i === history.length - 1 && msg.role === 'user' && typeof msg.content === 'string') {
+        // Inject browser context into the last user message
+        messages.push({ role: 'user', content: `[Browser: ${browserContext}]\n\n${msg.content}` });
+      } else {
+        messages.push(msg);
+      }
+    }
+
+    // ─── Phase 8.40: Timeout-Based Execution ────────────────────────────────
+    const timeoutMs = llmConfig.agentTimeoutMs ?? 600_000; // default 10 min
+    const runStart = Date.now();
+    let stopReason: string | null = null;
+    let warningPending = false;
+    let warningInjected = false;
+    let dupHintPending = false;
+    let recentCalls: Array<{ tool: string; args: string }> = [];
+    let idleCount = 0;
+    let toolCallCount = 0;
+
+    // Timeout: abort at configured timeout
+    const timeoutHandle = setTimeout(() => {
+      stopReason = 'timeout';
+      _lastStopReason = 'timeout';
+      abortController.abort();
+    }, timeoutMs);
+
+    // Warning at 80% of timeout
+    const warningHandle = setTimeout(() => {
+      warningPending = true;
+    }, Math.floor(timeoutMs * 0.8));
+
+    // Progress interval: emit agent:progress every second while running
+    const progressInterval = setInterval(() => {
+      const elapsed = Date.now() - runStart;
+      broadcast('agent:progress', { elapsed, toolCalls: toolCallCount, timeoutMs });
+      agentProgressData = { running: true, elapsed, toolCalls: toolCallCount, timeoutMs };
+    }, 1000);
+    agentProgressData = { running: true, elapsed: 0, toolCalls: 0, timeoutMs };
+
+    let result;
+    try {
+      console.log('[agent] Calling LLM:', llmConfig.provider, llmConfig.model, 'key:', llmConfig.apiKey.slice(0, 12) + '...');
+      const providerOptions = buildProviderOptions(llmConfig);
+      console.log('[agent] Thinking:', llmConfig.thinking !== false ? 'ON' : 'OFF', '| providerOptions:', JSON.stringify(providerOptions));
+
+      result = streamText({
+        model,
+        system: activeSystemPrompt,
+        messages: messages as any, // AI SDK accepts ModelMessage[]
+        tools,
+        ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
+        // Phase 8.40: No stopWhen — runs until model stops or timeout
+        abortSignal: abortController.signal,
+        prepareStep: async ({ messages: currentMessages }: { messages: any[] }) => {
+          // 80% timeout warning injection
+          if (warningPending && !warningInjected) {
+            warningInjected = true;
+            const elapsed = Date.now() - runStart;
+            const elapsedMin = Math.floor(elapsed / 60000);
+            const totalMin = Math.floor(timeoutMs / 60000);
+            const warningMsg = `[⏰ Approaching timeout (${elapsedMin}m of ${totalMin}m). Wrap up your current task.]`;
+            console.log('[agent] Injecting timeout warning');
+            return { messages: [...currentMessages, { role: 'user', content: warningMsg }] };
+          }
+          // Duplicate detection hint injection
+          if (dupHintPending) {
+            dupHintPending = false;
+            return {
+              messages: [...currentMessages, {
+                role: 'user',
+                content: "[You're repeating the same action. Try a different approach.]",
+              }],
+            };
+          }
+          // Idle detection: 5 consecutive text-only turns → abort
+          if (idleCount >= 5) {
+            console.log('[agent] Idle detection: 5 text-only turns — stopping');
+            stopReason = 'idle';
+            _lastStopReason = 'idle';
+            abortController.abort();
+          }
+          return undefined;
+        },
+        onStepFinish: async (event: any) => {
+          try {
+            const toolResults = event.toolResults || [];
+
+            if (toolResults.length === 0) {
+              idleCount++;
+            } else {
+              idleCount = 0;
+            }
+
+            for (const tr of toolResults) {
+              const toolName = tr.toolName || 'unknown';
+              const rawOutput = tr.output ?? tr.result ?? '';
+              const resultStr = typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput) ?? '(empty)';
+
+              toolsUsed.push(toolName);
+              toolCallCount++;
+
+              // Duplicate detection: same tool + same args 3x in a row
+              const argsStr = JSON.stringify(tr.args ?? {});
+              recentCalls.push({ tool: toolName, args: argsStr });
+              if (recentCalls.length > 3) recentCalls.shift();
+              if (
+                recentCalls.length === 3 &&
+                recentCalls.every(c => c.tool === toolName && c.args === argsStr)
+              ) {
+                dupHintPending = true;
+                recentCalls = [];
+              }
+
+              const display = `🔧 ${toolName}${resultStr.length > 200 ? '\n' + resultStr.slice(0, 200) + '...' : resultStr.length > 50 ? '\n' + resultStr : ' → ' + resultStr}`;
+              broadcast('agent:tool-result', { toolName, result: resultStr, display });
+            }
+          } catch (stepErr: any) {
+            console.error('[agent] onStepFinish error:', stepErr?.message || stepErr);
+          }
+        },
+      });
+    } catch (initErr: any) {
+      clearTimeout(timeoutHandle);
+      clearTimeout(warningHandle);
+      clearInterval(progressInterval);
+      agentProgressData = { running: false, elapsed: 0, toolCalls: 0, timeoutMs: 0 };
+      console.error('[agent] Init error:', initErr?.message || initErr);
+      sendError(mainWindow, initErr?.message || 'Failed to start LLM call', ariaWebContents);
+      errorSent = true;
+      return;
+    }
+
+    let fullResponse = '';
+    let streamStarted = false;
+
+    try {
+      console.log('[agent] Starting stream...');
+      for await (const chunk of result.textStream) {
+        if (abortController.signal.aborted) break;
+        if (!streamStarted) {
+          console.log('[agent] First chunk received');
+          broadcast('agent:stream-start', {});
+          streamStarted = true;
+        }
+        fullResponse += chunk;
+        sendChunk(mainWindow, chunk, false, ariaWebContents);
+      }
+      console.log('[agent] Stream complete, response:', fullResponse.length, 'chars, tools:', toolsUsed.length);
+    } catch (streamErr: any) {
+      // AbortError = intentional stop (timeout, idle detection, or manual stop)
+      if (streamErr?.name === 'AbortError') {
+        if (stopReason === 'timeout') {
+          // Graceful timeout: preserve partial output + append notice
+          const elapsed = Date.now() - runStart;
+          const min = Math.floor(elapsed / 60000);
+          const sec = Math.floor((elapsed % 60000) / 1000);
+          const durStr = min > 0 ? `${min}m ${sec}s` : `${sec}s`;
+          const notice = `\n\n---\n⏰ Agent timed out after ${durStr}. ${toolCallCount} tool calls completed.`;
+          if (!streamStarted) broadcast('agent:stream-start', {});
+          if (fullResponse) {
+            sendChunk(mainWindow, notice, true, ariaWebContents);
+            // Persist partial + notice for context
+            addMessage(sessionId, { role: 'assistant' as const, content: fullResponse + notice });
+          } else if (toolsUsed.length > 0) {
+            sendChunk(mainWindow, `⏰ Timed out after ${durStr}. ${toolCallCount} tool calls completed: ${[...new Set(toolsUsed)].join(', ')}`, true, ariaWebContents);
+          } else {
+            sendChunk(mainWindow, `⏰ Agent timed out after ${durStr}.`, true, ariaWebContents);
+          }
+        } else if (stopReason === 'idle') {
+          // Idle detection triggered — agent was done but didn't signal
+          if (!streamStarted) broadcast('agent:stream-start', {});
+          if (fullResponse) {
+            sendChunk(mainWindow, '', true, ariaWebContents);
+          } else {
+            sendChunk(mainWindow, '✓ Done (idle stop).', true, ariaWebContents);
+          }
+        } else {
+          // Manual stop
+          if (!streamStarted) broadcast('agent:stream-start', {});
+          sendChunk(mainWindow, '⏹ Stopped.', true, ariaWebContents);
+        }
+        return;
+      }
+      console.error('[agent] Stream error:', JSON.stringify({
+        message: streamErr?.message,
+        data: streamErr?.data,
+        status: streamErr?.statusCode || streamErr?.status,
+        body: typeof streamErr?.responseBody === 'string' ? streamErr.responseBody.slice(0, 500) : undefined,
+      }));
+      if (!errorSent) {
+        const errMsg = streamErr?.data?.error?.message || streamErr?.responseBody || streamErr?.message || 'Stream error';
+        sendError(mainWindow, typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg), ariaWebContents);
+        errorSent = true;
+      }
+      return;
+    } finally {
+      clearTimeout(timeoutHandle);
+      clearTimeout(warningHandle);
+      clearInterval(progressInterval);
+      agentProgressData = { running: false, elapsed: Date.now() - runStart, toolCalls: toolCallCount, timeoutMs };
+    }
+
+    // ─── Persist structured response messages (Phase 7.9) ───────────────────
+    // Instead of saving just the flat text, save the full AI SDK ResponseMessage[]
+    // which includes tool call content parts + tool result messages.
+    // This gives the LLM proper memory of what tools it called and what they returned.
+
+    if (errorSent) {
+      // Don't persist or finalize on error
+      return;
+    }
+
+    // ─── Emit token usage (Phase 8.25) ──────────────────────────────────────
+    try {
+      const usage = await result.usage;
+      if (usage) {
+        broadcast('agent:token-usage', {
+          inputTokens: usage.inputTokens || 0,
+          outputTokens: usage.outputTokens || 0,
+          totalTokens: (usage.inputTokens || 0) + (usage.outputTokens || 0),
+        });
+        console.log('[agent] Token usage:', usage.inputTokens, 'in +', usage.outputTokens, 'out =', (usage.inputTokens || 0) + (usage.outputTokens || 0), 'total');
+      }
+    } catch (usageErr: any) {
+      console.error('[agent] Failed to get token usage:', usageErr?.message);
+    }
+
+    try {
+      const response = await result.response;
+      const responseMessages = response.messages;
+
+      if (responseMessages && responseMessages.length > 0) {
+        // Persist all structured response messages (assistant + tool messages)
+        addMessages(sessionId, responseMessages as ChatMessage[]);
+        console.log('[agent] Persisted', responseMessages.length, 'response messages (structured, with tool calls/results)');
+      } else if (fullResponse) {
+        // Fallback: if no response messages available, save flat text
+        addMessage(sessionId, { role: 'assistant' as const, content: fullResponse });
+        console.log('[agent] Persisted flat text response (no structured messages available)');
+      }
+    } catch (persistErr: any) {
+      // If we can't get structured messages, fall back to flat text
+      console.error('[agent] Failed to get response messages, falling back to flat text:', persistErr?.message);
+      if (fullResponse) {
+        addMessage(sessionId, { role: 'assistant' as const, content: fullResponse });
+      }
+    }
+
+    // ─── Finalize the stream to the UI ──────────────────────────────────────
+
+    // ─── Persist to SQLite conversation store (Phase 8.35) ──────────────────
+    if (conversationId && !errorSent) {
+      try {
+        // Persist user message
+        addConversationMessage(conversationId, 'user', userMessage);
+
+        // Persist assistant response
+        if (fullResponse) {
+          addConversationMessage(conversationId, 'assistant', fullResponse);
+
+          // Auto-title after first assistant response in a new conversation
+          const msgCount = getConversationMessageCount(conversationId);
+          if (msgCount <= 4) { // First 2 exchanges (user + assistant = 2 each)
+            generateAutoTitle(conversationId, fullResponse);
+          }
+        }
+
+        // Notify Aria tab that the conversation has been updated
+        try { if (ariaWebContents && !ariaWebContents.isDestroyed()) ariaWebContents.send('aria:conversation-updated', { conversationId }); } catch {}
+      } catch (persistErr: any) {
+        console.error('[agent] SQLite persist error (non-fatal):', persistErr?.message);
+      }
+    }
+
+    if (streamStarted && fullResponse) {
+      // Normal completion — LLM produced text
+      sendChunk(mainWindow, '', true, ariaWebContents);
+    } else if (toolsUsed.length > 0) {
+      // Tool calls happened but LLM didn't produce text — summarize what happened
+      const summary = `✓ Used ${toolsUsed.length} tool${toolsUsed.length > 1 ? 's' : ''}: ${[...new Set(toolsUsed)].join(', ')}`;
+      if (!streamStarted) broadcast('agent:stream-start', {});
+      sendChunk(mainWindow, summary, true, ariaWebContents);
+    } else {
+      // No text and no tools — shouldn't happen but handle gracefully
+      if (!streamStarted) broadcast('agent:stream-start', {});
+      sendChunk(mainWindow, '✓ Done.', true, ariaWebContents);
+    }
+
+    // ─── Eviction summary (async, non-blocking) ────────────────────────────
+    // If messages have been evicted from the window, generate a summary
+    // so the LLM has continuity on the next turn.
+    generateEvictionSummaryIfNeeded(sessionId, llmConfig).catch(err => {
+      console.error('[agent] Eviction summary error (non-fatal):', err?.message);
+    });
+
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      broadcast('agent:stream-start', {});
+      if (_lastStopReason === 'timeout') {
+        sendChunk(mainWindow, '⏰ Agent timed out.', true, ariaWebContents);
+      } else {
+        sendChunk(mainWindow, '⏹ Stopped.', true, ariaWebContents);
+      }
+      return;
+    }
+    if (!errorSent) {
+      sendError(mainWindow, err?.data?.error?.message || err?.message || 'Unknown error', ariaWebContents);
+    }
+  } finally {
+    if (activeRun === abortController) activeRun = null;
+    _lastStopReason = null;
+    // Reset progress data on completion
+    if (agentProgressData.running) {
+      agentProgressData = { running: false, elapsed: agentProgressData.elapsed, toolCalls: agentProgressData.toolCalls, timeoutMs: agentProgressData.timeoutMs };
+    }
+  }
+}
+
+/**
+ * Generate an eviction summary for messages that have fallen out of the rolling window.
+ * Uses secondary model (cheap LLM call) to summarize evicted content (Phase 8.85).
+ * Non-blocking — failures are logged but don't break the agent.
+ */
+async function generateEvictionSummaryIfNeeded(sessionId: string, llmConfig: LLMConfig): Promise<void> {
+  const evicted = getUnsummarizedEvictedMessages(sessionId);
+  if (!evicted) return; // Nothing to summarize
+
+  console.log('[agent] Generating eviction summary for', evicted.messages.length, 'messages (boundary:', evicted.boundary, ')');
+
+  const prompt = buildSummaryPrompt(evicted.messages);
+
+  try {
+    // Use secondary model for eviction summaries — simple summarization task (Phase 8.85)
+    const secondaryConfig = getModelConfig('secondary', llmConfig);
+    const model = createModel(secondaryConfig);
+    const { text } = await generateText({
+      model,
+      prompt,
+      maxOutputTokens: 300, // Keep summaries compact
+    });
+
+    if (text && text.trim()) {
+      const summary = `[Conversation summary — earlier turns evicted from context window]\n${text.trim()}\n[End summary — current conversation continues below]`;
+      setEvictionSummary(sessionId, summary, evicted.boundary);
+      console.log('[agent] Eviction summary set:', text.trim().length, 'chars');
+    }
+  } catch (err: any) {
+    console.error('[agent] Failed to generate eviction summary:', err?.message);
+    // Non-fatal — the agent will work without the summary, just with less context
+  }
+}
+
+export function stopAgent() {
+  if (activeRun) {
+    _lastStopReason = null; // manual stop — no special reason
+    activeRun.abort();
+    activeRun = null;
+  }
+  agentProgressData = { running: false, elapsed: 0, toolCalls: 0, timeoutMs: 0 };
+}

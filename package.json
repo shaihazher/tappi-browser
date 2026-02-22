@@ -1,0 +1,32 @@
+{
+  "name": "tappi-browser",
+  "version": "0.1.0",
+  "description": "AI-native browser with built-in agent",
+  "main": "dist/main.js",
+  "bin": {
+    "tappi-browser": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc && cp -r src/ui dist/ && cp src/content-preload.js dist/ && chmod +x dist/cli.js",
+    "start": "npm run build && electron dist/main.js",
+    "dev": "tsc && cp -r src/ui dist/ && cp src/content-preload.js dist/ && chmod +x dist/cli.js && electron dist/main.js"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "electron": "^35.0.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@ai-sdk/amazon-bedrock": "^4.0.63",
+    "@ai-sdk/anthropic": "^3.0.46",
+    "@ai-sdk/azure": "^3.0.31",
+    "@ai-sdk/google": "^3.0.30",
+    "@ai-sdk/google-vertex": "^4.0.61",
+    "@ai-sdk/openai": "^3.0.30",
+    "ai": "^6.0.97",
+    "better-sqlite3": "^12.6.2",
+    "marked": "^17.0.3",
+    "tldts": "^7.0.23",
+    "zod": "^4.3.6"
+  }
+}

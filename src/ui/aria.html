@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src * data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline';">
+  <link rel="stylesheet" href="aria.css">
+  <title>Aria — AI Assistant</title>
+</head>
+<body>
+  <!-- Left sidebar: conversation history -->
+  <div id="aria-sidebar">
+    <div id="sidebar-header">
+      <span class="sidebar-logo">🪷 Aria</span>
+      <button id="new-chat-btn" title="New Chat">＋</button>
+    </div>
+
+    <div id="sidebar-search-wrap">
+      <input id="sidebar-search" type="text" placeholder="Search conversations…" spellcheck="false" autocomplete="off">
+    </div>
+
+    <div id="conversation-list">
+      <!-- Populated by aria.js -->
+    </div>
+  </div>
+
+  <!-- Main chat area -->
+  <div id="aria-main">
+    <!-- Team status card (Fix 4): shown when a coding team is active -->
+    <div id="aria-team-card" class="hidden">
+      <div id="aria-team-header">
+        <span id="aria-team-title">👥 Team Active</span>
+        <button id="aria-team-collapse" title="Collapse">▲</button>
+      </div>
+      <div id="aria-team-body">
+        <div id="aria-team-task"></div>
+        <div id="aria-team-members"></div>
+        <div id="aria-team-progress"></div>
+      </div>
+    </div>
+
+    <div id="aria-messages">
+      <!-- Populated by aria.js -->
+      <div class="aria-welcome">
+        <div class="welcome-icon">🪷</div>
+        <div class="welcome-title">Hello, I'm Aria</div>
+        <div class="welcome-subtitle">Your AI assistant built into the browser.<br>Ask me anything — I can browse the web, run code, and more.</div>
+        <div class="welcome-suggestions">
+          <button class="suggestion-chip" data-prompt="What's the weather like today?">🌤 Weather today</button>
+          <button class="suggestion-chip" data-prompt="Search for the latest news on AI">📰 AI news</button>
+          <button class="suggestion-chip" data-prompt="Help me write a quick email">✉️ Write email</button>
+          <button class="suggestion-chip" data-prompt="Find me a good recipe for dinner">🍳 Dinner recipe</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Token progress bar -->
+    <div id="aria-token-bar">
+      <div id="aria-token-fill"></div>
+      <span id="aria-token-label">0 / 200K ctx</span>
+    </div>
+
+    <!-- Input area -->
+    <div id="aria-input-area">
+      <textarea id="aria-input" placeholder="Ask Aria anything…" rows="1" spellcheck="true" autocomplete="off"></textarea>
+      <div id="aria-controls">
+        <!-- Fix 4: Coding mode toggle — only visible when Developer Mode is ON -->
+        <button id="aria-coding-btn" class="aria-mode-btn hidden" title="Coding Mode: OFF — enables agent team orchestration">&lt;/&gt;</button>
+        <button id="aria-stop-btn" class="hidden" title="Stop (Esc)">⏹</button>
+        <button id="aria-send-btn" title="Send (⏎)">↑</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="vendor/marked.min.js"></script>
+  <script src="aria.js"></script>
+</body>
+</html>

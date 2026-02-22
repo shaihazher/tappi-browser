@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src * data:; style-src 'self' 'unsafe-inline';">
+  <link rel="stylesheet" href="styles.css">
+  <script src="vendor/marked.min.js"></script>
+</head>
+<body>
+  <!-- Tab bar -->
+  <div id="tab-bar">
+    <div id="drag-region"></div>
+    <div id="tabs-container"></div>
+    <button id="new-tab-btn" title="New Tab (⌘T)">+</button>
+  </div>
+
+  <!-- Address bar -->
+  <div id="address-bar">
+    <button id="btn-back" class="nav-btn" title="Back">‹</button>
+    <button id="btn-forward" class="nav-btn" title="Forward">›</button>
+    <button id="btn-reload" class="nav-btn" title="Reload (⌘R)">⟳</button>
+    <div id="url-container">
+      <span id="ssl-icon">🔒</span>
+      <input id="url-input" type="text" placeholder="Search or enter URL" spellcheck="false" autocomplete="off">
+      <button id="bookmark-btn" class="bookmark-star" title="Bookmark (⌘D)">☆</button>
+      <!-- Autocomplete dropdown -->
+      <div id="autocomplete-dropdown" class="hidden"></div>
+    </div>
+    <!-- Profile indicator (Phase 8.4.4) -->
+    <button id="profile-indicator" class="nav-btn profile-indicator" title="Profile — click to switch">👤</button>
+    <button id="btn-overflow" class="nav-btn" title="Menu">⋮</button>
+  </div>
+
+  <!-- Profile switcher popup (Phase 8.4.4) -->
+  <div id="profile-popup" class="hidden profile-popup">
+    <div class="profile-popup-header">
+      <span>Profiles</span>
+      <button id="profile-popup-close" class="ghost-btn small">✕</button>
+    </div>
+    <div id="profile-list-popup"></div>
+    <div class="profile-popup-actions">
+      <button id="profile-new-btn" class="secondary-btn small">+ New Profile</button>
+      <button id="profile-settings-btn" class="ghost-btn small">Settings →</button>
+    </div>
+  </div>
+
+  <!-- Agent strip (collapsed) + Agent panel (expanded) -->
+  <div id="agent-strip" title="Aria (⌘J)">
+    <span class="agent-strip-icon">🪷</span>
+  </div>
+
+  <div id="agent-panel" class="hidden">
+    <div id="agent-header">
+      <span class="agent-title">🪷 Aria</span>
+      <!-- Phase 8.40: elapsed timer + tool call counter (hidden when idle) -->
+      <span id="agent-run-status" class="agent-run-status hidden" title="Elapsed time and tool calls"></span>
+      <div id="agent-header-controls">
+        <button id="toggle-deep" class="agent-toggle-btn on" title="Deep Mode: decomposes complex tasks into focused subtasks">🧠 Deep</button>
+        <button id="toggle-coding" class="agent-toggle-btn hidden" title="Coding Mode: enables agent team orchestration">&lt;/&gt;</button>
+        <button id="agent-stop-btn" class="agent-header-btn hidden" title="Stop">⏹</button>
+        <button id="agent-close" class="agent-header-btn" title="Close (Esc)">✕</button>
+      </div>
+    </div>
+    <!-- Team status card (shown when team is active) -->
+    <div id="team-status-card" class="hidden">
+      <div id="team-status-header" class="team-card-header">
+        <span id="team-status-title">👥 Team Active</span>
+        <button id="team-card-collapse" class="team-card-toggle" title="Collapse">▲</button>
+      </div>
+      <div id="team-status-body">
+        <div id="team-status-task" class="team-card-task"></div>
+        <div id="team-status-teammates"></div>
+        <div id="team-status-progress" class="team-card-progress"></div>
+      </div>
+    </div>
+    <div id="agent-messages"></div>
+    <div id="token-bar">
+      <div id="token-bar-fill"></div>
+      <span id="token-bar-label">0K / 200K tokens</span>
+    </div>
+    <div id="agent-input-area">
+      <textarea id="agent-input" placeholder="Ask Aria anything..." rows="1"></textarea>
+      <button id="agent-send" title="Send">↑</button>
+    </div>
+  </div>
+
+  <!-- Status bar -->
+  <div id="status-bar">
+    <div id="status-left">
+      <span class="status-item" id="status-adblock" title="Ad blocker">🛡 0</span>
+      <span class="status-item" id="status-downloads" title="Downloads" style="cursor:pointer">⬇ 0</span>
+      <span class="status-item hidden" id="status-team" title="Active team members" style="cursor:pointer">👥 0</span>
+    </div>
+    <div id="status-right">
+      <span class="status-item hidden" id="status-cron" title="Cron jobs">⏰ 0</span>
+      <span class="status-item hidden" id="status-coding" title="Coding Mode active">&lt;/&gt;</span>
+      <span class="status-item hidden" id="status-devmode" title="Developer Mode active">&gt;_</span>
+      <!-- Phase 8.5: Media indicator — shown when video is detected -->
+      <button class="status-btn hidden" id="status-media" title="Toggle mpv overlay (enhanced media playback)">🎬</button>
+      <!-- Phase 8.6: Recording indicator — shown when browser_record is active -->
+      <button class="status-btn hidden rec-indicator" id="status-rec" title="Recording in progress — click to stop">🔴 REC <span id="status-rec-elapsed">0:00</span></button>
+      <button class="status-btn" id="status-darkmode" title="Toggle dark mode">🌙</button>
+    </div>
+  </div>
+
+  <!-- Save password prompt -->
+  <div id="password-prompt" class="hidden">
+    <div class="password-prompt-content">
+      <span id="password-prompt-text">Save password for <strong id="password-prompt-domain"></strong>?</span>
+      <div class="password-prompt-actions">
+        <button id="password-prompt-save" class="secondary-btn">Save</button>
+        <button id="password-prompt-dismiss" class="ghost-btn">Not now</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings overlay -->
+  <div id="settings-overlay" class="hidden">
+    <div id="settings-panel">
+      <div id="settings-header">
+        <span>Settings</span>
+        <button id="settings-close" class="agent-header-btn">✕</button>
+      </div>
+      <!-- Settings tabs -->
+      <div id="settings-tabs">
+        <button class="settings-tab active" data-tab="general">General</button>
+        <button class="settings-tab" data-tab="profiles">Profiles</button>
+        <button class="settings-tab" data-tab="tools">Tools</button>
+        <button class="settings-tab" data-tab="api-services">API Services</button>
+        <button class="settings-tab" data-tab="cron-jobs">Cron Jobs</button>
+      </div>
+      <!-- General tab -->
+      <div id="settings-body" class="settings-tab-content active" data-tab="general">
+        <div class="settings-section">
+          <h3>LLM Provider</h3>
+          <div class="settings-row">
+            <label for="setting-provider">Provider</label>
+            <select id="setting-provider">
+              <option value="anthropic">Anthropic</option>
+              <option value="openai">OpenAI</option>
+              <option value="google">Google (Gemini)</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="ollama">Ollama (Local)</option>
+              <option value="bedrock">AWS Bedrock</option>
+              <option value="vertex">Vertex AI</option>
+              <option value="azure">Azure OpenAI</option>
+            </select>
+          </div>
+          <div class="settings-row">
+            <label for="setting-model">Model</label>
+            <input id="setting-model" type="text" placeholder="claude-sonnet-4-20250514">
+          </div>
+
+          <!-- Thinking toggle -->
+          <div class="settings-row toggle-row">
+            <label title="Extended thinking / reasoning. ON = medium thinking budget (better for complex tasks, slower). OFF = no thinking (faster, cheaper).">Thinking</label>
+            <button class="toggle-btn" id="toggle-thinking">ON</button>
+          </div>
+
+          <!-- Deep Mode toggle -->
+          <div class="settings-row toggle-row">
+            <label title="Deep Mode: auto-decomposes complex tasks into focused subtasks. Action mode for multi-step tasks, Research mode for gathering + compiling info.">Deep Mode</label>
+            <button class="toggle-btn" id="toggle-deep-settings">ON</button>
+          </div>
+
+          <!-- API Key row (shown for: anthropic, openai, google, openrouter, azure) -->
+          <div class="settings-row provider-field" id="apikey-row" data-providers="anthropic openai google openrouter azure">
+            <label for="setting-apikey">API Key</label>
+            <div class="input-group">
+              <input id="setting-apikey" type="password" placeholder="Enter API key">
+              <button id="toggle-apikey" class="input-addon" title="Show/hide">👁</button>
+            </div>
+          </div>
+
+          <!-- Base URL row (shown for: ollama, openrouter) -->
+          <div class="settings-row provider-field" id="baseurl-row" data-providers="ollama openrouter">
+            <label for="setting-baseurl">Base URL</label>
+            <input id="setting-baseurl" type="text" placeholder="http://localhost:11434/v1">
+          </div>
+
+          <!-- Azure endpoint row -->
+          <div class="settings-row provider-field" id="endpoint-row" data-providers="azure">
+            <label for="setting-endpoint">Endpoint</label>
+            <input id="setting-endpoint" type="text" placeholder="https://myresource.openai.azure.com">
+          </div>
+
+          <!-- Bedrock region row -->
+          <div class="settings-row provider-field" id="region-row" data-providers="bedrock">
+            <label for="setting-region">Region</label>
+            <input id="setting-region" type="text" placeholder="us-east-1">
+          </div>
+
+          <!-- Vertex project + location rows -->
+          <div class="settings-row provider-field" id="projectid-row" data-providers="vertex">
+            <label for="setting-projectid">Project ID</label>
+            <input id="setting-projectid" type="text" placeholder="my-project-123">
+          </div>
+          <div class="settings-row provider-field" id="location-row" data-providers="vertex">
+            <label for="setting-location">Location</label>
+            <input id="setting-location" type="text" placeholder="us-central1">
+          </div>
+
+          <!-- Credential status panel (for auto-detect providers) -->
+          <div class="credential-status hidden" id="credential-status">
+            <div class="credential-header">
+              <span id="cred-icon">⏳</span>
+              <span id="cred-label">Checking credentials...</span>
+            </div>
+            <div id="cred-details" class="credential-details"></div>
+            <div class="credential-actions">
+              <button id="btn-cred-recheck" class="small-btn">🔄 Re-check</button>
+              <button id="btn-test-connection" class="small-btn">Test Connection</button>
+            </div>
+            <div id="test-result" class="credential-test-result hidden"></div>
+          </div>
+
+          <!-- Ollama model list -->
+          <div class="ollama-models hidden" id="ollama-models">
+            <label>Available Models</label>
+            <div id="ollama-model-list" class="ollama-model-list"></div>
+          </div>
+
+          <div class="settings-hint" id="apikey-status"></div>
+        </div>
+
+        <!-- Secondary Model Section (Phase 8.85) -->
+        <div class="settings-section" id="secondary-model-section">
+          <h3>Secondary Model <span class="settings-badge">Background Tasks</span></h3>
+          <p class="settings-hint">Used for sub-agents, auto-title, user profile, eviction summaries, and teammate sessions. Defaults to primary when disabled.</p>
+          <div class="settings-row toggle-row">
+            <label title="Enable a separate, cheaper/faster model for background tasks.">Use different model for background tasks</label>
+            <button class="toggle-btn" id="toggle-secondary-model">OFF</button>
+          </div>
+          <div id="secondary-model-fields" class="secondary-model-fields hidden">
+            <div class="settings-row">
+              <label for="setting-secondary-provider">Provider</label>
+              <select id="setting-secondary-provider">
+                <option value="">Same as primary</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="openai">OpenAI</option>
+                <option value="google">Google (Gemini)</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="ollama">Ollama (Local)</option>
+                <option value="bedrock">AWS Bedrock</option>
+                <option value="vertex">Vertex AI</option>
+                <option value="azure">Azure OpenAI</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <label for="setting-secondary-model">Model</label>
+              <input id="setting-secondary-model" type="text" placeholder="claude-sonnet-4-6">
+            </div>
+            <div class="settings-row">
+              <label for="setting-secondary-apikey">API Key</label>
+              <div class="input-group">
+                <input id="setting-secondary-apikey" type="password" placeholder="Same as primary">
+                <button id="toggle-secondary-apikey" class="input-addon" title="Show/hide">👁</button>
+              </div>
+            </div>
+            <div class="settings-hint" id="secondary-apikey-hint">Leave API key blank to use the primary key.</div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <h3>Search Engine</h3>
+          <div class="settings-row">
+            <label for="setting-search">Default search</label>
+            <select id="setting-search">
+              <option value="google">Google</option>
+              <option value="duckduckgo">DuckDuckGo</option>
+              <option value="brave">Brave Search</option>
+              <option value="bing">Bing</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <h3>Features</h3>
+          <div class="settings-row toggle-row">
+            <label>Ad Blocker</label>
+            <button class="toggle-btn" id="toggle-adblock" data-feature="adBlocker">OFF</button>
+          </div>
+          <div class="settings-row toggle-row">
+            <label>Force Dark Mode</label>
+            <button class="toggle-btn" id="toggle-darkmode" data-feature="darkMode">OFF</button>
+          </div>
+          <div class="settings-row toggle-row">
+            <label title="Use mpv to render video with reference-quality settings (ewa_lanczossharp, HDR passthrough). Requires mpv installed (brew install mpv).">Enhanced Media Playback 🎬</label>
+            <button class="toggle-btn" id="toggle-media-engine">OFF</button>
+          </div>
+          <p class="settings-hint" id="media-engine-hint">Uses mpv for reference-quality video rendering on YouTube, Twitch, Vimeo. Requires: <code>brew install mpv</code></p>
+        </div>
+
+        <div class="settings-section">
+          <h3>Privacy</h3>
+          <p class="settings-hint">Control what data the agent can access.</p>
+          <div class="settings-row toggle-row">
+            <label>Allow agent to access browsing data</label>
+            <button class="toggle-btn" id="toggle-agent-browsing">OFF</button>
+          </div>
+          <p class="settings-hint">Enables <code>browse_history</code>, <code>browse_bookmarks</code>, and <code>browse_downloads</code> tools. The agent can search your local history, bookmarks, and download records. Off by default.</p>
+        </div>
+
+        <div class="settings-section">
+          <h3>Developer Mode</h3>
+          <p class="settings-hint">Gives the AI agent full shell access to your system. The agent can run commands, install packages, start servers, and spawn sub-agents.</p>
+          <div class="settings-row toggle-row">
+            <label>Developer Mode</label>
+            <button class="toggle-btn" id="toggle-devmode">OFF</button>
+          </div>
+          <div id="devmode-indicator" class="devmode-status hidden">
+            <span class="devmode-icon">&gt;_</span> Shell access enabled — the agent can run any command on your system
+          </div>
+          <!-- Coding Mode toggle moved to Aria tab (Fix 4) — use the </> button in Aria chat UI -->
+          <p class="settings-hint" style="margin-top:8px;display:none" id="codingmode-hint">Coding mode is now toggled from the Aria chat tab via the &lt;/&gt; button.</p>
+
+          <!-- Worktree Isolation (Phase 8.39) — visible only when Coding Mode is ON -->
+          <div id="worktree-isolation-section" class="hidden" style="margin-top:12px;">
+            <div class="settings-row toggle-row">
+              <label>Worktree Isolation</label>
+              <button class="toggle-btn on" id="toggle-worktree-isolation">ON</button>
+            </div>
+            <p class="settings-hint">Give each teammate their own isolated copy of the codebase (git worktree). Prevents file conflicts during parallel work. Requires a git repository as the working directory.</p>
+          </div>
+
+          <!-- Phase 8.40: Agent Timeout setting -->
+          <div class="settings-row" style="margin-top:16px;">
+            <label for="agent-timeout-select">Agent Timeout</label>
+            <select id="agent-timeout-select" class="settings-select">
+              <option value="120000">2 min</option>
+              <option value="300000">5 min</option>
+              <option value="600000">10 min (default)</option>
+              <option value="1800000">30 min</option>
+              <option value="0">Unlimited</option>
+            </select>
+          </div>
+          <p class="settings-hint">How long the agent runs before timing out. Applies to main agent and teammates. Subtask timeout is half this value.</p>
+        </div>
+
+        <button id="settings-save" class="primary-btn">Save Settings</button>
+      </div>
+      <!-- Profiles tab (Phase 8.4.4 / 8.4.5) -->
+      <div id="settings-profiles" class="settings-tab-content" data-tab="profiles">
+        <div class="settings-section">
+          <h3>Browser Profiles</h3>
+          <p class="settings-hint">Each profile has its own browsing history, bookmarks, passwords, and cookies. Sign-in is local-only — email is just a label.</p>
+          <div id="profiles-list">
+            <!-- Populated dynamically -->
+          </div>
+          <div class="profiles-actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+            <button id="profile-create-btn" class="secondary-btn">+ New Profile</button>
+            <button id="profile-import-btn" class="ghost-btn">📦 Import Profile</button>
+          </div>
+        </div>
+
+        <!-- New profile form -->
+        <div id="profile-create-form" class="hidden settings-section">
+          <h3>Create Profile</h3>
+          <div class="settings-row">
+            <label for="new-profile-name">Name / Email</label>
+            <input id="new-profile-name" type="text" placeholder="e.g. work@company.com or Personal">
+          </div>
+          <div class="api-form-actions">
+            <button id="profile-create-cancel" class="ghost-btn">Cancel</button>
+            <button id="profile-create-save" class="primary-btn" style="width:auto;padding:8px 24px">Create</button>
+          </div>
+        </div>
+
+        <!-- Export profile section -->
+        <div class="settings-section" style="margin-top:8px;">
+          <h3>Export / Import</h3>
+          <p class="settings-hint">Export your profile as an encrypted <code>.tappi-profile</code> file. Import it on another device.</p>
+          <div class="settings-row">
+            <label for="export-profile-select">Profile to export</label>
+            <select id="export-profile-select"></select>
+          </div>
+          <div class="settings-row">
+            <label for="export-password">Encryption password</label>
+            <input id="export-password" type="password" placeholder="At least 8 characters">
+          </div>
+          <div style="display:flex;gap:8px;margin-top:8px;">
+            <button id="profile-export-btn" class="secondary-btn">📤 Export Profile</button>
+          </div>
+          <div id="profile-export-status" class="settings-hint" style="margin-top:6px;"></div>
+        </div>
+      </div>
+
+      <!-- Tools tab -->
+      <div id="settings-tools" class="settings-tab-content" data-tab="tools">
+        <div class="tools-header">
+          <p class="api-services-desc">CLI tools and API services the agent knows about. Tools are registered automatically when the agent installs them via shell.</p>
+          <button id="tools-verify-btn" class="secondary-btn">🔄 Verify All</button>
+        </div>
+
+        <div class="tools-section">
+          <h4>CLI Tools</h4>
+          <div id="cli-tools-list">
+            <div class="api-empty-state">
+              <span class="api-empty-icon">🔧</span>
+              <p>No CLI tools registered yet.</p>
+              <p class="api-empty-hint">Enable Developer Mode and ask Aria to install tools.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="tools-section">
+          <h4>API Services</h4>
+          <div id="tools-api-list">
+            <!-- Populated dynamically — mirrors API Services tab but read-only -->
+          </div>
+        </div>
+      </div>
+
+      <!-- API Services tab -->
+      <div id="settings-api-services" class="settings-tab-content" data-tab="api-services">
+        <div class="api-services-header">
+          <p class="api-services-desc">API services the agent can use. Add keys manually or let Aria set them up conversationally.</p>
+          <button id="api-add-btn" class="secondary-btn">+ Add Service</button>
+        </div>
+        <div id="api-services-list">
+          <!-- Populated dynamically -->
+          <div class="api-empty-state">
+            <span class="api-empty-icon">🔗</span>
+            <p>No API services configured yet.</p>
+            <p class="api-empty-hint">Ask Aria to set up an API, or add one manually above.</p>
+          </div>
+        </div>
+        <!-- Add/Edit form (hidden by default) -->
+        <div id="api-form" class="hidden">
+          <div class="settings-section">
+            <h3 id="api-form-title">Add API Service</h3>
+            <div class="settings-row">
+              <label for="api-name">Name</label>
+              <input id="api-name" type="text" placeholder="e.g. openai">
+            </div>
+            <div class="settings-row">
+              <label for="api-base-url">Base URL</label>
+              <input id="api-base-url" type="text" placeholder="e.g. https://api.openai.com/v1">
+            </div>
+            <div class="settings-row">
+              <label for="api-auth-header">Auth type</label>
+              <select id="api-auth-header">
+                <option value="Bearer">Bearer token</option>
+                <option value="Basic">Basic auth</option>
+                <option value="X-API-Key">X-API-Key header</option>
+                <option value="custom">Custom header</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <label for="api-description">Description</label>
+              <input id="api-description" type="text" placeholder="e.g. GPT, DALL-E, Whisper">
+            </div>
+            <div class="settings-row">
+              <label for="api-key-input">API Key</label>
+              <div class="input-group">
+                <input id="api-key-input" type="password" placeholder="Paste API key">
+                <button id="toggle-api-key" class="input-addon" title="Show/hide">👁</button>
+              </div>
+            </div>
+            <div class="api-form-actions">
+              <button id="api-form-cancel" class="ghost-btn">Cancel</button>
+              <button id="api-form-save" class="primary-btn" style="width:auto;padding:8px 24px">Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Cron Jobs tab -->
+      <div id="settings-cron" class="settings-tab-content" data-tab="cron-jobs">
+        <div class="cron-header">
+          <p class="api-services-desc">Scheduled tasks that run as isolated agent sessions. Jobs only run while the browser is open.</p>
+          <button id="cron-add-btn" class="secondary-btn">+ Add Job</button>
+        </div>
+        <div id="cron-jobs-list">
+          <div class="api-empty-state">
+            <span class="api-empty-icon">⏰</span>
+            <p>No cron jobs configured yet.</p>
+            <p class="api-empty-hint">Ask Aria to schedule a task, or add one manually above.</p>
+          </div>
+        </div>
+        <!-- Add/Edit form -->
+        <div id="cron-form" class="hidden">
+          <div class="settings-section">
+            <h3 id="cron-form-title">Add Cron Job</h3>
+            <div class="settings-row">
+              <label for="cron-name">Name</label>
+              <input id="cron-name" type="text" placeholder="e.g. Check HN frontpage">
+            </div>
+            <div class="settings-row">
+              <label for="cron-task">Task</label>
+              <textarea id="cron-task" rows="3" placeholder="What should the agent do? e.g. Go to news.ycombinator.com, read the top 5 stories, summarize them"></textarea>
+            </div>
+            <div class="settings-row">
+              <label for="cron-schedule-kind">Schedule</label>
+              <select id="cron-schedule-kind">
+                <option value="interval">Every X minutes/hours</option>
+                <option value="daily">Daily at time</option>
+                <option value="cron">Cron expression</option>
+              </select>
+            </div>
+            <!-- Interval fields -->
+            <div class="settings-row cron-schedule-field" id="cron-interval-row" data-kind="interval">
+              <label for="cron-interval-value">Every</label>
+              <div class="input-group">
+                <input id="cron-interval-value" type="number" min="1" value="60" style="width:80px">
+                <select id="cron-interval-unit" style="width:100px">
+                  <option value="minutes">minutes</option>
+                  <option value="hours">hours</option>
+                </select>
+              </div>
+            </div>
+            <!-- Daily field -->
+            <div class="settings-row cron-schedule-field hidden" id="cron-daily-row" data-kind="daily">
+              <label for="cron-daily-time">Time (local)</label>
+              <input id="cron-daily-time" type="time" value="09:00">
+            </div>
+            <!-- Cron expression field -->
+            <div class="settings-row cron-schedule-field hidden" id="cron-expr-row" data-kind="cron">
+              <label for="cron-expr">Expression</label>
+              <input id="cron-expr" type="text" placeholder="*/30 * * * *">
+              <span class="settings-hint" style="margin-top:4px;display:block">5 fields: min hour dom month dow</span>
+            </div>
+            <div class="api-form-actions">
+              <button id="cron-form-cancel" class="ghost-btn">Cancel</button>
+              <button id="cron-form-save" class="primary-btn" style="width:auto;padding:8px 24px">Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Find bar (inline, below address bar) -->
+  <div id="find-bar" class="hidden">
+    <div class="find-bar-inner">
+      <input id="find-input" type="text" placeholder="Find on page…" spellcheck="false" autocomplete="off">
+      <span id="find-count" class="find-count"></span>
+      <button id="find-prev" class="find-nav" title="Previous (Shift+Enter)">▲</button>
+      <button id="find-next" class="find-nav" title="Next (Enter)">▼</button>
+      <button id="find-close" class="find-close" title="Close (Esc)">✕</button>
+    </div>
+  </div>
+
+  <!-- Overflow menu is native (Menu.popup) — no HTML needed -->
+
+  <!-- History panel overlay -->
+  <div id="history-overlay" class="hidden panel-overlay">
+    <div class="panel-container">
+      <div class="panel-header">
+        <span>History</span>
+        <div class="panel-header-actions">
+          <button id="history-clear-btn" class="ghost-btn small">Clear all</button>
+          <button class="panel-close-btn" data-panel="history">✕</button>
+        </div>
+      </div>
+      <div class="panel-search">
+        <input id="history-search" type="text" placeholder="Search history…" spellcheck="false">
+      </div>
+      <div id="history-list" class="panel-list"></div>
+    </div>
+  </div>
+
+  <!-- Bookmarks panel overlay -->
+  <div id="bookmarks-overlay" class="hidden panel-overlay">
+    <div class="panel-container">
+      <div class="panel-header">
+        <span>Bookmarks</span>
+        <button class="panel-close-btn" data-panel="bookmarks">✕</button>
+      </div>
+      <div class="panel-search">
+        <input id="bookmarks-search" type="text" placeholder="Search bookmarks…" spellcheck="false">
+      </div>
+      <div id="bookmarks-list" class="panel-list"></div>
+    </div>
+  </div>
+
+  <!-- Downloads panel overlay -->
+  <div id="downloads-overlay" class="hidden panel-overlay">
+    <div class="panel-container">
+      <div class="panel-header">
+        <span>Downloads</span>
+        <div class="panel-header-actions">
+          <button id="downloads-clear-btn" class="ghost-btn small">Clear completed</button>
+          <button class="panel-close-btn" data-panel="downloads">✕</button>
+        </div>
+      </div>
+      <div id="downloads-list" class="panel-list"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

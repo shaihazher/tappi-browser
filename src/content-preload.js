@@ -1,0 +1,737 @@
+/**
+ * content-preload.js — Injected into every tab's renderer process.
+ *
+ * Provides the element indexer (shadow DOM piercing, semantic labels, compact indexed output)
+ * and helper functions for click/type/paste/focus/check operations.
+ *
+ * Main process calls these via webContents.executeJavaScript('window.__tappi.*()').
+ * Returns serializable JSON — no DOM nodes cross the boundary.
+ */
+
+const { contextBridge, ipcRenderer } = require('electron');
+
+// ─── Shadow DOM helpers ───
+
+function deepClearStamps(root) {
+  try {
+    root.querySelectorAll('[data-tappi-idx]').forEach(el =>
+      el.removeAttribute('data-tappi-idx')
+    );
+    root.querySelectorAll('*').forEach(el => {
+      if (el.shadowRoot) deepClearStamps(el.shadowRoot);
+    });
+  } catch (e) {}
+}
+
+function deepQueryAll(root, selectors) {
+  const results = [];
+  try { results.push(...root.querySelectorAll(selectors)); } catch (e) {}
+  try {
+    const allEls = root.querySelectorAll('*');
+    for (const el of allEls) {
+      if (el.shadowRoot) {
+        results.push(...deepQueryAll(el.shadowRoot, selectors));
+      }
+    }
+  } catch (e) {}
+  return results;
+}
+
+function deepQueryStamp(root, idx) {
+  const found = root.querySelector('[data-tappi-idx="' + idx + '"]');
+  if (found) return found;
+  try {
+    const allEls = root.querySelectorAll('*');
+    for (const el of allEls) {
+      if (el.shadowRoot) {
+        const deep = deepQueryStamp(el.shadowRoot, idx);
+        if (deep) return deep;
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
+// ─── Interactive element selectors ───
+
+const INTERACTIVE_SELECTORS = [
+  'a[href]', 'button', 'input', 'select', 'textarea',
+  '[role="button"]', '[role="link"]', '[role="tab"]', '[role="menuitem"]',
+  '[role="checkbox"]', '[role="radio"]', '[role="textbox"]', '[role="switch"]',
+  '[role="combobox"]', '[role="option"]', '[role="spinbutton"]',
+  '[onclick]', '[tabindex]:not([tabindex="-1"])',
+  'details > summary', '[contenteditable="true"]',
+].join(', ');
+
+// ─── Viewport check ───
+
+function isInViewport(el) {
+  const rect = el.getBoundingClientRect();
+  // Element must have size and its center must be within the viewport
+  if (rect.width === 0 && rect.height === 0) return false;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  // Allow a small margin (50px) for elements partially in view
+  return cx >= -50 && cx <= vw + 50 && cy >= -50 && cy <= vh + 50;
+}
+
+// ─── Indexer ───
+
+function indexElements(filter, grep) {
+  // Clear old stamps (including shadow DOMs)
+  deepClearStamps(document);
+
+  const root = filter ? document.querySelector(filter) : document;
+  if (!root) return JSON.stringify({ error: 'Selector not found: ' + filter });
+
+  const interactive = deepQueryAll(root, INTERACTIVE_SELECTORS);
+
+  // Detect topmost modal/dialog for scoped de-duplication
+  const allDialogs = [...document.querySelectorAll('[role=dialog], [role=presentation], [aria-modal=true]')]
+    .filter(d => d.offsetParent !== null || getComputedStyle(d).position === 'fixed');
+  const realDialogs = allDialogs.filter(d =>
+    d.getAttribute('role') === 'dialog' || d.getAttribute('aria-modal') === 'true'
+  );
+  const topDialog = (realDialogs.length > 0
+    ? realDialogs[realDialogs.length - 1]
+    : allDialogs[allDialogs.length - 1]) || null;
+
+  const seen = new Set();
+  const results = [];
+  let offscreen = 0;
+
+  // Sort: elements inside topmost dialog come first
+  const sorted = [...interactive].sort((a, b) => {
+    const aIn = topDialog && topDialog.contains(a) ? 0 : 1;
+    const bIn = topDialog && topDialog.contains(b) ? 0 : 1;
+    return aIn - bIn;
+  });
+
+  for (const el of sorted) {
+    // Skip invisible elements (no layout)
+    if (el.offsetParent === null && el.tagName !== 'BODY' && getComputedStyle(el).position !== 'fixed') continue;
+
+    const inDialog = topDialog && topDialog.contains(el);
+    const isFixed = getComputedStyle(el).position === 'fixed' || getComputedStyle(el).position === 'sticky';
+
+    // Viewport scoping: only index visible elements (unless grep is active — search everywhere)
+    if (!grep && !inDialog && !isFixed && !isInViewport(el)) {
+      offscreen++;
+      continue;
+    }
+
+    const isDisabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+    const tag = el.tagName.toLowerCase();
+    const type = el.type || '';
+    const role = el.getAttribute('role') || '';
+    const ariaLabel = el.getAttribute('aria-label') || '';
+    const placeholder = el.placeholder || '';
+    const name = el.name || '';
+
+    // Terse text: prefer aria-label, then text content, capped tight
+    const rawText = (el.textContent || '').trim().replace(/\s+/g, ' ');
+    const text = rawText.slice(0, 40);
+    const href = el.href || '';
+
+    // Build label
+    let label = '';
+    if (tag === 'a') label = 'link';
+    else if (tag === 'button' || role === 'button') label = 'button';
+    else if (tag === 'input') label = type ? 'input:' + type : 'input';
+    else if (tag === 'select') label = 'select';
+    else if (tag === 'textarea') label = 'textarea';
+    else if (role === 'textbox' || el.isContentEditable) label = 'textbox';
+    else if (role) label = role;
+    else label = tag;
+    if (isDisabled) label += ':disabled';
+
+    // Build description — terse but semantic
+    let desc = ariaLabel ? ariaLabel.slice(0, 40) : text || placeholder || name || '';
+
+    // Links: include FULL URL — truncation causes LLM to hallucinate non-existent pages
+    if (tag === 'a' && href && !href.startsWith('javascript:') && !href.startsWith('#')) {
+      desc = desc ? desc + ' → ' + href : href;
+    }
+
+    // Show values ONLY for input/select/textarea
+    if (tag === 'input' || tag === 'select' || tag === 'textarea') {
+      const value = (el.value || '').slice(0, 30);
+      if (value && !desc.includes(value)) desc = desc ? desc + ' [' + value + ']' : value;
+    }
+
+    // Select current option
+    if (tag === 'select' && el.selectedIndex >= 0 && el.options[el.selectedIndex]) {
+      const selText = el.options[el.selectedIndex].text.slice(0, 25);
+      if (!desc.includes(selText)) desc = desc ? desc + ' [' + selText + ']' : selText;
+    }
+
+    // Checked/selected state
+    if (['checkbox', 'radio', 'switch'].includes(role) || (tag === 'input' && ['checkbox', 'radio'].includes(type))) {
+      const checked = el.checked || el.getAttribute('aria-checked') === 'true';
+      desc += checked ? ' ✓' : ' ○';
+    }
+
+    desc = desc.trim();
+
+    // Skip elements with no meaningful description (e.g. empty divs, icon-only links)
+    // Exception: inputs are always useful even without a description
+    if (!desc && tag !== 'input' && tag !== 'textarea' && tag !== 'select') continue;
+
+    // Grep filter: only keep elements whose label or desc match the pattern
+    if (grep) {
+      const grepLower = grep.toLowerCase();
+      const matchText = (label + ' ' + desc).toLowerCase();
+      if (!matchText.includes(grepLower)) continue;
+    }
+
+    // De-dup key (scoped by dialog context)
+    const scope = inDialog ? 'modal' : 'page';
+    const key = scope + '|' + label + '|' + desc;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    // Stamp element for later retrieval
+    el.setAttribute('data-tappi-idx', results.length.toString());
+    results.push({ label: label, desc: desc });
+  }
+
+  // Include offscreen count so LLM knows to scroll for more
+  const meta = {};
+  if (offscreen > 0) meta.offscreen = offscreen;
+  if (topDialog) meta.dialog = true;
+
+  return JSON.stringify({ elements: results, meta: meta });
+}
+
+// ─── Element lookup helpers ───
+
+function getElementPosition(idx) {
+  const el = deepQueryStamp(document, idx);
+  if (!el) return JSON.stringify({ error: 'Element [' + idx + '] not found. Run elements to re-index.' });
+
+  el.scrollIntoView({ block: 'center', behavior: 'instant' });
+  const rect = el.getBoundingClientRect();
+  return JSON.stringify({
+    x: Math.round(rect.x + rect.width / 2),
+    y: Math.round(rect.y + rect.height / 2),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+    tag: el.tagName.toLowerCase(),
+  });
+}
+
+function focusElement(idx) {
+  const el = deepQueryStamp(document, idx);
+  if (!el) return JSON.stringify({ error: 'Element [' + idx + '] not found. Run elements to re-index.' });
+
+  el.scrollIntoView({ block: 'center', behavior: 'instant' });
+  el.focus();
+
+  // For inputs, also select existing text so typing replaces it
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'input' || tag === 'textarea') {
+    try { el.select(); } catch (e) {}
+  }
+
+  return JSON.stringify({ focused: true, tag: el.tagName.toLowerCase() });
+}
+
+function checkElement(idx) {
+  const el = deepQueryStamp(document, idx);
+  if (!el) return JSON.stringify({ error: 'Element [' + idx + '] not found' });
+
+  const tag = el.tagName.toLowerCase();
+  const type = (el.type || '').toLowerCase();
+  const result = { tag: tag, exists: true };
+
+  // Value for inputs
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+    result.value = (el.value || '').slice(0, 200);
+  }
+  // ContentEditable
+  if (el.isContentEditable) {
+    result.value = (el.textContent || '').slice(0, 200);
+  }
+  // Checked state
+  if (['checkbox', 'radio'].includes(type) || ['checkbox', 'radio', 'switch'].includes(el.getAttribute('role') || '')) {
+    result.checked = el.checked || el.getAttribute('aria-checked') === 'true';
+  }
+  // Disabled state
+  result.disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+  // Active/focused
+  result.focused = document.activeElement === el;
+
+  return JSON.stringify(result);
+}
+
+function extractText(selector, grep) {
+  const root = selector ? document.querySelector(selector) : document.body;
+  if (!root) return JSON.stringify({ error: 'Selector not found: ' + selector });
+
+  const lines = [];
+  const blockTags = new Set([
+    'P', 'DIV', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+    'LI', 'TR', 'BLOCKQUOTE', 'PRE', 'ARTICLE', 'SECTION',
+    'HEADER', 'FOOTER', 'NAV', 'MAIN', 'ASIDE', 'DT', 'DD',
+  ]);
+  const skipTags = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'TEMPLATE']);
+
+  function walk(node) {
+    if (node.nodeType === 3) { // Text node
+      const text = node.textContent.trim();
+      if (text) {
+        if (lines.length > 0 && lines[lines.length - 1] !== '') {
+          lines[lines.length - 1] += ' ' + text;
+        } else {
+          lines.push(text);
+        }
+      }
+      return;
+    }
+    if (node.nodeType !== 1) return; // Not an element
+    if (skipTags.has(node.tagName)) return;
+
+    // Block-level element → start new line
+    if (blockTags.has(node.tagName)) {
+      if (lines.length > 0 && lines[lines.length - 1] !== '') lines.push('');
+    }
+
+    // Walk children
+    for (const child of node.childNodes) walk(child);
+
+    // Walk shadow DOM
+    if (node.shadowRoot) {
+      for (const child of node.shadowRoot.childNodes) walk(child);
+    }
+
+    if (blockTags.has(node.tagName)) {
+      if (lines.length > 0 && lines[lines.length - 1] !== '') lines.push('');
+    }
+  }
+
+  walk(root);
+
+  // Clean up: collapse empty lines
+  const allLines = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim().split('\n');
+
+  // Grep mode: return lines containing the search term + surrounding context
+  if (grep) {
+    const grepLower = grep.toLowerCase();
+    const matchLines = [];
+    for (let i = 0; i < allLines.length; i++) {
+      if (allLines[i].toLowerCase().includes(grepLower)) {
+        // Include 1 line before and after for context
+        const start = Math.max(0, i - 1);
+        const end = Math.min(allLines.length - 1, i + 1);
+        for (let j = start; j <= end; j++) {
+          if (!matchLines.includes(allLines[j])) matchLines.push(allLines[j]);
+        }
+      }
+    }
+    if (matchLines.length === 0) return 'No text matching "' + grep + '" found on page.';
+    return matchLines.join('\n').slice(0, 4000);
+  }
+
+  // Default: return page text. If selector provided, allow more (targeted extraction).
+  // No selector = general page text, keep compact for context.
+  const maxLen = selector ? 4000 : 1500;
+  const fullText = allLines.join('\n');
+  if (fullText.length <= maxLen) return fullText;
+  return fullText.slice(0, maxLen - 50) + '\n... (' + allLines.length + ' lines total — use grep or selector)';
+}
+
+function clickElement(idx) {
+  const el = deepQueryStamp(document, idx);
+  if (!el) return JSON.stringify({ error: 'Element [' + idx + '] not found. Run elements to re-index.' });
+
+  el.scrollIntoView({ block: 'center', behavior: 'instant' });
+  const rect = el.getBoundingClientRect();
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  const mOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 };
+  el.dispatchEvent(new MouseEvent('mousedown', mOpts));
+  el.dispatchEvent(new MouseEvent('mouseup', mOpts));
+  el.click();
+
+  const label = el.getAttribute('role') || el.tagName.toLowerCase();
+  const desc = (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 80);
+
+  // Check for toggle state
+  const type = (el.type || '').toLowerCase();
+  let toggle = null;
+  if (['checkbox', 'radio'].includes(type) || ['checkbox', 'radio', 'switch'].includes(el.getAttribute('role') || '')) {
+    toggle = (el.checked || el.getAttribute('aria-checked') === 'true') ? 'checked' : 'unchecked';
+  }
+
+  return JSON.stringify({ label: label, desc: desc, toggle: toggle });
+}
+
+function getPageState() {
+  const url = location.href;
+  const title = document.title;
+  const dialogs = document.querySelectorAll('[role=dialog],[aria-modal=true]').length;
+  return JSON.stringify({ url: url, title: title, dialogs: dialogs });
+}
+
+// ─── Login form detection (Phase 8.4.3) ───
+// Lightweight — only checks for input[type=password] (most reliable signal).
+// Runs on DOMContentLoaded + MutationObserver for SPAs that inject forms after load.
+
+function detectLoginForm() {
+  return document.querySelector('input[type=password]') !== null;
+}
+
+function setupLoginDetection() {
+  if (window.__tappi_loginDetectionActive) return;
+  window.__tappi_loginDetectionActive = true;
+
+  var reported = false;
+
+  function checkAndReport() {
+    if (reported) return;
+    if (detectLoginForm()) {
+      reported = true;
+      ipcRenderer.send('page:login-detected', { domain: location.hostname });
+    }
+  }
+
+  // Check immediately (handles pages that already have a password field)
+  checkAndReport();
+
+  // MutationObserver — catches SPAs that inject login forms after initial load
+  var observer = new MutationObserver(function(mutations) {
+    if (reported) {
+      observer.disconnect();
+      return;
+    }
+    // Only bother if nodes were actually added
+    for (var i = 0; i < mutations.length; i++) {
+      if (mutations[i].addedNodes.length > 0) {
+        // Debounce: coalesce rapid DOM mutations into a single check
+        clearTimeout(window.__tappi_loginCheckTimer);
+        window.__tappi_loginCheckTimer = setTimeout(checkAndReport, 400);
+        break;
+      }
+    }
+  });
+
+  var target = document.body || document.documentElement;
+  if (target) {
+    observer.observe(target, { childList: true, subtree: true });
+  }
+
+  // Stop observing after 60s — if a login form hasn't appeared by then it's not a login page
+  setTimeout(function() { observer.disconnect(); }, 60000);
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', setupLoginDetection);
+} else {
+  setupLoginDetection();
+}
+
+// ─── Credential detection (form submission interception) ───
+
+function setupCredentialDetection() {
+  if (window.__tappi_credentialWatcher) return;
+  window.__tappi_credentialWatcher = true;
+
+  document.addEventListener('submit', function(e) {
+    var form = e.target;
+    if (!form || form.tagName !== 'FORM') return;
+
+    var inputs = form.querySelectorAll('input');
+    var username = '', password = '';
+
+    for (var i = 0; i < inputs.length; i++) {
+      var input = inputs[i];
+      var type = (input.type || '').toLowerCase();
+      var name = (input.name || '').toLowerCase();
+      var auto = (input.autocomplete || '').toLowerCase();
+      var placeholder = (input.placeholder || '').toLowerCase();
+
+      if (type === 'password' || auto === 'current-password') {
+        password = input.value;
+      } else if (
+        (type === 'email' || type === 'text' || type === 'tel') &&
+        (auto === 'username' || auto === 'email' ||
+         name.indexOf('user') !== -1 || name.indexOf('email') !== -1 || name.indexOf('login') !== -1 ||
+         placeholder.indexOf('email') !== -1 || placeholder.indexOf('username') !== -1)
+      ) {
+        username = input.value;
+      }
+    }
+
+    if (username && password) {
+      ipcRenderer.send('vault:credential-detected', {
+        domain: location.hostname,
+        username: username
+      });
+    }
+  }, true);
+}
+
+// Run after DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', setupCredentialDetection);
+} else {
+  setupCredentialDetection();
+}
+
+// ─── Phase 8.5: Media Engine — Video Detection ───
+
+var __tappi_videoObservers = [];
+var __tappi_videoHidden = false;
+var __tappi_originalVideoStyles = null;
+var __tappi_geometryTimer = null;
+
+/**
+ * Detect <video> element and return its rect + site info.
+ * Returns JSON string with VideoInfo shape.
+ */
+function detectVideo() {
+  var video = document.querySelector('video');
+  if (!video) {
+    return JSON.stringify({ hasVideo: false, url: location.href, site: getSite(), hostname: location.hostname });
+  }
+
+  var rect = video.getBoundingClientRect();
+  var visible = rect.width > 10 && rect.height > 10 &&
+    rect.top >= -10 && rect.top < window.innerHeight + 10;
+
+  return JSON.stringify({
+    hasVideo: true,
+    rect: {
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      visible: visible,
+    },
+    url: location.href,
+    site: getSite(),
+    hostname: location.hostname,
+    isPlaying: video && !video.paused,
+  });
+}
+
+function getSite() {
+  var h = location.hostname;
+  if (h.includes('youtube') || h.includes('youtu.be')) return 'youtube';
+  if (h.includes('twitch')) return 'twitch';
+  if (h.includes('vimeo')) return 'vimeo';
+  return 'generic';
+}
+
+/**
+ * Hide and mute the browser's <video> element (mpv takes over rendering).
+ */
+function hideVideo() {
+  var video = document.querySelector('video');
+  if (!video) return;
+  if (!__tappi_originalVideoStyles) {
+    __tappi_originalVideoStyles = {
+      visibility: video.style.visibility || '',
+      opacity: video.style.opacity || '',
+      volume: video.volume,
+      muted: video.muted,
+    };
+  }
+  video.style.visibility = 'hidden';
+  video.style.opacity = '0';
+  video.volume = 0;
+  video.muted = true;
+
+  // Add badge overlay to indicate mpv is rendering
+  var badge = document.getElementById('__tappi_mpv_badge');
+  if (!badge) {
+    badge = document.createElement('div');
+    badge.id = '__tappi_mpv_badge';
+    badge.style.cssText = [
+      'position: fixed',
+      'bottom: 8px',
+      'right: 8px',
+      'background: rgba(0,0,0,0.7)',
+      'color: white',
+      'font-size: 11px',
+      'padding: 2px 6px',
+      'border-radius: 4px',
+      'z-index: 999999',
+      'pointer-events: none',
+      'font-family: system-ui, sans-serif',
+    ].join(';');
+    badge.textContent = '🪷 mpv';
+    document.body && document.body.appendChild(badge);
+  }
+  __tappi_videoHidden = true;
+}
+
+/**
+ * Restore the browser's <video> element to normal.
+ */
+function showVideo() {
+  var video = document.querySelector('video');
+  if (video && __tappi_originalVideoStyles) {
+    video.style.visibility = __tappi_originalVideoStyles.visibility;
+    video.style.opacity = __tappi_originalVideoStyles.opacity;
+    video.volume = __tappi_originalVideoStyles.volume;
+    video.muted = __tappi_originalVideoStyles.muted;
+    __tappi_originalVideoStyles = null;
+  }
+
+  var badge = document.getElementById('__tappi_mpv_badge');
+  if (badge && badge.parentNode) badge.parentNode.removeChild(badge);
+  __tappi_videoHidden = false;
+}
+
+/**
+ * Set up MutationObserver + ResizeObserver on the <video> element.
+ * Sends geometry change events via IPC when the video rect changes.
+ */
+function setupVideoObservers() {
+  // Clear any existing observers
+  __tappi_videoObservers.forEach(function(obs) { try { obs.disconnect(); } catch(e) {} });
+  __tappi_videoObservers = [];
+
+  var video = document.querySelector('video');
+  if (!video) return;
+
+  var lastRect = null;
+
+  function sendGeometryIfChanged() {
+    var rect = video.getBoundingClientRect();
+    var visible = rect.width > 10 && rect.height > 10 &&
+      rect.top >= -10 && rect.top < window.innerHeight + 10;
+
+    var key = Math.round(rect.left) + ',' + Math.round(rect.top) + ',' + Math.round(rect.width) + ',' + Math.round(rect.height) + ',' + visible;
+    if (key === lastRect) return;
+    lastRect = key;
+
+    ipcRenderer.send('media:geometry-changed-from-page', {
+      rect: {
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+        visible: visible,
+      },
+    });
+  }
+
+  // ResizeObserver for size changes
+  if (window.ResizeObserver) {
+    var resObs = new window.ResizeObserver(sendGeometryIfChanged);
+    resObs.observe(video);
+    __tappi_videoObservers.push(resObs);
+  }
+
+  // MutationObserver for attribute/style changes
+  var mutObs = new MutationObserver(sendGeometryIfChanged);
+  mutObs.observe(video, { attributes: true, attributeFilter: ['style', 'class', 'width', 'height'] });
+  __tappi_videoObservers.push(mutObs);
+
+  // Scroll listener
+  var scrollHandler = function() { sendGeometryIfChanged(); };
+  window.addEventListener('scroll', scrollHandler, { passive: true });
+
+  // Polling fallback (100ms)
+  if (__tappi_geometryTimer) clearInterval(__tappi_geometryTimer);
+  __tappi_geometryTimer = setInterval(sendGeometryIfChanged, 250);
+
+  // Play/pause interception
+  video.addEventListener('play', function() {
+    ipcRenderer.send('media:play-pause-from-page', { playing: true });
+  });
+  video.addEventListener('pause', function() {
+    ipcRenderer.send('media:play-pause-from-page', { playing: false });
+  });
+  video.addEventListener('seeked', function() {
+    ipcRenderer.send('media:seeked-from-page', { position: video.currentTime });
+  });
+
+  // Fullscreen detection
+  document.addEventListener('fullscreenchange', function() {
+    sendGeometryIfChanged();
+  });
+
+  // Initial geometry report
+  sendGeometryIfChanged();
+}
+
+/**
+ * Watch for <video> elements appearing (SPAs / YouTube loads them async).
+ */
+function setupVideoWatcher() {
+  if (window.__tappi_videoWatcherActive) return;
+  window.__tappi_videoWatcherActive = true;
+
+  function checkForVideo() {
+    var video = document.querySelector('video');
+    if (video && !window.__tappi_lastVideoSrc) {
+      var src = video.src || video.currentSrc || location.href;
+      window.__tappi_lastVideoSrc = src;
+
+      var info = detectVideo();
+      ipcRenderer.send('media:video-detected-from-page', JSON.parse(info));
+      setupVideoObservers();
+    }
+  }
+
+  // Check immediately
+  checkForVideo();
+
+  // Watch for video elements added to DOM
+  var watcher = new MutationObserver(function() { checkForVideo(); });
+  watcher.observe(document.documentElement, { childList: true, subtree: true });
+
+  // Also watch for src changes on existing video elements
+  setInterval(function() {
+    var video = document.querySelector('video');
+    if (video) {
+      var src = video.src || video.currentSrc || location.href;
+      if (src && src !== window.__tappi_lastVideoSrc && src !== 'about:blank') {
+        window.__tappi_lastVideoSrc = src;
+        var info = detectVideo();
+        ipcRenderer.send('media:video-detected-from-page', JSON.parse(info));
+        setupVideoObservers();
+      }
+    }
+  }, 2000);
+}
+
+// Start video watcher on load
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', setupVideoWatcher);
+} else {
+  setupVideoWatcher();
+}
+
+// Expose video functions for main process to call directly
+window.__tappi_detectVideo = detectVideo;
+window.__tappi_hideVideo = hideVideo;
+window.__tappi_showVideo = showVideo;
+
+// ─── Expose to main process ───
+
+contextBridge.exposeInMainWorld('__tappi', {
+  indexElements: function(filter, grep) { return indexElements(filter, grep); },
+  getElementPosition: getElementPosition,
+  focusElement: focusElement,
+  checkElement: checkElement,
+  extractText: function(selector, grep) { return extractText(selector, grep); },
+  clickElement: clickElement,
+  getPageState: getPageState,
+  // Phase 8.4.3: login state for polling
+  getLoginState: function() {
+    return JSON.stringify({
+      detected: detectLoginForm(),
+      domain: location.hostname,
+    });
+  },
+  // Phase 8.5: Media Engine
+  detectVideo: detectVideo,
+  hideVideo: hideVideo,
+  showVideo: showVideo,
+});
