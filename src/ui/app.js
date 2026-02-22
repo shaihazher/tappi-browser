@@ -1454,6 +1454,11 @@ function openSettings() {
     if (config.privacy) {
       updateToggle('toggle-agent-browsing', config.privacy.agentBrowsingDataAccess || false);
     }
+    // Agent timeout (Phase 8.40)
+    const timeoutSelect = document.getElementById('agent-timeout-select');
+    if (timeoutSelect && config.llm?.agentTimeoutMs !== undefined) {
+      timeoutSelect.value = String(config.llm.agentTimeoutMs);
+    }
     // Developer mode
     updateToggle('toggle-devmode', config.developerMode || false);
     updateDevModeIndicator(config.developerMode || false);
@@ -1561,6 +1566,8 @@ settingsSave.addEventListener('click', async () => {
       // Secondary model fields (Phase 8.85) — cleared when checkbox is off
       secondaryModel: secondaryModelValue || undefined,
       secondaryProvider: secondaryProviderValue || undefined,
+      // Timeout (Phase 8.40)
+      agentTimeoutMs: parseInt(document.getElementById('agent-timeout-select')?.value) || 600000,
     },
     searchEngine: settingSearch.value,
     features: {
