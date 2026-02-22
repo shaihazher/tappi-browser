@@ -10,7 +10,7 @@
  * - Gracefully degrades if mpv is not installed
  */
 
-import { BrowserWindow, BrowserView, ipcMain, screen } from 'electron';
+import { BrowserWindow, WebContentsView, ipcMain, screen } from 'electron';
 import { spawn, execFile, ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as os from 'os';
@@ -73,7 +73,7 @@ interface TabMediaState {
 let mpvPath: string | null = null;
 let mpvAvailable = false;
 let mainWindow: BrowserWindow | null = null;
-let getTabView: ((tabId: string) => BrowserView | null) | null = null;
+let getTabView: ((tabId: string) => WebContentsView | null) | null = null;
 let getActiveTabId: (() => string | null) | null = null;
 
 const tabStates = new Map<string, TabMediaState>();
@@ -101,7 +101,7 @@ async function detectMpv(): Promise<string | null> {
 
 export async function initMediaEngine(
   window: BrowserWindow,
-  tabViewGetter: (tabId: string) => BrowserView | null,
+  tabViewGetter: (tabId: string) => WebContentsView | null,
   activeTabIdGetter: () => string | null,
 ) {
   mainWindow = window;

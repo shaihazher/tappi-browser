@@ -1,4 +1,4 @@
-import { app, BrowserWindow, BrowserView, ipcMain, session, Menu, safeStorage, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, session, Menu, safeStorage, dialog } from 'electron';
 // Phase 8.5: Media Engine
 import {
   initMediaEngine,

@@ -1,4 +1,4 @@
-import { BrowserWindow, BrowserView, session, ipcMain } from 'electron';
+import { BrowserWindow, WebContentsView, session, ipcMain } from 'electron';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -6,7 +6,7 @@ import { addHistory } from './database';
 
 export interface Tab {
   id: string;
-  view: BrowserView;
+  view: WebContentsView;
   title: string;
   url: string;
   favicon: string;
@@ -129,7 +129,7 @@ export class TabManager {
     const ariaHtmlPath = path.join(__dirname, 'ui', 'aria.html');
     const finalUrl = `file://${ariaHtmlPath}`;
 
-    const view = new BrowserView({
+    const view = new WebContentsView({
       webPreferences: {
         contextIsolation: true,
         sandbox: false, // Aria tab needs IPC (preload uses ipcRenderer)
@@ -166,7 +166,7 @@ export class TabManager {
     });
 
     wc.loadURL(finalUrl);
-    this.window.addBrowserView(view);
+    this.window.contentView.addChildView(view);
     this.switchTab(id);
 
     return id;
@@ -224,7 +224,7 @@ export class TabManager {
     if (partition) {
       webPrefs.partition = partition;
     }
-    const view = new BrowserView({
+    const view = new WebContentsView({
       webPreferences: webPrefs,
     });
 
@@ -328,7 +328,7 @@ export class TabManager {
 
       // Restore pre-fullscreen layout values before calling layoutActiveTab().
       // Without this, lastLayoutWidth/Height contain the fullscreen dimensions
-      // (set by resize events during fullscreen) and the BrowserView stays
+      // (set by resize events during fullscreen) and the WebContentsView stays
       // oversized until the OS-level leave-full-screen event fires.
       if (this.preFullscreenLayoutWidth > 0) {
         this.lastLayoutWidth = this.preFullscreenLayoutWidth;
@@ -336,7 +336,7 @@ export class TabManager {
         this.lastStatusBarHeight = this.preFullscreenStatusBarHeight;
       }
 
-      // Restore BrowserView bounds to normal layout immediately so YouTube's
+      // Restore WebContentsView bounds to normal layout immediately so YouTube's
       // JS sees the correct viewport size and exits its fullscreen player mode.
       this.layoutActiveTab();
 
@@ -360,7 +360,7 @@ export class TabManager {
     }
 
     wc.loadURL(finalUrl);
-    this.window.addBrowserView(view);
+    this.window.contentView.addChildView(view);
     this.switchTab(id);
 
     return id;
@@ -378,7 +378,7 @@ export class TabManager {
       if (this.closedStack.length > 20) this.closedStack.shift();
     }
 
-    this.window.removeBrowserView(tab.view);
+    this.window.contentView.removeChildView(tab.view);
     tab.view.webContents.close();
 
     this.tabs.delete(id);
@@ -405,17 +405,16 @@ export class TabManager {
     const tab = this.tabs.get(id);
     if (!tab) return;
 
-    // Hide ALL BrowserViews, then show only the active one.
+    // Hide ALL WebContentsViews, then show only the active one.
     // This prevents inactive tabs (especially the full-width Aria tab)
     // from peeking through and covering the agent strip area.
     for (const [tid, t] of this.tabs) {
       if (tid !== id) {
-        this.window.removeBrowserView(t.view);
+        this.window.contentView.removeChildView(t.view);
       }
     }
-    // Ensure the active one is added and on top
-    this.window.addBrowserView(tab.view);
-    this.window.setTopBrowserView(tab.view);
+    // Add the active one last — last child is on top with WebContentsView
+    this.window.contentView.addChildView(tab.view);
 
     this.activeId = id;
     this.layoutActiveTab();
@@ -513,7 +512,7 @@ export class TabManager {
   }
 
   /**
-   * Layout the active tab's BrowserView.
+   * Layout the active tab's WebContentsView.
    * @param availableWidth - width available for the tab (excluding agent panel)
    * @param totalHeight - total content height
    * @param statusBarHeight - height reserved for status bar at bottom
@@ -561,9 +560,17 @@ export class TabManager {
     };
   }
 
-  /** Phase 8.5: Get BrowserView by tab ID (for media engine geometry calc). */
-  getBrowserView(tabId: string): BrowserView | null {
+  /** Phase 8.95: Get WebContentsView by tab ID (primary method). */
+  getView(tabId: string): WebContentsView | null {
     return this.tabs.get(tabId)?.view ?? null;
+  }
+
+  /**
+   * Phase 8.5 / 8.95: Backward-compatible alias for getView().
+   * Kept for media-engine.ts until it is updated to call getView() directly.
+   */
+  getBrowserView(tabId: string): WebContentsView | null {
+    return this.getView(tabId);
   }
 
   /** Phase 8.5: Find tab ID by webContents ID (for media IPC event routing). */
@@ -595,19 +602,21 @@ export class TabManager {
 
   hideAllViews() {
     for (const [, tab] of this.tabs) {
-      this.window.removeBrowserView(tab.view);
+      this.window.contentView.removeChildView(tab.view);
     }
   }
 
   showAllViews() {
-    for (const [, tab] of this.tabs) {
-      this.window.addBrowserView(tab.view);
+    // Add non-active tabs first, active tab last so it sits on top
+    for (const [id, tab] of this.tabs) {
+      if (id !== this.activeId) {
+        this.window.contentView.addChildView(tab.view);
+      }
     }
-    // Re-set the active tab on top
     if (this.activeId) {
       const active = this.tabs.get(this.activeId);
       if (active) {
-        this.window.setTopBrowserView(active.view);
+        this.window.contentView.addChildView(active.view);
         this.layoutActiveTab();
       }
     }
@@ -615,6 +624,8 @@ export class TabManager {
 
   destroy() {
     for (const [, tab] of this.tabs) {
+      // WebContentsView does NOT auto-destroy webContents on window close,
+      // so explicit cleanup here is critical.
       try { tab.view.webContents.close(); } catch {}
     }
     this.tabs.clear();
