@@ -258,6 +258,7 @@ contextBridge.exposeInMainWorld('tappi', {
 
   // Profile Management (Phase 8.4.4)
   showProfileMenu: () => ipcRenderer.send('profile:show-menu'),
+  getApiToken: () => ipcRenderer.invoke('devmode:api-token'),
   listProfiles: () => ipcRenderer.invoke('profile:list'),
   createProfile: (name: string, email?: string) => ipcRenderer.invoke('profile:create', name, email),
   switchProfile: (name: string) => ipcRenderer.invoke('profile:switch', name),

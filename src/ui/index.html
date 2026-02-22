@@ -311,6 +311,14 @@
           <div id="devmode-indicator" class="devmode-status hidden">
             <span class="devmode-icon">&gt;_</span> Shell access enabled — the agent can run any command on your system
           </div>
+          <div id="devmode-api-section" class="hidden" style="margin-top:12px;">
+            <p class="settings-hint">Local API server runs on <code>127.0.0.1:18901</code> when Developer Mode is on. Use the token below to authenticate requests.</p>
+            <div class="settings-row" style="gap:8px;">
+              <label style="white-space:nowrap">API Token</label>
+              <code id="api-token-display" style="flex:1;font-size:11px;padding:6px 8px;background:var(--bg-secondary);border-radius:4px;overflow:hidden;text-overflow:ellipsis;user-select:all;cursor:text">—</code>
+              <button class="ghost-btn small" id="api-token-copy" title="Copy token">📋</button>
+            </div>
+          </div>
           <!-- Coding Mode toggle moved to Aria tab (Fix 4) — use the </> button in Aria chat UI -->
           <p class="settings-hint" style="margin-top:8px;display:none" id="codingmode-hint">Coding mode is now toggled from the Aria chat tab via the &lt;/&gt; button.</p>
 

@@ -1229,6 +1229,11 @@ function createWindow() {
   // ─── Developer Mode IPC ───
   ipcMain.handle('devmode:get', () => currentConfig.developerMode);
 
+  ipcMain.handle('devmode:api-token', () => {
+    if (!currentConfig.developerMode) return '';
+    try { return require('fs').readFileSync(require('path').join(process.env.HOME || '.', '.tappi-browser', 'api-token'), 'utf-8').trim(); } catch { return ''; }
+  });
+
   ipcMain.handle('devmode:set', (_e, enabled: boolean) => {
     currentConfig.developerMode = enabled;
     saveConfig(currentConfig);

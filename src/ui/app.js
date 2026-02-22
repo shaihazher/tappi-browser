@@ -1906,11 +1906,37 @@ document.getElementById('password-prompt-dismiss').addEventListener('click', () 
 
 // ─── Developer Mode ───
 
-function updateDevModeIndicator(enabled) {
+async function updateDevModeIndicator(enabled) {
   const indicator = document.getElementById('devmode-indicator');
   const statusIcon = document.getElementById('status-devmode');
+  const apiSection = document.getElementById('devmode-api-section');
   if (indicator) indicator.classList.toggle('hidden', !enabled);
   if (statusIcon) statusIcon.classList.toggle('hidden', !enabled);
+  if (apiSection) {
+    apiSection.classList.toggle('hidden', !enabled);
+    if (enabled) {
+      try {
+        const token = await window.tappi.getApiToken();
+        const display = document.getElementById('api-token-display');
+        if (display) display.textContent = token || '—';
+      } catch {}
+    }
+  }
+}
+
+// Copy API token button
+const apiTokenCopyBtn = document.getElementById('api-token-copy');
+if (apiTokenCopyBtn) {
+  apiTokenCopyBtn.addEventListener('click', async () => {
+    const token = document.getElementById('api-token-display')?.textContent;
+    if (token && token !== '—') {
+      try {
+        await navigator.clipboard.writeText(token);
+        apiTokenCopyBtn.textContent = '✅';
+        setTimeout(() => { apiTokenCopyBtn.textContent = '📋'; }, 1500);
+      } catch {}
+    }
+  });
 }
 
 // Dev mode toggle with confirmation
