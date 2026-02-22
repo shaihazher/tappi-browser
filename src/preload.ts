@@ -79,6 +79,7 @@ contextBridge.exposeInMainWorld('tappi', {
   // Overlay management (hide/show BrowserViews for modals)
   showOverlay: () => ipcRenderer.send('overlay:show'),
   hideOverlay: () => ipcRenderer.send('overlay:hide'),
+  setAutocompleteHeight: (height: number) => ipcRenderer.send('autocomplete:resize', height),
 
   // Settings / Config
   getConfig: () => ipcRenderer.invoke('config:get'),
@@ -105,6 +106,9 @@ contextBridge.exposeInMainWorld('tappi', {
   // Listen for settings open command
   onSettingsOpen: (callback: () => void) => {
     ipcRenderer.on('settings:open', () => callback());
+  },
+  onSettingsSwitchTab: (callback: (tab: string) => void) => {
+    ipcRenderer.on('settings:switch-tab', (_e, tab) => callback(tab));
   },
 
   // API Services
@@ -253,6 +257,7 @@ contextBridge.exposeInMainWorld('tappi', {
   },
 
   // Profile Management (Phase 8.4.4)
+  showProfileMenu: () => ipcRenderer.send('profile:show-menu'),
   listProfiles: () => ipcRenderer.invoke('profile:list'),
   createProfile: (name: string, email?: string) => ipcRenderer.invoke('profile:create', name, email),
   switchProfile: (name: string) => ipcRenderer.invoke('profile:switch', name),

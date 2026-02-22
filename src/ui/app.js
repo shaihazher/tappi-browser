@@ -294,8 +294,9 @@ function showAutocomplete(items) {
     return;
   }
 
-  // Hide BrowserViews so dropdown is visible (they render on top of chrome UI)
-  window.tappi.showOverlay();
+  // Push tab view down to make room for dropdown (no page blanking)
+  const dropdownHeight = Math.min(items.length * 44, 360);
+  window.tappi.setAutocompleteHeight(dropdownHeight);
 
   autocompleteDropdown.innerHTML = '';
   items.forEach((item, i) => {
@@ -328,8 +329,8 @@ function hideAutocomplete() {
   autocompleteDropdown.classList.add('hidden');
   autocompleteItems = [];
   autocompleteSelectedIndex = -1;
-  // Restore BrowserViews
-  if (wasVisible) window.tappi.hideOverlay();
+  // Restore tab position
+  if (wasVisible) window.tappi.setAutocompleteHeight(0);
 }
 
 function highlightAutocomplete() {
@@ -1807,6 +1808,10 @@ window.tappi.onFullscreenChanged((isFullscreen) => {
 
 window.tappi.onFocusAddressBar(() => urlInput.focus());
 window.tappi.onSettingsOpen(() => openSettings());
+window.tappi.onSettingsSwitchTab((tab) => {
+  openSettings();
+  switchSettingsTab(tab);
+});
 
 window.tappi.onConfigLoaded((config) => {
   // Apply initial feature states to status bar
@@ -2615,70 +2620,20 @@ function renderProfileListPopup(profiles) {
   });
 }
 
+// Profile popup — uses native OS menu (renders above tab views, no z-order issues)
 function openProfilePopup() {
-  const popup = document.getElementById('profile-popup');
-  if (!popup) return;
-  renderProfileListPopup(currentProfiles);
-  // Hide tab views so popup renders on top (they sit above chrome UI)
-  window.tappi.showOverlay();
-  popup.classList.remove('hidden');
-
-  // Close on outside click
-  setTimeout(() => {
-    document.addEventListener('click', onOutsideClickProfile, { once: true });
-  }, 50);
+  window.tappi.showProfileMenu();
 }
 
 function closeProfilePopup() {
-  const popup = document.getElementById('profile-popup');
-  const wasVisible = popup && !popup.classList.contains('hidden');
-  if (popup) popup.classList.add('hidden');
-  // Restore tab views
-  if (wasVisible) window.tappi.hideOverlay();
-}
-
-function onOutsideClickProfile(e) {
-  const popup = document.getElementById('profile-popup');
-  const btn = document.getElementById('profile-indicator');
-  if (popup && !popup.contains(e.target) && e.target !== btn) {
-    closeProfilePopup();
-  }
+  // No-op — native menu handles its own dismissal
 }
 
 const profileIndicatorBtn = document.getElementById('profile-indicator');
 if (profileIndicatorBtn) {
   profileIndicatorBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    const popup = document.getElementById('profile-popup');
-    if (popup && !popup.classList.contains('hidden')) {
-      closeProfilePopup();
-    } else {
-      openProfilePopup();
-    }
-  });
-}
-
-const profilePopupClose = document.getElementById('profile-popup-close');
-if (profilePopupClose) profilePopupClose.addEventListener('click', closeProfilePopup);
-
-const profileNewBtnPopup = document.getElementById('profile-new-btn');
-if (profileNewBtnPopup) {
-  profileNewBtnPopup.addEventListener('click', () => {
-    closeProfilePopup();
-    // Open settings to profiles tab
-    openSettings();
-    switchSettingsTab('profiles');
-    const createForm = document.getElementById('profile-create-form');
-    if (createForm) createForm.classList.remove('hidden');
-  });
-}
-
-const profileSettingsBtn = document.getElementById('profile-settings-btn');
-if (profileSettingsBtn) {
-  profileSettingsBtn.addEventListener('click', () => {
-    closeProfilePopup();
-    openSettings();
-    switchSettingsTab('profiles');
+    openProfilePopup();
   });
 }
 

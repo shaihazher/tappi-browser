@@ -1087,6 +1087,54 @@ function createWindow() {
     };
   });
 
+  // ─── Profile Native Menu (renders above tab views, no z-order issues) ───
+  ipcMain.on('profile:show-menu', () => {
+    const profiles = profileManager.listProfiles();
+    const active = profileManager.activeProfile;
+    const template: Electron.MenuItemConstructorOptions[] = [];
+
+    for (const p of profiles) {
+      template.push({
+        label: p.name,
+        type: 'checkbox',
+        checked: p.name === active,
+        click: async () => {
+          if (p.name === active) return;
+          const result = profileManager.switchProfile(p.name);
+          if ('error' in result) return;
+          reinitDatabase(profileManager.getDatabasePath());
+          currentConfig = loadConfig();
+          mainWindow.webContents.send('config:loaded', {
+            ...currentConfig,
+            llm: { ...currentConfig.llm, apiKey: currentConfig.llm.apiKey ? '••••••••' : '' },
+          });
+          mainWindow.webContents.send('profile:switched', { profile: result, profiles: profileManager.listProfiles() });
+          clearHistory('default');
+          sessionManager.clearSiteIdentities();
+        },
+      });
+    }
+
+    template.push({ type: 'separator' });
+    template.push({
+      label: 'New Profile…',
+      click: () => {
+        mainWindow.webContents.send('settings:open');
+        mainWindow.webContents.send('settings:switch-tab', 'profiles');
+      },
+    });
+    template.push({
+      label: 'Manage Profiles…',
+      click: () => {
+        mainWindow.webContents.send('settings:open');
+        mainWindow.webContents.send('settings:switch-tab', 'profiles');
+      },
+    });
+
+    const menu = Menu.buildFromTemplate(template);
+    menu.popup({ window: mainWindow });
+  });
+
   // ─── Site Identity IPC (Phase 8.4.6) ───
 
   ipcMain.handle('profile:open-site-identity', (_e, domain: string, username: string) => {
@@ -1358,17 +1406,32 @@ function createWindow() {
     return { success: true };
   });
 
-  // ─── Find on Page IPC ───
+  // ─── Extra Chrome Height (find bar, autocomplete push tab view down) ───
   const FIND_BAR_HEIGHT = 40;
   let findBarOpen = false;
+  let autocompleteHeight = 0;
 
-  ipcMain.on('findbar:toggle', (_e, open: boolean) => {
-    findBarOpen = open;
+  function getExtraChromeHeight(): number {
+    return (findBarOpen ? FIND_BAR_HEIGHT : 0) + autocompleteHeight;
+  }
+
+  function relayoutWithExtraChrome() {
     if (!mainWindow || !tabManager) return;
     const [width, height] = mainWindow.getContentSize();
     const agentWidth = getAgentWidth();
-    const extraChrome = open ? FIND_BAR_HEIGHT : 0;
-    tabManager.layoutActiveTab(width - agentWidth, height, STATUS_BAR_HEIGHT, extraChrome);
+    tabManager.layoutActiveTab(width - agentWidth, height, STATUS_BAR_HEIGHT, getExtraChromeHeight());
+  }
+
+  // ─── Find on Page IPC ───
+  ipcMain.on('findbar:toggle', (_e, open: boolean) => {
+    findBarOpen = open;
+    relayoutWithExtraChrome();
+  });
+
+  // ─── Autocomplete overlay (push tab down instead of blanking page) ───
+  ipcMain.on('autocomplete:resize', (_e, height: number) => {
+    autocompleteHeight = Math.max(0, Math.min(height, 360)); // cap at 360px
+    relayoutWithExtraChrome();
   });
 
   let lastFindText = '';
