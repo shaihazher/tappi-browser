@@ -531,16 +531,19 @@ function createWindow() {
   });
 
   // ─── Phase 8.45: Local HTTP API Server ───
-  // Generate token on first run (idempotent)
-  ensureApiToken();
-  // Start REST API server (always on in production; dev TCP server is separate)
-  startApiServer(API_PORT, {
-    mainWindow,
-    tabManager,
-    getConfig: () => currentConfig,
-    decryptApiKey,
-    updateConfig: applyConfigUpdates,
-  });
+  // Only start when developer mode is enabled (same as dev TCP server)
+  if (currentConfig.developerMode) {
+    ensureApiToken();
+    startApiServer(API_PORT, {
+      mainWindow,
+      tabManager,
+      getConfig: () => currentConfig,
+      decryptApiKey,
+      updateConfig: applyConfigUpdates,
+    });
+  } else {
+    console.log(`[api] HTTP API server disabled (Developer Mode is off). Enable in Settings to use port ${API_PORT}.`);
+  }
 
   // ─── Media Engine Initialization (Phase 8.5) ───
   initMediaEngine(
@@ -1237,6 +1240,19 @@ function createWindow() {
       const codingActive = false;
       mainWindow.webContents.send('codingmode:changed', codingActive);
       try { tabManager?.ariaWebContents?.send('codingmode:changed', codingActive); } catch {}
+    }
+    // Start/stop API server based on developer mode
+    if (enabled) {
+      ensureApiToken();
+      startApiServer(API_PORT, {
+        mainWindow,
+        tabManager,
+        getConfig: () => currentConfig,
+        decryptApiKey,
+        updateConfig: applyConfigUpdates,
+      });
+    } else {
+      stopApiServer();
     }
     console.log('[config] Developer mode:', enabled);
     return { success: true, developerMode: enabled };
