@@ -2619,6 +2619,8 @@ function openProfilePopup() {
   const popup = document.getElementById('profile-popup');
   if (!popup) return;
   renderProfileListPopup(currentProfiles);
+  // Hide tab views so popup renders on top (they sit above chrome UI)
+  window.tappi.showOverlay();
   popup.classList.remove('hidden');
 
   // Close on outside click
@@ -2629,7 +2631,10 @@ function openProfilePopup() {
 
 function closeProfilePopup() {
   const popup = document.getElementById('profile-popup');
+  const wasVisible = popup && !popup.classList.contains('hidden');
   if (popup) popup.classList.add('hidden');
+  // Restore tab views
+  if (wasVisible) window.tappi.hideOverlay();
 }
 
 function onOutsideClickProfile(e) {
