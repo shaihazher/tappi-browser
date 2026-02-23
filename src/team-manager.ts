@@ -516,22 +516,38 @@ async function runTeammateSession(
           }
 
           // Phase 9.096d: Append step to conversationHistory for interrupt/resume
+          // Use AI SDK's own response.messages when available for correct format;
+          // fallback to manual construction matching SDK's CoreMessage types.
           try {
-            const assistantContent: any[] = [];
-            if (event.text) assistantContent.push({ type: 'text', text: event.text });
-            for (const tc of (event.toolCalls || [])) {
-              assistantContent.push({ type: 'tool-call', toolCallId: tc.toolCallId, toolName: tc.toolName, args: tc.args });
-            }
-            if (assistantContent.length > 0) {
+            // SDK provides step.response.messages with correctly typed messages
+            const stepMessages = (event as any).response?.messages;
+            if (stepMessages && Array.isArray(stepMessages)) {
               if (!teammate.conversationHistory) teammate.conversationHistory = [];
-              teammate.conversationHistory.push({ role: 'assistant', content: assistantContent });
-            }
-            for (const tr of toolResults) {
-              if (!teammate.conversationHistory) teammate.conversationHistory = [];
-              teammate.conversationHistory.push({
-                role: 'tool',
-                content: [{ type: 'tool-result', toolCallId: (tr as any).toolCallId, result: tr.result }],
-              });
+              teammate.conversationHistory.push(...stepMessages);
+            } else {
+              // Fallback: manually construct in SDK-compatible format
+              const assistantContent: any[] = [];
+              if (event.text) assistantContent.push({ type: 'text', text: event.text });
+              for (const tc of (event.toolCalls || [])) {
+                assistantContent.push({ type: 'tool-call', toolCallId: tc.toolCallId, toolName: tc.toolName, args: tc.args });
+              }
+              if (assistantContent.length > 0) {
+                if (!teammate.conversationHistory) teammate.conversationHistory = [];
+                teammate.conversationHistory.push({ role: 'assistant', content: assistantContent });
+              }
+              for (const tr of toolResults) {
+                if (!teammate.conversationHistory) teammate.conversationHistory = [];
+                teammate.conversationHistory.push({
+                  role: 'tool',
+                  content: [{
+                    type: 'tool-result',
+                    toolCallId: (tr as any).toolCallId,
+                    toolName: (tr as any).toolName || 'unknown',
+                    input: (tr as any).args ?? {},
+                    output: typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? ''),
+                  }],
+                });
+              }
             }
           } catch {}
 
@@ -717,18 +733,13 @@ export async function interruptTeammate(teamId: string, name: string, message: s
   const partialText = teammate.partialResponse;
   const resumeHistory: any[] = [...existingHistory];
 
-  // Append partial response if any was accumulated
-  if (partialText && partialText.trim()) {
-    resumeHistory.push({
-      role: 'assistant',
-      content: [{ type: 'text', text: partialText + ' (interrupted)' }],
-    });
-  }
-
-  // Inject the lead's redirect instruction
+  // Inject the lead's redirect instruction (include partial context in the user message)
+  const partialNote = (partialText && partialText.trim())
+    ? `\n\n[Your partial response before interrupt: "${partialText.slice(-200)}..."]`
+    : '';
   resumeHistory.push({
     role: 'user',
-    content: `[INTERRUPT from @lead]: ${message}`,
+    content: `[INTERRUPT from @lead]: ${message}${partialNote}\n\nContinue from where you left off with the new instructions above. Your previous tool calls and results are preserved in the conversation above.`,
   });
 
   // Step 5: Notify lead + broadcast
@@ -852,23 +863,37 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
             }
           }
 
-          // Append step to conversation history
-          const assistantContent: any[] = [];
-          if (event.text) assistantContent.push({ type: 'text', text: event.text });
-          for (const tc of (event.toolCalls || [])) {
-            assistantContent.push({ type: 'tool-call', toolCallId: tc.toolCallId, toolName: tc.toolName, args: tc.args });
-          }
-          if (assistantContent.length > 0) {
-            if (!teammate.conversationHistory) teammate.conversationHistory = [];
-            teammate.conversationHistory.push({ role: 'assistant', content: assistantContent });
-          }
-          for (const tr of toolResults) {
-            if (!teammate.conversationHistory) teammate.conversationHistory = [];
-            teammate.conversationHistory.push({
-              role: 'tool',
-              content: [{ type: 'tool-result', toolCallId: (tr as any).toolCallId, result: tr.result }],
-            });
-          }
+          // Append step to conversation history (use SDK messages when available)
+          try {
+            const stepMessages = (event as any).response?.messages;
+            if (stepMessages && Array.isArray(stepMessages)) {
+              if (!teammate.conversationHistory) teammate.conversationHistory = [];
+              teammate.conversationHistory.push(...stepMessages);
+            } else {
+              const assistantContent: any[] = [];
+              if (event.text) assistantContent.push({ type: 'text', text: event.text });
+              for (const tc of (event.toolCalls || [])) {
+                assistantContent.push({ type: 'tool-call', toolCallId: tc.toolCallId, toolName: tc.toolName, args: tc.args });
+              }
+              if (assistantContent.length > 0) {
+                if (!teammate.conversationHistory) teammate.conversationHistory = [];
+                teammate.conversationHistory.push({ role: 'assistant', content: assistantContent });
+              }
+              for (const tr of toolResults) {
+                if (!teammate.conversationHistory) teammate.conversationHistory = [];
+                teammate.conversationHistory.push({
+                  role: 'tool',
+                  content: [{
+                    type: 'tool-result',
+                    toolCallId: (tr as any).toolCallId,
+                    toolName: (tr as any).toolName || 'unknown',
+                    input: (tr as any).args ?? {},
+                    output: typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? ''),
+                  }],
+                });
+              }
+            }
+          } catch {}
 
           notifyUpdate(teamId);
         } catch {}
