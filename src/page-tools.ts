@@ -375,12 +375,18 @@ export async function pageKeys(wc: WebContents, sequence: string | string[]): Pr
   return `Keys: ${parts.join(', ')} [${actions.length} action(s)]`;
 }
 
+const EVAL_CHAR_CAP = 2000; // ~500 tokens — same budget as grep
+
 export async function pageEval(wc: WebContents, js: string): Promise<string> {
   try {
     const result = await wc.executeJavaScript(js);
     if (result === undefined) return '(undefined)';
     if (result === null) return '(null)';
-    return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+    const str = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+    if (str.length > EVAL_CHAR_CAP) {
+      return str.slice(0, EVAL_CHAR_CAP) + `\n... (truncated — ${str.length} chars total. Write smaller JS that returns only what you need.)`;
+    }
+    return str;
   } catch (e: any) {
     return `Error: ${e.message}`;
   }

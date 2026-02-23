@@ -207,7 +207,16 @@ export function grepOutput(
     return `No matches for "${pattern}" in ${searchScope}.`;
   }
 
-  return results.join('\n');
+  // Phase 9.096f: Cap grep results at ~500 tokens (~2KB) — same as file grep
+  const GREP_CHAR_CAP = 2000;
+  const joined = results.join('\n');
+  if (joined.length > GREP_CHAR_CAP) {
+    const truncated = joined.slice(0, GREP_CHAR_CAP);
+    const lastNewline = truncated.lastIndexOf('\n');
+    return (lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated) +
+      '\n... (capped at ~500 tokens — refine your search pattern)';
+  }
+  return joined;
 }
 
 /**
