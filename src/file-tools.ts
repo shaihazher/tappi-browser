@@ -52,8 +52,8 @@ export function fileWrite(filePath: string, content: string): string {
 
 // Token estimation: ~4 chars per token (conservative for code/prose mix)
 const CHARS_PER_TOKEN = 4;
-const TOKEN_THRESHOLD = 20_000; // 20K tokens
-const BYTE_THRESHOLD = TOKEN_THRESHOLD * CHARS_PER_TOKEN; // ~80KB
+const TOKEN_THRESHOLD = 2_000; // Phase 9.096f: 2K tokens — use grep/head/tail for targeted reading
+const BYTE_THRESHOLD = TOKEN_THRESHOLD * CHARS_PER_TOKEN; // ~8KB
 
 export interface FileReadOptions {
   grep?: string;
@@ -112,8 +112,8 @@ export function fileRead(filePath: string, options?: FileReadOptions): string {
       ``,
       `Options (re-call file_read with these params):`,
       `  • grep: "search term" — find specific content (recommended)`,
-      `  • offset: 0, limit: 80000 — read first ~20K tokens`,
-      `  • Or use file_head / file_tail / file_grep / spawn_agent`,
+      `  • offset: 0, limit: 8000 — read first ~2K tokens`,
+      `  • Or use file_head / file_tail / file_grep`,
     ].join('\n');
   }
 
@@ -122,8 +122,8 @@ export function fileRead(filePath: string, options?: FileReadOptions): string {
 
 // ─── Internal helpers for smart reading ───
 
-const GREP_TOKEN_CAP = 5_000; // max tokens for grep results
-const GREP_CHAR_CAP = GREP_TOKEN_CAP * CHARS_PER_TOKEN; // ~20KB
+const GREP_TOKEN_CAP = 2_000; // max tokens for grep results — same budget as file_read
+const GREP_CHAR_CAP = GREP_TOKEN_CAP * CHARS_PER_TOKEN; // ~8KB
 
 function countLines(filePath: string): number {
   const buf = fs.readFileSync(filePath);

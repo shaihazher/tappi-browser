@@ -606,12 +606,12 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     file_read: tool({
-      description: 'Read a file. Large files (>20K tokens) return a summary with options instead of content. Use grep/offset/limit params to handle large files efficiently — grep searches without loading the full file into context, offset+limit enable chunked reading for sub-agents.',
+      description: 'Read a file. Files >2K tokens return a summary with options. Use grep to search without loading full content. Use offset/limit for chunked reading.',
       inputSchema: z.object({
         path: z.string().describe('File path'),
         grep: z.string().optional().describe('Search the file for this text — returns matching lines with ±2 context lines (recommended for large files)'),
         offset: z.number().optional().describe('Byte offset to start reading from (for chunked reading by sub-agents)'),
-        limit: z.number().optional().describe('Max bytes to read (default/max ~80KB ≈ 20K tokens)'),
+        limit: z.number().optional().describe('Max bytes to read (default/max ~8KB ≈ 2K tokens)'),
       }),
       execute: async ({ path, grep, offset, limit }: { path: string; grep?: string; offset?: number; limit?: number }) => {
         const opts: fileTools.FileReadOptions = {};
@@ -623,7 +623,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     file_read_range: tool({
-      description: 'Read a specific line range from a file (1-indexed). Use after file_read reports a large file. Capped at ~20K tokens per call — use smaller ranges if truncated.',
+      description: 'Read a specific line range from a file (1-indexed). Use after file_read reports a large file. Capped at ~2K tokens per call.',
       inputSchema: z.object({
         path: z.string().describe('File path'),
         from: z.number().describe('Start line (1-indexed, inclusive)'),

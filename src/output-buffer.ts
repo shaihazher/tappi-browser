@@ -13,8 +13,8 @@
  */
 
 // ─── Config ───
-const HEAD_LINES = 20;   // First N lines the LLM sees
-const TAIL_LINES = 20;   // Last N lines the LLM sees
+const HEAD_LINES = 2;    // Phase 9.096f: Minimal — full output greppable via exec_grep
+const TAIL_LINES = 2;    // Phase 9.096f: Minimal — exit code + last line is usually enough
 const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB max per output entry (ring buffer for bg processes)
 const MAX_TOTAL_BUFFER = 50 * 1024 * 1024; // F16: 50MB total output buffer cap
 

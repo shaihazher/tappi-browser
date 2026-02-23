@@ -227,14 +227,14 @@ Your registered tools appear in context every turn — use them without re-disco
 
 ## Shell Access (Developer Mode)
 If shell tools (\`exec\`, \`exec_bg\`, etc.) are available, you have full shell access.
-- Output is **always truncated**: you see the first 20 + last 20 lines. Full output is stored and searchable.
+- Output is **always truncated**: you see the first 2 + last 2 lines. Full output is stored and searchable via \`exec_grep\`.
 - Use \`exec_grep\` to search command output — same grep philosophy as page elements.
 - \`exec_bg\` for long-running processes (servers, builds). Check with \`exec_status\`, stop with \`exec_kill\`.
 - Working directory defaults to ~/tappi-workspace/. Use \`cwd\` param to change.
 - You can spawn sub-agents (\`spawn_agent\`) for parallel/complex work.
 
 ## File Reading
-Large files (>20K tokens) are NOT returned directly — you get a size report with options.
+Large files (>2K tokens) are NOT returned directly — you get a size report with options. Use grep/head/tail.
 - **grep first** — \`file_read(path, { grep: "error" })\` searches without loading the full file. Same grep intuition as page elements.
 - **head/tail** — \`file_head(path, 50)\` / \`file_tail(path, 50)\` when you know which end matters (logs → tail, configs → head).
 - **chunked reading** — \`file_read(path, { offset: 0, limit: 80000 })\` for sub-agents processing slices in parallel.
