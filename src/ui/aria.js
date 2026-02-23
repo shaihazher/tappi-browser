@@ -1306,12 +1306,15 @@ window.aria.onReasoningChunk(({ text, done }) => {
     _thinkingChipEl = document.createElement('div');
     _thinkingChipEl.className = 'aria-thinking-chip';
     _thinkingChipEl.innerHTML = `
-      <div class="thinking-chip-header" onclick="this.parentElement.classList.toggle('expanded')">
+      <div class="thinking-chip-header">
         <span class="thinking-chip-icon">🧠</span>
         <span class="thinking-chip-label">Thinking…</span>
         <span class="thinking-chip-toggle">▾</span>
       </div>
       <div class="thinking-chip-body"></div>`;
+    // Wire toggle via addEventListener (CSP blocks inline onclick)
+    const header = _thinkingChipEl.querySelector('.thinking-chip-header');
+    if (header) header.addEventListener('click', () => _thinkingChipEl?.classList.toggle('expanded'));
     const chatMessages = document.getElementById('aria-messages');
     if (chatMessages) chatMessages.appendChild(_thinkingChipEl);
     _thinkingChipEl.classList.add('expanded'); // expand live while streaming
@@ -1325,7 +1328,7 @@ window.aria.onReasoningChunk(({ text, done }) => {
   chatMessages?.scrollTo({ top: chatMessages.scrollHeight, behavior: 'smooth' });
 
   if (done) {
-    // Collapse the chip and update label to "Thought for N chars"
+    // Collapse the chip and update label
     const label = _thinkingChipEl.querySelector('.thinking-chip-label');
     if (label) label.textContent = `Thought (${text.length} chars) — click to expand`;
     _thinkingChipEl.classList.remove('expanded');
@@ -1615,6 +1618,47 @@ window.aria.onDeepStreamChunk(data => {
     stream.scrollTop = stream.scrollHeight;
   }, 80);
 });
+
+// Deep mode reasoning / thinking chips (per-subtask)
+let _deepThinkingChips = {};
+if (window.aria.onDeepReasoningChunk) {
+  window.aria.onDeepReasoningChunk(({ index, text, done }) => {
+    if (index == null) return;
+    const stream = document.getElementById('aria-deep-stream-' + index);
+    if (!stream) return;
+
+    if (!_deepThinkingChips[index]) {
+      const chip = document.createElement('div');
+      chip.className = 'aria-thinking-chip';
+      chip.innerHTML = `
+        <div class="thinking-chip-header">
+          <span class="thinking-chip-icon">🧠</span>
+          <span class="thinking-chip-label">Thinking…</span>
+          <span class="thinking-chip-toggle">▾</span>
+        </div>
+        <div class="thinking-chip-body"></div>`;
+      const header = chip.querySelector('.thinking-chip-header');
+      if (header) header.addEventListener('click', () => chip.classList.toggle('expanded'));
+      // Insert at the beginning of the stream div (before text content)
+      stream.classList.add('visible');
+      stream.insertBefore(chip, stream.firstChild);
+      chip.classList.add('expanded');
+      _deepThinkingChips[index] = chip;
+    }
+
+    const chip = _deepThinkingChips[index];
+    const body = chip.querySelector('.thinking-chip-body');
+    if (body) body.textContent = text;
+    stream.scrollTop = stream.scrollHeight;
+
+    if (done) {
+      const label = chip.querySelector('.thinking-chip-label');
+      if (label) label.textContent = `Thought (${text.length} chars) — click to expand`;
+      chip.classList.remove('expanded');
+      _deepThinkingChips[index] = null;
+    }
+  });
+}
 
 // Tool results as compact collapsible chips (Claude.ai-inspired)
 if (window.aria.onDeepToolResult) {

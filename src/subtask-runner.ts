@@ -783,14 +783,49 @@ async function runBrowsingSubtask(
       },
     });
 
-    // Stream text chunks to UI
+    // Stream text + reasoning chunks to UI via fullStream
     let fullResponse = '';
+    let reasoningBuffer = '';
     try {
-      for await (const chunk of result.textStream) {
-        fullResponse += chunk;
-        deepBroadcast('agent:deep-stream-chunk', {
-          index: subtask.index, chunk,
-        });
+      for await (const chunk of result.fullStream) {
+        if (subtaskAbortController.signal.aborted) break;
+
+        if (chunk.type === 'reasoning-start') {
+          // nothing to do — chip created on first delta
+        } else if (chunk.type === 'reasoning-delta') {
+          const rdelta = (chunk as any).delta ?? (chunk as any).text ?? (chunk as any).textDelta ?? '';
+          reasoningBuffer += rdelta;
+          const snippet = reasoningBuffer.length > 400 ? '…' + reasoningBuffer.slice(-400) : reasoningBuffer;
+          deepBroadcast('agent:deep-reasoning-chunk', {
+            index: subtask.index, text: snippet, done: false,
+          });
+        } else if (chunk.type === 'reasoning-end') {
+          deepBroadcast('agent:deep-reasoning-chunk', {
+            index: subtask.index, text: reasoningBuffer, done: true,
+          });
+          reasoningBuffer = '';
+        } else if (chunk.type === 'text-delta') {
+          // Collapse any open reasoning chip before text starts
+          if (reasoningBuffer) {
+            deepBroadcast('agent:deep-reasoning-chunk', {
+              index: subtask.index, text: reasoningBuffer, done: true,
+            });
+            reasoningBuffer = '';
+          }
+          const textDelta = (chunk as any).delta ?? (chunk as any).text ?? (chunk as any).textDelta ?? '';
+          fullResponse += textDelta;
+          deepBroadcast('agent:deep-stream-chunk', {
+            index: subtask.index, chunk: textDelta,
+          });
+        } else if (chunk.type === 'finish') {
+          if (reasoningBuffer) {
+            deepBroadcast('agent:deep-reasoning-chunk', {
+              index: subtask.index, text: reasoningBuffer, done: true,
+            });
+            reasoningBuffer = '';
+          }
+        }
+        // tool-call / tool-result handled by onStepFinish — skip here
       }
     } catch (streamErr: any) {
       if (streamErr?.name === 'AbortError' && subtaskTimedOut) {
@@ -883,11 +918,28 @@ async function runCompileStep(
   });
 
   let fullText = '';
-  for await (const chunk of result.textStream) {
-    fullText += chunk;
-    deepBroadcast('agent:deep-stream-chunk', {
-      index: subtask.index, chunk,
-    });
+  let compileReasoningBuf = '';
+  for await (const chunk of result.fullStream) {
+    if (chunk.type === 'reasoning-delta') {
+      const rdelta = (chunk as any).delta ?? (chunk as any).text ?? (chunk as any).textDelta ?? '';
+      compileReasoningBuf += rdelta;
+      const snippet = compileReasoningBuf.length > 400 ? '…' + compileReasoningBuf.slice(-400) : compileReasoningBuf;
+      deepBroadcast('agent:deep-reasoning-chunk', { index: subtask.index, text: snippet, done: false });
+    } else if (chunk.type === 'reasoning-end') {
+      deepBroadcast('agent:deep-reasoning-chunk', { index: subtask.index, text: compileReasoningBuf, done: true });
+      compileReasoningBuf = '';
+    } else if (chunk.type === 'text-delta') {
+      if (compileReasoningBuf) {
+        deepBroadcast('agent:deep-reasoning-chunk', { index: subtask.index, text: compileReasoningBuf, done: true });
+        compileReasoningBuf = '';
+      }
+      const textDelta = (chunk as any).delta ?? (chunk as any).text ?? (chunk as any).textDelta ?? '';
+      fullText += textDelta;
+      deepBroadcast('agent:deep-stream-chunk', { index: subtask.index, chunk: textDelta });
+    } else if (chunk.type === 'finish' && compileReasoningBuf) {
+      deepBroadcast('agent:deep-reasoning-chunk', { index: subtask.index, text: compileReasoningBuf, done: true });
+      compileReasoningBuf = '';
+    }
   }
 
   // Report token usage for compile step (Phase 9.07)

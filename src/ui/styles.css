@@ -2679,3 +2679,64 @@ body {
   opacity: 0.6;
   cursor: default;
 }
+
+/* ─── Reasoning / thinking chip (sidebar agent panel) ─── */
+
+.agent-thinking-chip {
+  margin: 6px 0 4px 0;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 12px;
+  background: rgba(139, 92, 246, 0.05);
+}
+
+.agent-thinking-chip .thinking-chip-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  color: var(--text-dim, #888);
+  transition: background 0.15s;
+}
+
+.agent-thinking-chip .thinking-chip-header:hover {
+  background: rgba(139, 92, 246, 0.08);
+}
+
+.agent-thinking-chip .thinking-chip-icon { font-size: 13px; }
+
+.agent-thinking-chip .thinking-chip-label {
+  flex: 1;
+  font-weight: 500;
+  font-size: 11px;
+}
+
+.agent-thinking-chip .thinking-chip-toggle {
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+
+.agent-thinking-chip.expanded .thinking-chip-toggle {
+  transform: rotate(180deg);
+}
+
+.agent-thinking-chip .thinking-chip-body {
+  display: none;
+  padding: 8px 12px 10px;
+  color: var(--text-secondary, #aaa);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-color, #333);
+}
+
+.agent-thinking-chip.expanded .thinking-chip-body {
+  display: block;
+}

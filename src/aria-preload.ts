@@ -81,6 +81,9 @@ contextBridge.exposeInMainWorld('aria', {
   onDeepToolResult: (cb: (data: any) => void) => {
     ipcRenderer.on('agent:deep-tool-result', (_e, data) => cb(data));
   },
+  onDeepReasoningChunk: (cb: (data: { index: number; text: string; done: boolean }) => void) => {
+    ipcRenderer.on('agent:deep-reasoning-chunk', (_e, data) => cb(data));
+  },
   saveDeepReport: (outputDirAbsolute: string, format?: string) => ipcRenderer.invoke('deep:save-report', outputDirAbsolute, format || 'md'),
 
   // ─── Config ───

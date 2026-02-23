@@ -44,6 +44,9 @@ contextBridge.exposeInMainWorld('tappi', {
   onAgentToolResult: (callback: (result: { toolName: string; result: string; display: string }) => void) => {
     ipcRenderer.on('agent:tool-result', (_e, result) => callback(result));
   },
+  onAgentReasoningChunk: (callback: (data: { text: string; done: boolean }) => void) => {
+    ipcRenderer.on('agent:reasoning-chunk', (_e, data) => callback(data));
+  },
   onAgentCleared: (callback: () => void) => {
     ipcRenderer.on('agent:cleared', () => callback());
   },
@@ -71,6 +74,9 @@ contextBridge.exposeInMainWorld('tappi', {
   },
   onDeepToolResult: (callback: (data: any) => void) => {
     ipcRenderer.on('agent:deep-tool-result', (_e, data) => callback(data));
+  },
+  onDeepReasoningChunk: (callback: (data: { index: number; text: string; done: boolean }) => void) => {
+    ipcRenderer.on('agent:deep-reasoning-chunk', (_e, data) => callback(data));
   },
   onDeepComplete: (callback: (data: any) => void) => {
     ipcRenderer.on('agent:deep-complete', (_e, data) => callback(data));

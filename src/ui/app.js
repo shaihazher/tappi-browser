@@ -1034,6 +1034,41 @@ window.tappi.onAgentToolResult((result) => {
   addMessage('tool', result.display);
 });
 
+// ─── Reasoning / thinking chip (sidebar agent panel) ───
+let _sidebarThinkingChip = null;
+window.tappi.onAgentReasoningChunk(({ text, done }) => {
+  const container = document.getElementById('agent-messages');
+  if (!container) return;
+
+  if (!_sidebarThinkingChip) {
+    _sidebarThinkingChip = document.createElement('div');
+    _sidebarThinkingChip.className = 'agent-thinking-chip';
+    _sidebarThinkingChip.innerHTML = `
+      <div class="thinking-chip-header">
+        <span class="thinking-chip-icon">🧠</span>
+        <span class="thinking-chip-label">Thinking…</span>
+        <span class="thinking-chip-toggle">▾</span>
+      </div>
+      <div class="thinking-chip-body"></div>`;
+    const header = _sidebarThinkingChip.querySelector('.thinking-chip-header');
+    if (header) header.addEventListener('click', () => _sidebarThinkingChip?.classList.toggle('expanded'));
+    container.appendChild(_sidebarThinkingChip);
+    _sidebarThinkingChip.classList.add('expanded');
+    container.scrollTop = container.scrollHeight;
+  }
+
+  const body = _sidebarThinkingChip.querySelector('.thinking-chip-body');
+  if (body) body.textContent = text;
+  container.scrollTop = container.scrollHeight;
+
+  if (done) {
+    const label = _sidebarThinkingChip.querySelector('.thinking-chip-label');
+    if (label) label.textContent = `Thought (${text.length} chars) — click to expand`;
+    _sidebarThinkingChip.classList.remove('expanded');
+    _sidebarThinkingChip = null;
+  }
+});
+
 // Token usage update (Phase 8.25) — total tokens from last LLM call
 // inputTokens = context window size (what matters for the 200K limit)
 // totalTokens = input + output
@@ -1227,6 +1262,46 @@ window.tappi.onDeepStreamChunk((data) => {
     stream.scrollTop = stream.scrollHeight;
   }, 80);
 });
+
+// Deep mode reasoning / thinking chips (per-subtask)
+let _deepThinkingChipsSidebar = {};
+if (window.tappi.onDeepReasoningChunk) {
+  window.tappi.onDeepReasoningChunk(({ index, text, done }) => {
+    if (index == null) return;
+    const stream = document.getElementById('deep-stream-' + index);
+    if (!stream) return;
+
+    if (!_deepThinkingChipsSidebar[index]) {
+      const chip = document.createElement('div');
+      chip.className = 'agent-thinking-chip';
+      chip.innerHTML = `
+        <div class="thinking-chip-header">
+          <span class="thinking-chip-icon">🧠</span>
+          <span class="thinking-chip-label">Thinking…</span>
+          <span class="thinking-chip-toggle">▾</span>
+        </div>
+        <div class="thinking-chip-body"></div>`;
+      const header = chip.querySelector('.thinking-chip-header');
+      if (header) header.addEventListener('click', () => chip.classList.toggle('expanded'));
+      stream.classList.add('visible');
+      stream.insertBefore(chip, stream.firstChild);
+      chip.classList.add('expanded');
+      _deepThinkingChipsSidebar[index] = chip;
+    }
+
+    const chip = _deepThinkingChipsSidebar[index];
+    const body = chip.querySelector('.thinking-chip-body');
+    if (body) body.textContent = text;
+    stream.scrollTop = stream.scrollHeight;
+
+    if (done) {
+      const label = chip.querySelector('.thinking-chip-label');
+      if (label) label.textContent = `Thought (${text.length} chars) — click to expand`;
+      chip.classList.remove('expanded');
+      _deepThinkingChipsSidebar[index] = null;
+    }
+  });
+}
 
 // Tool results as compact chips (Claude.ai-inspired)
 window.tappi.onDeepToolResult((data) => {
