@@ -14,7 +14,7 @@ import { createTools, TOOL_USAGE_GUIDE } from './tool-registry';
 import * as browserTools from './browser-tools';
 import * as httpTools from './http-tools';
 import * as toolManagerMod from './tool-manager';
-import { loadProfile } from './user-profile';
+import { loadProfile, loadUserProfileTxt } from './user-profile';
 import type { BrowserContext } from './browser-tools';
 
 // Global event emitter for API server to subscribe to agent output
@@ -96,16 +96,22 @@ function assembleContext(browserCtx: BrowserContext, llmConfig?: LLMConfig): str
   const toolsContext = toolManagerMod.getToolsContext();
   if (toolsContext) parts.push('', toolsContext);
 
-  // User profile injection (~200 tokens) — only when browsing data access is enabled
+  // ─── User Profile (Phase 9.096c: two-layer system) ───
   try {
+    // Layer 1: User-written profile text (always injected if present)
+    const userProfileTxt = loadUserProfileTxt();
+    if (userProfileTxt) {
+      parts.push('', `[User Profile]\n${userProfileTxt}`);
+    }
+
+    // Layer 2: Auto-enrichment from browsing data (only when toggled on)
     const config = (browserCtx as any).config as { privacy?: { agentBrowsingDataAccess?: boolean } } | undefined;
     const accessEnabled = config?.privacy?.agentBrowsingDataAccess === true;
     if (accessEnabled) {
-      const profile = loadProfile();
-      if (profile) {
-        // Omit updated_at from the injected JSON to save tokens
-        const { updated_at, ...compactProfile } = profile;
-        parts.push('', `[User Profile: ${JSON.stringify(compactProfile)}]`);
+      const autoProfile = loadProfile();
+      if (autoProfile) {
+        const { updated_at, ...compactProfile } = autoProfile;
+        parts.push(`[Browsing Insights: ${JSON.stringify(compactProfile)}]`);
       }
     }
   } catch (e) {
@@ -251,6 +257,13 @@ Jobs only run while the browser is open.
 
 ## File Downloads
 When you create a document the user requested (report, analysis, export, spreadsheet), use \`present_download\` to offer it as a downloadable file in the chat. This gives the user one-click access to save in their preferred format (MD, HTML, PDF, TXT). Call it right after writing the file — don't make users ask.
+
+## User Profile
+The user has a personal profile that persists across sessions. It appears in your context as [User Profile].
+When they say "remember that...", "I prefer...", or "add to my profile that...", use \`update_user_profile\` to save it.
+- Read the profile first (action: "read") before updating to avoid duplicates or contradictions.
+- Use "append" for new facts, "update" for restructuring or rewriting.
+- Keep it concise — max 750 words.
 `;
 
 interface AgentRunOptions {

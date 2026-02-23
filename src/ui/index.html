@@ -126,6 +126,7 @@
       <div id="settings-tabs">
         <button class="settings-tab active" data-tab="general">General</button>
         <button class="settings-tab" data-tab="profiles">Profiles</button>
+        <button class="settings-tab" data-tab="my-profile">My Profile</button>
         <button class="settings-tab" data-tab="tools">Tools</button>
         <button class="settings-tab" data-tab="api-services">API Services</button>
         <button class="settings-tab" data-tab="cron-jobs">Cron Jobs</button>
@@ -391,6 +392,34 @@
             <button id="profile-export-btn" class="secondary-btn">📤 Export Profile</button>
           </div>
           <div id="profile-export-status" class="settings-hint" style="margin-top:6px;"></div>
+        </div>
+      </div>
+
+      <!-- My Profile tab (Phase 9.096c) -->
+      <div id="settings-my-profile" class="settings-tab-content" data-tab="my-profile">
+        <div class="settings-section">
+          <h3>Your Profile</h3>
+          <p class="settings-hint">Tell the AI about yourself. This is included in every conversation so the agent knows your preferences, interests, and context.</p>
+          <textarea id="user-profile-textarea" rows="12" placeholder="Tell the AI about yourself — interests, preferences, work context, communication style...&#10;&#10;Example:&#10;I'm a software engineer. I prefer concise, direct answers.&#10;Dark themes always. Tab width: 2 spaces.&#10;Interested in AI, game dev (UE5), and dark fantasy fiction."></textarea>
+          <div class="profile-textarea-footer">
+            <span id="user-profile-word-count" class="profile-word-count">0 / 750 words</span>
+            <button id="user-profile-save-btn" class="primary-btn" style="width:auto;padding:6px 20px;font-size:12px;">Save</button>
+          </div>
+        </div>
+
+        <div class="settings-section" style="margin-top:4px;">
+          <h3>Auto-Enrichment</h3>
+          <p class="settings-hint">Add insights from your browsing activity to the agent's context. Your written text above is never modified by auto-enrichment.</p>
+          <div class="settings-row" style="align-items:center;">
+            <label style="flex:1;"><input type="checkbox" id="enrich-history-checkbox"> Allow agent to use browsing history</label>
+          </div>
+          <div class="settings-row" style="align-items:center;">
+            <label style="flex:1;"><input type="checkbox" id="enrich-bookmarks-checkbox"> Allow agent to use bookmarks</label>
+          </div>
+          <div class="profile-enrichment-status">
+            <span id="enrichment-last-updated" class="settings-hint">Last enriched: never</span>
+            <button id="enrichment-refresh-btn" class="ghost-btn" style="font-size:11px;padding:4px 10px;">🔄 Refresh Now</button>
+          </div>
         </div>
       </div>
 

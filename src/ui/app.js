@@ -1723,6 +1723,7 @@ function switchSettingsTab(tabName) {
   if (tabName === 'tools') loadToolsTab();
   if (tabName === 'cron-jobs') loadCronJobs();
   if (tabName === 'profiles') { if (typeof loadProfilesTab === 'function') loadProfilesTab(); }
+  if (tabName === 'my-profile') loadMyProfileTab();
 }
 
 // Tab switching
@@ -2893,6 +2894,136 @@ if (profileIndicatorBtn) {
     e.stopPropagation();
     openProfilePopup();
   });
+}
+
+// ── Settings: My Profile tab (Phase 9.096c) ──
+
+let _myProfileLoaded = false;
+
+async function loadMyProfileTab() {
+  const textarea = document.getElementById('user-profile-textarea');
+  const wordCountEl = document.getElementById('user-profile-word-count');
+  const saveBtn = document.getElementById('user-profile-save-btn');
+  const enrichHistoryChk = document.getElementById('enrich-history-checkbox');
+  const enrichBookmarksChk = document.getElementById('enrich-bookmarks-checkbox');
+  const enrichLastUpdated = document.getElementById('enrichment-last-updated');
+  const refreshBtn = document.getElementById('enrichment-refresh-btn');
+
+  if (!textarea) return;
+
+  // Load profile text
+  try {
+    const text = await window.tappi.loadUserProfile();
+    textarea.value = text || '';
+    updateProfileWordCount();
+  } catch (e) {
+    console.error('[my-profile] Failed to load:', e);
+  }
+
+  // Load enrichment status
+  try {
+    const status = await window.tappi.getEnrichmentStatus();
+    if (enrichHistoryChk) enrichHistoryChk.checked = status.enrichHistory;
+    if (enrichBookmarksChk) enrichBookmarksChk.checked = status.enrichBookmarks;
+    if (enrichLastUpdated) {
+      enrichLastUpdated.textContent = status.lastEnriched
+        ? 'Last enriched: ' + new Date(status.lastEnriched).toLocaleString()
+        : 'Last enriched: never';
+    }
+  } catch (e) {
+    console.error('[my-profile] Failed to load enrichment status:', e);
+  }
+
+  // Wire up events (only once)
+  if (_myProfileLoaded) return;
+  _myProfileLoaded = true;
+
+  // Word count on input
+  textarea.addEventListener('input', () => {
+    updateProfileWordCount();
+  });
+
+  // Save button
+  saveBtn.addEventListener('click', async () => {
+    const text = textarea.value;
+    try {
+      const result = await window.tappi.saveUserProfile(text);
+      if (result.success) {
+        saveBtn.textContent = '✓ Saved';
+        setTimeout(() => { saveBtn.textContent = 'Save'; }, 1500);
+      } else {
+        saveBtn.textContent = '✗ ' + (result.error || 'Failed');
+        setTimeout(() => { saveBtn.textContent = 'Save'; }, 2000);
+      }
+    } catch (e) {
+      console.error('[my-profile] Save failed:', e);
+    }
+  });
+
+  // Enrichment checkboxes
+  if (enrichHistoryChk) {
+    enrichHistoryChk.addEventListener('change', async () => {
+      try {
+        await window.tappi.saveConfig({ privacy: { profileEnrichHistory: enrichHistoryChk.checked } });
+      } catch (e) { console.error('[my-profile] Failed to save enrichment pref:', e); }
+    });
+  }
+  if (enrichBookmarksChk) {
+    enrichBookmarksChk.addEventListener('change', async () => {
+      try {
+        await window.tappi.saveConfig({ privacy: { profileEnrichBookmarks: enrichBookmarksChk.checked } });
+      } catch (e) { console.error('[my-profile] Failed to save enrichment pref:', e); }
+    });
+  }
+
+  // Refresh button
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', async () => {
+      refreshBtn.textContent = '⏳ Refreshing...';
+      refreshBtn.disabled = true;
+      try {
+        const result = await window.tappi.refreshEnrichment();
+        if (result.success) {
+          enrichLastUpdated.textContent = result.lastEnriched
+            ? 'Last enriched: ' + new Date(result.lastEnriched).toLocaleString()
+            : 'Last enriched: just now';
+          refreshBtn.textContent = '✓ Done';
+        } else {
+          refreshBtn.textContent = '✗ ' + (result.error || 'Failed');
+        }
+      } catch (e) {
+        refreshBtn.textContent = '✗ Error';
+      }
+      setTimeout(() => {
+        refreshBtn.textContent = '🔄 Refresh Now';
+        refreshBtn.disabled = false;
+      }, 2000);
+    });
+  }
+
+  // Listen for agent-driven profile updates
+  window.tappi.onUserProfileUpdated((text) => {
+    if (textarea && document.querySelector('.settings-tab[data-tab="my-profile"]')?.classList.contains('active')) {
+      textarea.value = text || '';
+      updateProfileWordCount();
+    }
+  });
+}
+
+function updateProfileWordCount() {
+  const textarea = document.getElementById('user-profile-textarea');
+  const wordCountEl = document.getElementById('user-profile-word-count');
+  if (!textarea || !wordCountEl) return;
+
+  const text = textarea.value.trim();
+  const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
+  wordCountEl.textContent = `${words} / 750 words`;
+  wordCountEl.classList.remove('warning', 'limit');
+  if (words >= 750) {
+    wordCountEl.classList.add('limit');
+  } else if (words >= 650) {
+    wordCountEl.classList.add('warning');
+  }
 }
 
 // ── Settings: Profiles tab ──

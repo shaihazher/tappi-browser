@@ -305,6 +305,15 @@ contextBridge.exposeInMainWorld('tappi', {
     ipcRenderer.on('capture:recording-update', (_e, status) => callback(status));
   },
 
+  // ─── User Profile (Phase 9.096c) ───
+  loadUserProfile: () => ipcRenderer.invoke('user-profile:load'),
+  saveUserProfile: (text: string) => ipcRenderer.invoke('user-profile:save', text),
+  getEnrichmentStatus: () => ipcRenderer.invoke('user-profile:enrichment-status'),
+  refreshEnrichment: () => ipcRenderer.invoke('user-profile:refresh-enrichment'),
+  onUserProfileUpdated: (callback: (text: string) => void) => {
+    ipcRenderer.on('user-profile:updated', (_e, text) => callback(text));
+  },
+
   // ─── File Downloads (Phase 9.07 Track 5) ───
   onPresentDownload: (callback: (data: { path: string; name: string; size: number; formats: string[]; description?: string }) => void) => {
     ipcRenderer.on('agent:present-download', (_e, data) => callback(data));

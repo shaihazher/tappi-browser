@@ -37,7 +37,7 @@ import { setProjectUpdateCallback } from './tool-registry';
 import { cleanupAll as cleanupShell } from './shell-tools';
 import { cleanupAllSubAgents } from './sub-agent';
 import { cleanupAllTeams, getActiveTeam, getTeamStatusUI, setTeamUpdateCallback } from './team-manager';
-import { scheduleProfileUpdate, deleteProfile } from './user-profile';
+import { scheduleProfileUpdate, deleteProfile, loadUserProfileTxt, saveUserProfileTxt, loadProfile, generateProfile } from './user-profile';
 import { purgeSession } from './output-buffer';
 import { initCronManager, updateCronContext, addJob as cronAddJob, listJobs as cronListJobs, updateJob as cronUpdateJob, deleteJob as cronDeleteJob, runJobNow as cronRunJobNow, getJobsList, getActiveJobCount, cleanupCron } from './cron-manager';
 import {
@@ -117,6 +117,8 @@ interface TappiConfig {
   developerMode: boolean;
   privacy?: {
     agentBrowsingDataAccess?: boolean;
+    profileEnrichHistory?: boolean;
+    profileEnrichBookmarks?: boolean;
   };
 }
 
@@ -125,7 +127,7 @@ const DEFAULT_CONFIG: TappiConfig = {
   searchEngine: 'google',
   features: { adBlocker: false, darkMode: false },
   developerMode: false,
-  privacy: { agentBrowsingDataAccess: false },
+  privacy: { agentBrowsingDataAccess: false, profileEnrichHistory: true, profileEnrichBookmarks: true },
 };
 
 function loadConfig(): TappiConfig {
@@ -549,6 +551,9 @@ function createWindow() {
         location: currentConfig.llm.location,
         endpoint: currentConfig.llm.endpoint,
         baseUrl: currentConfig.llm.baseUrl,
+      }, {
+        history: currentConfig.privacy?.profileEnrichHistory !== false,
+        bookmarks: currentConfig.privacy?.profileEnrichBookmarks !== false,
       });
     }
   }
@@ -1171,6 +1176,9 @@ function createWindow() {
             location: currentConfig.llm.location,
             endpoint: currentConfig.llm.endpoint,
             baseUrl: currentConfig.llm.baseUrl,
+          }, {
+            history: currentConfig.privacy?.profileEnrichHistory !== false,
+            bookmarks: currentConfig.privacy?.profileEnrichBookmarks !== false,
           });
         }
       }
@@ -1778,6 +1786,55 @@ function createWindow() {
   ipcMain.handle('permission:set', (_e, domain: string, perm: string, allowed: boolean) => {
     setPermission(domain, perm, allowed);
     return { success: true };
+  });
+
+  // ─── User Profile (Phase 9.096c) ───
+  ipcMain.handle('user-profile:load', () => {
+    return loadUserProfileTxt();
+  });
+
+  ipcMain.handle('user-profile:save', (_e, text: string) => {
+    const result = saveUserProfileTxt(text);
+    return result;
+  });
+
+  ipcMain.handle('user-profile:enrichment-status', () => {
+    const autoProfile = loadProfile();
+    return {
+      lastEnriched: autoProfile?.updated_at || null,
+      enrichHistory: currentConfig.privacy?.profileEnrichHistory !== false,
+      enrichBookmarks: currentConfig.privacy?.profileEnrichBookmarks !== false,
+    };
+  });
+
+  ipcMain.handle('user-profile:refresh-enrichment', async () => {
+    if (!currentConfig.privacy?.agentBrowsingDataAccess) {
+      return { error: 'Browsing data access is disabled.' };
+    }
+    const apiKey = decryptApiKey(currentConfig.llm.apiKey);
+    if (!apiKey) return { error: 'No API key configured.' };
+    const secApiKey = currentConfig.llm.secondaryApiKey
+      ? decryptApiKey(currentConfig.llm.secondaryApiKey)
+      : apiKey;
+    try {
+      const result = await generateProfile(getDb(), {
+        provider: currentConfig.llm.secondaryModel ? (currentConfig.llm.secondaryProvider || currentConfig.llm.provider) : currentConfig.llm.provider,
+        model: currentConfig.llm.secondaryModel || currentConfig.llm.model,
+        apiKey: secApiKey,
+        thinking: false,
+        region: currentConfig.llm.region,
+        projectId: currentConfig.llm.projectId,
+        location: currentConfig.llm.location,
+        endpoint: currentConfig.llm.endpoint,
+        baseUrl: currentConfig.llm.baseUrl,
+      }, {
+        history: currentConfig.privacy?.profileEnrichHistory !== false,
+        bookmarks: currentConfig.privacy?.profileEnrichBookmarks !== false,
+      });
+      return { success: !!result, lastEnriched: result?.updated_at || null };
+    } catch (e: any) {
+      return { error: e?.message || 'Generation failed' };
+    }
   });
 
   // ─── Deep Mode Report Save ───

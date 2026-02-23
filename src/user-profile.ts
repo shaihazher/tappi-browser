@@ -1,11 +1,14 @@
 /**
- * user-profile.ts — Agent-generated user profile for passive context injection.
+ * user-profile.ts — Two-layer user profile system.
  *
- * Phase 8.4.2: When agentBrowsingDataAccess is enabled, generate a compact
- * ≤200-token user profile JSON from browsing history + bookmarks, and inject
- * it into the agent system prompt for passive context.
+ * Layer 1 (Phase 9.096c): User-written plain text (~750 words max).
+ *   Storage: ~/.tappi-browser/user-profile.txt (profile-aware)
+ *   Editable in Settings "My Profile" tab or via agent update_user_profile tool.
+ *   Always injected into agent system prompt.
  *
- * Storage: ~/.tappi-browser/user_profile.json
+ * Layer 2 (Phase 8.4.2): Auto-generated JSON from browsing data (~200 tokens).
+ *   Storage: ~/.tappi-browser/user_profile.json (profile-aware)
+ *   Only injected when agentBrowsingDataAccess is enabled.
  */
 
 import { generateText } from 'ai';
@@ -27,6 +30,56 @@ function getUserProfilePath(): string {
 
 // PROFILE_PATH kept for backward compat in deleteProfile()
 const PROFILE_PATH = path.join(CONFIG_DIR, 'user_profile.json');
+
+// ─── Layer 1: User-written profile text (Phase 9.096c) ───
+
+const MAX_PROFILE_WORDS = 750;
+
+/**
+ * Get the path for user-written profile text (profile-aware).
+ */
+export function getUserProfileTxtPath(): string {
+  try {
+    const { profileManager } = require('./profile-manager');
+    const jsonPath = profileManager.getUserProfilePath();
+    return path.join(path.dirname(jsonPath), 'user-profile.txt');
+  } catch {
+    return path.join(CONFIG_DIR, 'user-profile.txt');
+  }
+}
+
+/**
+ * Load user-written profile text. Returns empty string if not found.
+ */
+export function loadUserProfileTxt(): string {
+  try {
+    const p = getUserProfileTxtPath();
+    if (!fs.existsSync(p)) return '';
+    return fs.readFileSync(p, 'utf-8').trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Save user-written profile text. Returns word count.
+ */
+export function saveUserProfileTxt(text: string): { success: boolean; wordCount: number; error?: string } {
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  if (wordCount > MAX_PROFILE_WORDS) {
+    return { success: false, wordCount, error: `Profile exceeds ${MAX_PROFILE_WORDS} word limit (${wordCount} words).` };
+  }
+  try {
+    const p = getUserProfileTxtPath();
+    const dir = path.dirname(p);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(p, text);
+    console.log(`[user-profile] Saved user-profile.txt (${wordCount} words)`);
+    return { success: true, wordCount };
+  } catch (e: any) {
+    return { success: false, wordCount, error: e?.message || 'Failed to save' };
+  }
+}
 
 // Rough token estimate: 1 token ≈ 4 chars
 const MAX_TOKENS = 200;
@@ -92,34 +145,44 @@ function estimateTokens(text: string): number {
 
 /**
  * Query browsing data and format it for the LLM.
+ * Phase 9.096c: Supports granular toggles for history and bookmarks.
  */
-function getBrowsingDataSummary(db: Database.Database): string | null {
+function getBrowsingDataSummary(db: Database.Database, options?: { history?: boolean; bookmarks?: boolean }): string | null {
   try {
+    const includeHistory = options?.history !== false;
+    const includeBookmarks = options?.bookmarks !== false;
     const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
 
-    // Top 100 by frequency (domain visit count)
-    const topByFrequency = db.prepare(`
-      SELECT domain, COUNT(*) as cnt, MAX(title) as title
-      FROM history
-      WHERE visit_time > ? AND domain != ''
-      GROUP BY domain
-      ORDER BY cnt DESC
-      LIMIT 100
-    `).all(sevenDaysAgo) as Array<{ domain: string; cnt: number; title: string }>;
+    let topByFrequency: Array<{ domain: string; cnt: number; title: string }> = [];
+    let recentVisits: Array<{ url: string; title: string; domain: string; visit_time: number }> = [];
+    let bookmarks: Array<{ url: string; title: string; folder: string }> = [];
 
-    // Top 50 most recent
-    const recentVisits = db.prepare(`
-      SELECT url, title, domain, visit_time
-      FROM history
-      WHERE visit_time > ? AND domain != ''
-      ORDER BY visit_time DESC
-      LIMIT 50
-    `).all(sevenDaysAgo) as Array<{ url: string; title: string; domain: string; visit_time: number }>;
+    if (includeHistory) {
+      // Top 100 by frequency (domain visit count)
+      topByFrequency = db.prepare(`
+        SELECT domain, COUNT(*) as cnt, MAX(title) as title
+        FROM history
+        WHERE visit_time > ? AND domain != ''
+        GROUP BY domain
+        ORDER BY cnt DESC
+        LIMIT 100
+      `).all(sevenDaysAgo) as typeof topByFrequency;
 
-    // All bookmarks
-    const bookmarks = db.prepare(`
-      SELECT url, title, folder FROM bookmarks ORDER BY created_at DESC LIMIT 100
-    `).all() as Array<{ url: string; title: string; folder: string }>;
+      // Top 50 most recent
+      recentVisits = db.prepare(`
+        SELECT url, title, domain, visit_time
+        FROM history
+        WHERE visit_time > ? AND domain != ''
+        ORDER BY visit_time DESC
+        LIMIT 50
+      `).all(sevenDaysAgo) as typeof recentVisits;
+    }
+
+    if (includeBookmarks) {
+      bookmarks = db.prepare(`
+        SELECT url, title, folder FROM bookmarks ORDER BY created_at DESC LIMIT 100
+      `).all() as typeof bookmarks;
+    }
 
     // If no data at all, skip generation
     if (topByFrequency.length === 0 && recentVisits.length === 0 && bookmarks.length === 0) {
@@ -163,10 +226,10 @@ function getBrowsingDataSummary(db: Database.Database): string | null {
  * Generate the user profile by sending browsing data to the LLM.
  * Saves the result to ~/.tappi-browser/user_profile.json.
  */
-export async function generateProfile(db: Database.Database, llmConfig: LLMConfig): Promise<UserProfile | null> {
+export async function generateProfile(db: Database.Database, llmConfig: LLMConfig, enrichOptions?: { history?: boolean; bookmarks?: boolean }): Promise<UserProfile | null> {
   console.log('[user-profile] Starting profile generation...');
 
-  const browsingData = getBrowsingDataSummary(db);
+  const browsingData = getBrowsingDataSummary(db, enrichOptions);
   if (!browsingData) {
     console.log('[user-profile] No browsing data available, skipping generation');
     return null;
@@ -263,6 +326,7 @@ ${browsingData}`;
 export function scheduleProfileUpdate(
   db: Database.Database,
   llmConfig: LLMConfig,
+  enrichOptions?: { history?: boolean; bookmarks?: boolean },
 ): void {
   // Defer to not block browser startup
   setTimeout(async () => {
@@ -272,7 +336,7 @@ export function scheduleProfileUpdate(
         console.log('[user-profile] Profile is fresh, skipping update');
         return;
       }
-      await generateProfile(db, llmConfig);
+      await generateProfile(db, llmConfig, enrichOptions);
     } catch (e: any) {
       console.error('[user-profile] Scheduled update failed (non-fatal):', e?.message || e);
     }

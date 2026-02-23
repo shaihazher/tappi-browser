@@ -28,6 +28,7 @@ import * as captureTools from './capture-tools';
 import { WorktreeManager, createWorktreeManager } from './worktree-manager';
 import * as projectManager from './project-manager';
 import * as codingMemory from './coding-memory';
+import { loadUserProfileTxt, saveUserProfileTxt, getUserProfileTxtPath } from './user-profile';
 
 // ─── Phase 9.09: Project update callback ─────────────────────────────────────
 // Main process sets this so agent tools can notify the UI when projects change.
@@ -902,6 +903,45 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
 
     // ═══ CODING MEMORY TOOLS (Coding Mode only — Phase coding-memory) ═══
     ...(options?.codingMode ? createCodingMemoryTools() : {}),
+
+    // ═══ USER PROFILE (Phase 9.096c — always available) ═══
+
+    update_user_profile: tool({
+      description: 'Read or update the user\'s personal profile. Use when the user says "remember that...", "I prefer...", "add to my profile...". The profile persists across sessions and is included in every conversation. Read first before updating to avoid duplicates.',
+      inputSchema: z.object({
+        action: z.enum(['read', 'update', 'append']).describe('read: return current profile text. update: replace the full profile (for restructuring). append: add new lines to the end.'),
+        text: z.string().optional().describe('For update/append: the text to write/append. Ignored for read.'),
+      }),
+      execute: async ({ action, text }: { action: 'read' | 'update' | 'append'; text?: string }) => {
+        if (action === 'read') {
+          const profile = loadUserProfileTxt();
+          if (!profile) return { profile: '', empty: true, hint: 'No profile yet. The user can write one in Settings → My Profile, or you can create one with append/update.' };
+          const wordCount = profile.split(/\s+/).filter(Boolean).length;
+          return { profile, wordCount };
+        }
+
+        if (!text) return { error: 'Missing text for ' + action + ' action.' };
+
+        if (action === 'append') {
+          const current = loadUserProfileTxt();
+          const updated = current ? current.trimEnd() + '\n' + text : text;
+          const result = saveUserProfileTxt(updated);
+          if (!result.success) return { error: result.error };
+          // Notify settings UI
+          try { browserCtx.window?.webContents.send('user-profile:updated', updated); } catch {}
+          return { success: true, wordCount: result.wordCount };
+        }
+
+        if (action === 'update') {
+          const result = saveUserProfileTxt(text);
+          if (!result.success) return { error: result.error };
+          try { browserCtx.window?.webContents.send('user-profile:updated', text); } catch {}
+          return { success: true, wordCount: result.wordCount };
+        }
+
+        return { error: 'Invalid action.' };
+      },
+    }),
 
     // ═══ DOWNLOAD TOOLS (Phase 9.07 Track 5 — always available) ═══
 
