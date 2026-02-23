@@ -570,18 +570,25 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         const resolvedPath = resolveFilePath(filePath);
         const activeTeam = teamManager.getActiveTeam();
         if (activeTeam) {
-          // Mode gate: block writes directly into a teammate's worktree
+          // Mode gate: block writes directly into a teammate's worktree (lead only)
+          // Skip this check if the caller IS the teammate whose worktree it is
+          const callerName = options?.agentName;
           for (const [, tm] of activeTeam.teammates) {
             if (tm.worktreePath && resolvedPath.startsWith(tm.worktreePath + path.sep)) {
+              // Allow if the caller is this teammate (writing to their own worktree is fine)
+              if (callerName && callerName === tm.name) break;
               return `❌ That path is inside ${tm.name}'s worktree (${tm.worktreePath}). The lead doesn't write code in teammate worktrees — assign tasks via team_run_teammate and let the teammate write their own files.`;
             }
           }
-          // Phase 9.096d: Gate — block writes into team working dir while teammates are running
-          const hasRunningTeammates = Array.from(activeTeam.teammates.values()).some(tm => tm.status === 'working');
-          if (hasRunningTeammates) {
-            const resolvedTeamDir = activeTeam.workingDir.replace(/^~/, os.homedir());
-            if (resolvedPath.startsWith(resolvedTeamDir)) {
-              return `❌ Write blocked: "${filePath}" is inside the team's working directory (${activeTeam.workingDir}). Teammates are currently writing files there. Writing from the lead while teammates are running causes merge conflicts. Wait for teammates to finish, or use team_interrupt to redirect them.`;
+          // Phase 9.096d: Gate — block writes into team working dir while teammates are running (lead only)
+          // Teammates are expected to write to their worktrees — this gate is for the lead
+          if (!callerName || callerName === '@lead') {
+            const hasRunningTeammates = Array.from(activeTeam.teammates.values()).some(tm => tm.status === 'working');
+            if (hasRunningTeammates) {
+              const resolvedTeamDir = activeTeam.workingDir.replace(/^~/, os.homedir());
+              if (resolvedPath.startsWith(resolvedTeamDir)) {
+                return `❌ Write blocked: "${filePath}" is inside the team's working directory (${activeTeam.workingDir}). Teammates are currently writing files there. Writing from the lead while teammates are running causes merge conflicts. Wait for teammates to finish, or use team_interrupt to redirect them.`;
+              }
             }
           }
           // Sequence warning: writing to a contract file directly
@@ -651,22 +658,25 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         content: z.string().describe('Content to append'),
       }),
       execute: async ({ path, content }: { path: string; content: string }) => {
-        // Phase 9.096d: Gate — block appends into team working dir while teammates are running
-        const activeTeam = teamManager.getActiveTeam();
-        if (activeTeam) {
-          const hasRunningTeammates = Array.from(activeTeam.teammates.values()).some(tm => tm.status === 'working');
-          if (hasRunningTeammates) {
-            const nodePath = require('path');
-            const os = require('os');
-            const resolvedTeamDir = activeTeam.workingDir.replace(/^~/, os.homedir());
-            let resolvedWritePath = path;
-            if (!path.startsWith('/') && !path.startsWith('~')) {
-              resolvedWritePath = nodePath.join(os.homedir(), 'tappi-workspace', path);
-            } else if (path.startsWith('~/')) {
-              resolvedWritePath = nodePath.join(os.homedir(), path.slice(2));
-            }
-            if (resolvedWritePath.startsWith(resolvedTeamDir)) {
-              return `❌ Append blocked: "${path}" is inside the team's working directory (${activeTeam.workingDir}). Teammates are currently writing files there. Writing from the lead while teammates are running causes merge conflicts. Wait for teammates to finish, or use team_interrupt to redirect them.`;
+        // Phase 9.096d: Gate — block appends into team working dir while teammates are running (lead only)
+        const callerName = options?.agentName;
+        if (!callerName || callerName === '@lead') {
+          const activeTeam = teamManager.getActiveTeam();
+          if (activeTeam) {
+            const hasRunningTeammates = Array.from(activeTeam.teammates.values()).some(tm => tm.status === 'working');
+            if (hasRunningTeammates) {
+              const nodePath = require('path');
+              const os = require('os');
+              const resolvedTeamDir = activeTeam.workingDir.replace(/^~/, os.homedir());
+              let resolvedWritePath = path;
+              if (!path.startsWith('/') && !path.startsWith('~')) {
+                resolvedWritePath = nodePath.join(os.homedir(), 'tappi-workspace', path);
+              } else if (path.startsWith('~/')) {
+                resolvedWritePath = nodePath.join(os.homedir(), path.slice(2));
+              }
+              if (resolvedWritePath.startsWith(resolvedTeamDir)) {
+                return `❌ Append blocked: "${path}" is inside the team's working directory (${activeTeam.workingDir}). Teammates are currently writing files there. Writing from the lead while teammates are running causes merge conflicts. Wait for teammates to finish, or use team_interrupt to redirect them.`;
+              }
             }
           }
         }
@@ -1177,9 +1187,10 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
         timeout: z.number().optional().describe('Timeout in milliseconds (default: 30000)'),
       }),
       execute: async ({ command, cwd, timeout }: { command: string; cwd?: string; timeout?: number }) => {
-        // Phase 9.096d: Soft warn when running file-modifying commands in team working dir
+        // Phase 9.096d: Soft warn when running file-modifying commands in team working dir (lead only)
         const activeTeam = teamManager.getActiveTeam();
-        if (activeTeam && cwd) {
+        const execCallerName = toolOptions?.agentName;
+        if (activeTeam && cwd && (!execCallerName || execCallerName === '@lead')) {
           const hasRunningTeammates = Array.from(activeTeam.teammates.values()).some(tm => tm.status === 'working');
           if (hasRunningTeammates) {
             const nodePath = require('path');
