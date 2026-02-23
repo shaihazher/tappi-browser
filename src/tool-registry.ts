@@ -1099,6 +1099,9 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
       }),
       execute: async ({ task, model }: { task: string; model?: 'primary' | 'secondary' }) => {
         if (!llmConfig) return '❌ No LLM config available for sub-agent.';
+        // Block sub-agents when a team is active — use team_run_teammate instead
+        const activeTeam = teamManager.getActiveTeamId();
+        if (activeTeam) return '❌ You have an active team ("' + activeTeam + '"). Use team_run_teammate to assign work to teammates — they have worktree isolation and contract enforcement. spawn_agent is for non-coding tasks only.';
         return subAgent.spawnSubAgent(task, browserCtx, llmConfig, sessionId, model || 'secondary');
       },
     }),

@@ -274,8 +274,8 @@ function renderConversationList(list) {
     projConvs.forEach(c => projectedConvIds.add(c.id));
   });
 
-  // ─── Coding Projects section ─────────────────────────────────────────────
-  if (projects.length > 0) {
+  // ─── Coding Projects section (always shown — even when empty, for [+ New Project]) ─
+  {
     // Section header row: ▾/▸ 🏗 Coding Projects  [+ New Project]
     const sectionHeader = document.createElement('div');
     sectionHeader.className = 'projects-section-header';
@@ -320,8 +320,14 @@ function renderConversationList(list) {
 
     convList.appendChild(sectionHeader);
 
-    // If section is not collapsed, render each project
+    // If section is not collapsed, render each project (or empty state)
     if (!projectSectionCollapsed) {
+      if (projects.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'conv-empty-indented';
+        empty.textContent = 'No projects yet. Click "+ New Project" to start.';
+        convList.appendChild(empty);
+      }
       projects.forEach(project => {
         const projConvs = projectConvMap[project.id] || [];
         const isExpanded = expandedProjects[project.id] !== false; // default expanded
@@ -424,13 +430,12 @@ function renderConversationList(list) {
     !projectedConvIds.has(c.id) && !c.project_id
   );
 
-  if (recentConvs.length > 0 || projects.length === 0) {
-    if (projects.length > 0) {
-      const recentHeader = document.createElement('div');
-      recentHeader.className = 'conv-section-header';
-      recentHeader.textContent = 'Recent';
-      convList.appendChild(recentHeader);
-    }
+  {
+    // Always show "Recent" header when Coding Projects section is visible
+    const recentHeader = document.createElement('div');
+    recentHeader.className = 'conv-section-header';
+    recentHeader.textContent = 'Recent';
+    convList.appendChild(recentHeader);
 
     if (recentConvs.length === 0) {
       const empty = document.createElement('div');

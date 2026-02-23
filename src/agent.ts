@@ -319,6 +319,8 @@ Protocol — **Contract-First Parallel Work (Phase 9.096):**
 
 **Do NOT start writing code yourself or spawning teammates before writing contracts.** Contracts are the shared truth that prevents teammates from producing incompatible code.
 
+**CRITICAL: Once you start a team flow, FINISH IT.** Do NOT abandon a team mid-flow to use \`spawn_agent\` sub-agents instead. Teams have worktree isolation, contract enforcement, and merge validation — sub-agents don't. If you created a team, use it. \`spawn_agent\` is for non-coding tasks (research, file processing) — never use it as a substitute for team orchestration.
+
 Simple single-file fixes or one-liner changes are fine to do directly without a team.
 
 ### Contract Best Practices
