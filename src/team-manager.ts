@@ -99,6 +99,7 @@ export interface Teammate {
   _model?: any;                        // frozen at first invocation for resume
   // Phase 9.096d: Pulse
   lastPulse?: string;                  // latest ~20-token activity snippet
+  _activityLog?: string[];             // plain text log of tool calls + results for interrupt resume
 }
 
 export interface TeammateRunOptions {
@@ -517,51 +518,22 @@ async function runTeammateSession(
             teamBroadcast('team:mailbox-message', { from: name, to: '@lead', text: startMail });
           }
 
-          // Phase 9.096d: Append step to conversationHistory for interrupt/resume
-          // Phase 9.096d: Append step to conversationHistory for interrupt/resume.
-          // Uses EXACT Vercel AI SDK v6 zod schemas (extracted from node_modules):
-          //   toolCallPartSchema:   { type: 'tool-call', toolCallId, toolName, input }
-          //   toolResultPartSchema: { type: 'tool-result', toolCallId, toolName, output }
-          //   assistantModelMessageSchema: { role: 'assistant', content: string | Part[] }
-          //   toolModelMessageSchema:     { role: 'tool', content: ToolResultPart[] }
+          // Phase 9.096d: Capture step as plain text log for interrupt/resume.
+          // Plain text can never fail SDK validation — no structured tool messages.
           try {
-            // Layer 1: Use SDK's own response.messages if available (guaranteed correct)
-            const stepMessages = (event as any).response?.messages;
-            if (stepMessages && Array.isArray(stepMessages) && stepMessages.length > 0) {
-              if (!teammate.conversationHistory) teammate.conversationHistory = [];
-              teammate.conversationHistory.push(...stepMessages);
-            } else {
-              // Layer 2: Manual construction matching exact SDK schemas
-              if (!teammate.conversationHistory) teammate.conversationHistory = [];
-              const assistantContent: any[] = [];
-              if (event.text) assistantContent.push({ type: 'text', text: event.text });
-              for (const tc of (event.toolCalls || [])) {
-                assistantContent.push({
-                  type: 'tool-call',
-                  toolCallId: tc.toolCallId,
-                  toolName: tc.toolName,
-                  input: tc.args,    // SDK uses 'input', not 'args'
-                });
-              }
-              if (assistantContent.length > 0) {
-                teammate.conversationHistory.push({ role: 'assistant', content: assistantContent });
-              }
-              for (const tr of toolResults) {
-                const resultStr = typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? '');
-                teammate.conversationHistory.push({
-                  role: 'tool',
-                  content: [{
-                    type: 'tool-result',
-                    toolCallId: (tr as any).toolCallId,
-                    toolName: (tr as any).toolName || 'unknown',
-                    output: resultStr,  // SDK uses 'output', not 'result'
-                  }],
-                });
-              }
+            if (!teammate._activityLog) teammate._activityLog = [];
+            for (const tr of toolResults) {
+              const toolName = (tr as any).toolName || 'unknown';
+              const args = (tr as any).args || {};
+              const desc = describeToolActivity(toolName, args);
+              const resultStr = typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? '');
+              const resultPreview = resultStr.slice(0, 200);
+              teammate._activityLog.push(`${desc} → ${resultPreview}`);
             }
-          } catch (histErr) {
-            console.error(`[team] ${name} history capture error:`, (histErr as any)?.message);
-          }
+            if (event.text) {
+              teammate._activityLog.push(`Response: ${event.text.slice(0, 200)}`);
+            }
+          } catch {}
 
           // Passive top card update — every tool step, not just when teammate explicitly reports
           notifyUpdate(teamId);
@@ -748,19 +720,23 @@ export async function interruptTeammate(teamId: string, name: string, message: s
   teammate.status = 'interrupted';
   notifyUpdate(teamId);
 
-  // Step 4: Build resume message history
-  const existingHistory = teammate.conversationHistory || [];
-  const partialText = teammate.partialResponse;
-  const resumeHistory: any[] = [...existingHistory];
-
-  // Inject the lead's redirect instruction (include partial context in the user message)
-  const partialNote = (partialText && partialText.trim())
-    ? `\n\n[Your partial response before interrupt: "${partialText.slice(-200)}..."]`
+  // Step 4: Build resume as plain text — can never fail SDK validation
+  const activityLog = teammate._activityLog || [];
+  const logText = activityLog.length > 0
+    ? `\n\nWhat you did before being interrupted (${activityLog.length} steps):\n${activityLog.map((l, i) => `${i + 1}. ${l}`).join('\n')}`
     : '';
-  resumeHistory.push({
+  const filesText = teammate.filesWritten && teammate.filesWritten.length > 0
+    ? `\n\nFiles you wrote: ${teammate.filesWritten.join(', ')}`
+    : '';
+  const partialText = teammate.partialResponse;
+  const partialNote = (partialText && partialText.trim())
+    ? `\n\nYour last thought before interrupt: "${partialText.slice(-200)}"`
+    : '';
+
+  const resumeHistory: any[] = [{
     role: 'user',
-    content: `[INTERRUPT from @lead]: ${message}${partialNote}\n\nContinue from where you left off with the new instructions above. Your previous tool calls and results are preserved in the conversation above.`,
-  });
+    content: `[INTERRUPT from @lead]: ${message}${logText}${filesText}${partialNote}\n\nContinue with the redirect instructions above. Check what files exist in your worktree and proceed from where you left off.`,
+  }];
 
   // Step 5: Notify lead + broadcast
   const interruptMsg = `⚡ ${name} interrupted and redirected: "${message.slice(0, 80)}"`;
@@ -857,33 +833,15 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
       textSincePulse = '';
     }, 30_000);
 
-    // Layer 3 failsafe: if full history fails validation, build simplified resume
-    function buildSimplifiedResume(): any[] {
-      // Can't fail — just two plain text messages
-      const toolSummary = teammate.toolsUsed.length > 0
-        ? `Tools used so far: ${teammate.toolsUsed.join(', ')}`
-        : 'No tools used yet';
-      const filesSummary = teammate.filesWritten && teammate.filesWritten.length > 0
-        ? `Files written: ${teammate.filesWritten.join(', ')}`
-        : '';
-      const lastRedirect = resumeHistory[resumeHistory.length - 1];
-      const redirectText = typeof lastRedirect?.content === 'string' ? lastRedirect.content : '';
-      return [{
-        role: 'user' as const,
-        content: `You were previously working on a task and were interrupted and redirected.\n\n${toolSummary}\n${filesSummary}\n\n${redirectText}\n\nContinue with the redirect instructions. Check what files exist in your worktree and proceed.`,
-      }];
-    }
-
-    let result;
-    try {
-      result = await streamText({
-        model,
-        system: systemPrompt,
-        messages: resumeHistory,
-        tools,
-        stopWhen: stepCountIs(100),
-        abortSignal: abortController.signal,
-        onStepFinish: async (event: any) => {
+    // Resume messages are always plain text (user role) — can never fail SDK validation
+    const result = await streamText({
+      model,
+      system: systemPrompt,
+      messages: resumeHistory,
+      tools,
+      stopWhen: stepCountIs(100),
+      abortSignal: abortController.signal,
+      onStepFinish: async (event: any) => {
         try {
           const toolResults = event.toolResults || [];
           for (const tr of toolResults) {
@@ -902,71 +860,25 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
             }
           }
 
-          // Append step to conversation history — same schema as runTeammateSession
+          // Capture step as plain text activity log (same as runTeammateSession)
           try {
-            const stepMessages = (event as any).response?.messages;
-            if (stepMessages && Array.isArray(stepMessages) && stepMessages.length > 0) {
-              if (!teammate.conversationHistory) teammate.conversationHistory = [];
-              teammate.conversationHistory.push(...stepMessages);
-            } else {
-              if (!teammate.conversationHistory) teammate.conversationHistory = [];
-              const assistantContent: any[] = [];
-              if (event.text) assistantContent.push({ type: 'text', text: event.text });
-              for (const tc of (event.toolCalls || [])) {
-                assistantContent.push({
-                  type: 'tool-call',
-                  toolCallId: tc.toolCallId,
-                  toolName: tc.toolName,
-                  input: tc.args,
-                });
-              }
-              if (assistantContent.length > 0) {
-                teammate.conversationHistory.push({ role: 'assistant', content: assistantContent });
-              }
-              for (const tr of toolResults) {
-                const resultStr = typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? '');
-                teammate.conversationHistory.push({
-                  role: 'tool',
-                  content: [{
-                    type: 'tool-result',
-                    toolCallId: (tr as any).toolCallId,
-                    toolName: (tr as any).toolName || 'unknown',
-                    output: resultStr,
-                  }],
-                });
-              }
+            if (!teammate._activityLog) teammate._activityLog = [];
+            for (const tr of toolResults) {
+              const toolName = (tr as any).toolName || 'unknown';
+              const args = (tr as any).args || {};
+              const desc = describeToolActivity(toolName, args);
+              const resultStr = typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? '');
+              teammate._activityLog.push(`${desc} → ${resultStr.slice(0, 200)}`);
             }
-          } catch (histErr) {
-            console.error(`[team] resume history capture error:`, (histErr as any)?.message);
-          }
+            if (event.text) {
+              teammate._activityLog.push(`Response: ${event.text.slice(0, 200)}`);
+            }
+          } catch {}
 
           notifyUpdate(teamId);
         } catch {}
       },
     });
-    } catch (streamInitErr: any) {
-      // Layer 3 failsafe: If streamText rejects (TypeValidationError on messages), retry with simplified resume
-      const errName = streamInitErr?.name || streamInitErr?.constructor?.name || '';
-      const isTypeError = errName.includes('TypeValidation') || errName.includes('InvalidPrompt')
-        || String(streamInitErr?.message || '').includes('TypeValidation');
-      if (isTypeError) {
-        console.warn(`[team] ${name} resume TypeValidationError — falling back to simplified resume`);
-        sendMessage(teamId, name, '@lead', '⚠️ Full history resume failed. Retrying with simplified context.');
-        const simplifiedMessages = buildSimplifiedResume();
-        teammate.conversationHistory = simplifiedMessages;
-        result = await streamText({
-          model,
-          system: systemPrompt,
-          messages: simplifiedMessages,
-          tools,
-          stopWhen: stepCountIs(100),
-          abortSignal: abortController.signal,
-        });
-      } else {
-        throw streamInitErr;
-      }
-    }
-
     let fullResponse = '';
     let chunksReceived = 0;
     try {
