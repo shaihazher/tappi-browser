@@ -257,6 +257,12 @@ export async function runTeammate(opts: TeammateRunOptions): Promise<string> {
   const team = activeTeams.get(teamId);
   if (!team) return `❌ Team "${teamId}" not found.`;
 
+  // Phase 9.096: Hard gate — contracts MUST be written before spawning any teammate.
+  // LLMs skip "MANDATORY" prompt instructions. Code gates are deterministic.
+  if (team.contracts.length === 0) {
+    return `❌ No contracts written. Call team_write_contracts first — define shared interfaces/types that teammates must reference. This prevents incompatible code.\n\nExample: team_write_contracts({ path: "contracts/types.ts", content: "export interface ...", description: "Shared data types" })`;
+  }
+
   // Store ariaWebContents on the team session for future reference
   if (ariaWebContents && !team.ariaWebContents) {
     team.ariaWebContents = ariaWebContents;
