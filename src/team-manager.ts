@@ -110,6 +110,70 @@ export interface TeammateRunOptions {
   ariaWebContents?: WebContents | null;
 }
 
+// ─── Pulse Helpers ───
+
+/** Build a human-readable activity description from a tool call */
+function describeToolActivity(toolName: string, args: Record<string, any>): string {
+  const p = args.path || args.file_path || '';
+  const basename = p ? p.split('/').pop() || p : '';
+  switch (toolName) {
+    case 'file_write':   return basename ? `writing ${basename}` : 'writing file';
+    case 'file_read':    return basename ? `reading ${basename}` : 'reading file';
+    case 'file_read_range': return basename ? `reading ${basename}` : 'reading file section';
+    case 'file_append':  return basename ? `appending to ${basename}` : 'appending to file';
+    case 'file_delete':  return basename ? `deleting ${basename}` : 'deleting file';
+    case 'file_list':    return p ? `listing ${p}` : 'listing files';
+    case 'file_grep':    return `searching ${basename || 'file'} for "${(args.grep || args.pattern || '').slice(0, 30)}"`;
+    case 'file_copy':    return `copying ${basename}`;
+    case 'file_move':    return `moving ${basename}`;
+    case 'exec': {
+      const cmd = (args.command || '').slice(0, 60);
+      return cmd ? `running: ${cmd}` : 'running command';
+    }
+    case 'exec_bg':      return `background: ${(args.command || '').slice(0, 50)}`;
+    case 'exec_grep':    return `searching output for "${(args.pattern || '').slice(0, 30)}"`;
+    case 'navigate':     return `navigating to ${(args.url || '').slice(0, 50)}`;
+    case 'search':       return `searching: ${(args.query || '').slice(0, 40)}`;
+    case 'elements':     return args.grep ? `finding elements: "${args.grep}"` : 'indexing page elements';
+    case 'click':        return `clicking element [${args.index ?? '?'}]`;
+    case 'type':         return `typing into [${args.index ?? '?'}]: "${(args.text || '').slice(0, 30)}"`;
+    case 'paste':        return `pasting into [${args.index ?? '?'}]`;
+    case 'text':         return args.grep ? `reading page text: "${args.grep}"` : 'reading page text';
+    case 'screenshot':   return 'taking screenshot';
+    case 'eval_js':      return `eval: ${(args.js || '').slice(0, 50)}`;
+    case 'scroll':       return `scrolling ${args.direction || 'down'}`;
+    case 'keys':         return `pressing ${args.sequence || 'keys'}`;
+    case 'http_request':  return `${args.method || 'GET'} ${(args.url || '').slice(0, 50)}`;
+    case 'team_task_update': return `updating task ${args.task_id || ''}`;
+    case 'team_message': return `messaging ${args.to || ''}`;
+    default:             return toolName;
+  }
+}
+
+/** Extract a meaningful phrase from LLM text output for pulse display */
+function extractMeaningfulPhrase(text: string): string {
+  // Look for sentences starting with action verbs in the last ~200 chars
+  const fragment = text.slice(-300);
+  // Try to find "I'll/I will/Now I/Let me/Going to/Creating/Building/Writing/Implementing..."
+  const patterns = [
+    /(?:I'll|I will|Now I'll|Let me|Going to)\s+(.{10,70}?)(?:\.|$)/i,
+    /(?:Creating|Building|Writing|Implementing|Adding|Setting up|Configuring|Reading|Checking)\s+(.{5,60}?)(?:\.|,|$)/i,
+    /(?:Now|Next)[,:]\s+(.{10,60}?)(?:\.|$)/i,
+  ];
+  for (const pat of patterns) {
+    const m = fragment.match(pat);
+    if (m) {
+      const phrase = (m[0] || '').replace(/\n/g, ' ').trim().slice(0, 80);
+      if (phrase.length > 15) return phrase;
+    }
+  }
+  // Fallback: last complete sentence fragment
+  const sentences = fragment.split(/[.!]\s+/);
+  const last = (sentences[sentences.length - 1] || '').replace(/\n/g, ' ').trim();
+  if (last.length > 15 && last.length < 80) return last;
+  return '';
+}
+
 // ─── Active Teams ───
 
 const activeTeams = new Map<string, TeamSession>();
@@ -508,7 +572,11 @@ async function runTeammateSession(
           teammate.partialResponse = fullResponse;
           if (textDelta) {
             textSincePulse += textDelta;
-            if (textDelta.trim()) currentActivity = textDelta.slice(0, 80);
+            // Extract meaningful activity from accumulated text (not raw fragments)
+            if (fullResponse.length > 20) {
+              const meaningful = extractMeaningfulPhrase(fullResponse.slice(-200));
+              if (meaningful) currentActivity = meaningful;
+            }
             teamBroadcast('team:teammate-chunk', {
               name,
               text: textDelta,
@@ -516,17 +584,19 @@ async function runTeammateSession(
             });
           }
         } else if (chunk.type === 'tool-call') {
-          // Phase 9.096d: Track tool call activity for pulse
+          // Phase 9.096d: Track tool call activity for pulse — human-readable descriptions
           const toolName = (chunk as any).toolName || 'tool';
           const args = (chunk as any).args || {};
-          const argsStr = args.path || args.command || args.file_path || '';
-          currentActivity = argsStr ? `${toolName}: ${String(argsStr).slice(0, 60)}` : toolName;
+          currentActivity = describeToolActivity(toolName, args);
           textSincePulse += currentActivity;
         } else if ((chunk as any).type === 'reasoning' || (chunk as any).type === 'reasoning-start' || (chunk as any).type === 'reasoning-end') {
           // Phase 9.096d: Capture reasoning for pulse + broadcast
           const reasoningText = (chunk as any).text ?? (chunk as any).textDelta ?? '';
           if (reasoningText) {
             textSincePulse += reasoningText;
+            // Extract meaningful phrase from reasoning for pulse
+            const meaningful = extractMeaningfulPhrase(reasoningText);
+            if (meaningful) currentActivity = meaningful;
             teamBroadcast('team:teammate-reasoning', { name, text: reasoningText });
           }
         }
@@ -816,19 +886,23 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
           teammate.partialResponse = fullResponse;
           if (textDelta) {
             textSincePulse += textDelta;
-            if (textDelta.trim()) currentActivity = textDelta.slice(0, 80);
+            if (fullResponse.length > 20) {
+              const meaningful = extractMeaningfulPhrase(fullResponse.slice(-200));
+              if (meaningful) currentActivity = meaningful;
+            }
             teamBroadcast('team:teammate-chunk', { name, text: textDelta, done: false });
           }
         } else if (chunk.type === 'tool-call') {
           const toolName = (chunk as any).toolName || 'tool';
           const args = (chunk as any).args || {};
-          const argsStr = args.path || args.command || args.file_path || '';
-          currentActivity = argsStr ? `${toolName}: ${String(argsStr).slice(0, 60)}` : toolName;
+          currentActivity = describeToolActivity(toolName, args);
           textSincePulse += currentActivity;
         } else if ((chunk as any).type === 'reasoning' || (chunk as any).type === 'reasoning-start' || (chunk as any).type === 'reasoning-end') {
           const reasoningText = (chunk as any).text ?? (chunk as any).textDelta ?? '';
           if (reasoningText) {
             textSincePulse += reasoningText;
+            const meaningful = extractMeaningfulPhrase(reasoningText);
+            if (meaningful) currentActivity = meaningful;
             teamBroadcast('team:teammate-reasoning', { name, text: reasoningText });
           }
         }
