@@ -36,7 +36,7 @@ import { loadTools, verifyAllTools } from './tool-manager';
 import { setProjectUpdateCallback } from './tool-registry';
 import { cleanupAll as cleanupShell } from './shell-tools';
 import { cleanupAllSubAgents } from './sub-agent';
-import { cleanupAllTeams, getTeamStatusUI, setTeamUpdateCallback } from './team-manager';
+import { cleanupAllTeams, getActiveTeam, getTeamStatusUI, setTeamUpdateCallback } from './team-manager';
 import { scheduleProfileUpdate, deleteProfile } from './user-profile';
 import { purgeSession } from './output-buffer';
 import { initCronManager, updateCronContext, addJob as cronAddJob, listJobs as cronListJobs, updateJob as cronUpdateJob, deleteJob as cronDeleteJob, runJobNow as cronRunJobNow, getJobsList, getActiveJobCount, cleanupCron } from './cron-manager';
@@ -989,10 +989,24 @@ function createWindow() {
   });
 
   // Phase 9.095: Delete a project (unlink or delete-all)
+  // Phase 9.096b: Hardened project deletion.
+  // - 'unlink': DB-only (remove from sidebar, keep files + conversations as standalone)
+  // - 'delete-all': DB delete + conversations, but directory trash requires separate explicit IPC
+  // - Active project (team running) cannot be deleted at all
   ipcMain.handle('projects:delete', async (_e, projectId: string, mode: 'unlink' | 'delete-all') => {
     const db = getDb();
     const project = getProject(projectId);
     if (!project) return { success: false, error: 'Project not found' };
+
+    // Phase 9.096b: Block deletion of currently-active project (team running on it)
+    const activeTeam = getActiveTeam();
+    if (activeTeam && project.working_dir) {
+      const resolvedProjectDir = project.working_dir.replace(/^~/, process.env.HOME || process.env.USERPROFILE || '.');
+      const resolvedTeamDir = activeTeam.workingDir.replace(/^~/, process.env.HOME || process.env.USERPROFILE || '.');
+      if (resolvedProjectDir === resolvedTeamDir) {
+        return { success: false, error: 'Cannot delete project while a team is actively working on it. Dissolve the team first.' };
+      }
+    }
 
     if (mode === 'delete-all') {
       // 1. Delete all linked conversations
@@ -1004,14 +1018,9 @@ function createWindow() {
       }
       // 2. Delete the project record (CASCADE handles artifacts)
       db.prepare(`DELETE FROM projects WHERE id = ?`).run(projectId);
-      // 3. Move working directory to trash
-      if (project.working_dir) {
-        try {
-          await shell.trashItem(project.working_dir);
-        } catch (trashErr) {
-          console.warn('[projects:delete] trashItem failed:', trashErr);
-        }
-      }
+      // Phase 9.096b: Directory trash is now a SEPARATE step.
+      // The UI must call 'projects:trash-dir' explicitly after showing a second confirmation.
+      // This IPC no longer touches the filesystem.
     } else {
       // 'unlink': just delete the project record.
       // Conversations get project_id = NULL via ON DELETE SET NULL.
@@ -1022,6 +1031,56 @@ function createWindow() {
     // Notify Aria tab
     try { tabManager?.ariaWebContents?.send('projects:updated'); } catch {}
     return { success: true };
+  });
+
+  // Phase 9.096b: Separate IPC for trashing a project's working directory.
+  // Only callable from UI with explicit double-confirmation.
+  // Never callable from agent tools.
+  ipcMain.handle('projects:trash-dir', async (_e, dirPath: string) => {
+    if (!dirPath) return { success: false, error: 'No directory path provided' };
+
+    const resolved = dirPath.replace(/^~/, process.env.HOME || process.env.USERPROFILE || '.');
+
+    // Safety: Block trashing of protected paths
+    const home = process.env.HOME || process.env.USERPROFILE || '/';
+    const protectedPaths = [
+      home,
+      '/',
+      path.join(home, '.tappi-browser'),
+      path.join(home, '.tappi'),
+      path.join(home, 'Desktop'),
+      path.join(home, 'Documents'),
+      path.join(home, 'Downloads'),
+      path.resolve(__dirname, '..'),
+    ];
+
+    const normalizedResolved = path.resolve(resolved);
+    for (const pp of protectedPaths) {
+      if (normalizedResolved === path.resolve(pp)) {
+        return { success: false, error: `Cannot trash protected path: ${pp}` };
+      }
+    }
+
+    // Safety: Block if an active team is using this directory
+    const activeTeam2 = getActiveTeam();
+    if (activeTeam2) {
+      const resolvedTeamDir = activeTeam2.workingDir.replace(/^~/, home);
+      if (normalizedResolved === path.resolve(resolvedTeamDir)) {
+        return { success: false, error: 'Cannot trash directory while a team is actively working on it.' };
+      }
+    }
+
+    // Check directory exists
+    if (!fs.existsSync(resolved)) {
+      return { success: false, error: 'Directory does not exist' };
+    }
+
+    try {
+      await shell.trashItem(resolved);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: `trashItem failed: ${err?.message || err}` };
+    }
   });
 
   // ─── Overlay IPC (hide/show BrowserViews for modals) ───

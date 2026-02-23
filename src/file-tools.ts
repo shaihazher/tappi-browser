@@ -253,11 +253,30 @@ export function fileAppend(filePath: string, content: string): string {
   return `Appended to: ${resolved}`;
 }
 
+// Phase 9.096b: Protected paths that fileDelete cannot touch
+const FILE_PROTECTED_PATHS = [
+  process.env.HOME || process.env.USERPROFILE || '/',
+  '/',
+  path.join(process.env.HOME || '', '.tappi-browser'),
+  path.join(process.env.HOME || '', '.tappi'),
+  path.join(process.env.HOME || '', 'Desktop'),
+  path.join(process.env.HOME || '', 'Documents'),
+  path.join(process.env.HOME || '', 'Downloads'),
+];
+
 export function fileDelete(filePath: string): string {
   if (!filePath) return 'Usage: file delete <path>';
 
   const resolved = resolvePath(filePath);
   if (!fs.existsSync(resolved)) return `File not found: ${resolved}`;
+
+  // Phase 9.096b: Block deletion of protected paths
+  const normalizedResolved = path.resolve(resolved);
+  for (const pp of FILE_PROTECTED_PATHS) {
+    if (normalizedResolved === path.resolve(pp)) {
+      return `🛡️ BLOCKED: Cannot delete protected path: ${pp}`;
+    }
+  }
 
   const stat = fs.statSync(resolved);
   if (stat.isDirectory()) {

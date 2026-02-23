@@ -12,7 +12,7 @@ import { createTools } from './tool-registry';
 import type { BrowserContext } from './browser-tools';
 import { addMessage, clearHistory } from './conversation';
 import { purgeSession } from './output-buffer';
-import { cleanupSession } from './shell-tools';
+import { cleanupSession, addProtectedPath, removeProtectedPath } from './shell-tools';
 import {
   initMailbox,
   sendMessage,
@@ -172,6 +172,10 @@ export async function createTeam(
   };
 
   activeTeams.set(teamId, team);
+
+  // Phase 9.096b: Protect the working directory from destructive shell commands while team is active
+  addProtectedPath(resolvedDir);
+
   notifyUpdate(teamId);
 
   // Auto-configure teammates if not provided
@@ -951,6 +955,9 @@ export async function dissolveTeam(teamId: string): Promise<string> {
   cleanupTeamMailbox(teamId);
   cleanupTeamTaskList(teamId);
 
+  // Phase 9.096b: Remove working directory protection now that team is dissolved
+  removeProtectedPath(team.workingDir);
+
   team.status = 'done';
   activeTeams.delete(teamId);
   notifyUpdate(teamId);
@@ -1076,6 +1083,8 @@ export function cleanupAllTeams(): void {
     }
     cleanupTeamMailbox(teamId);
     cleanupTeamTaskList(teamId);
+    // Phase 9.096b: Remove working dir protection on cleanup
+    removeProtectedPath(team.workingDir);
   }
   activeTeams.clear();
 }

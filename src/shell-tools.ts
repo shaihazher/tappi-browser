@@ -16,6 +16,105 @@ import { captureOutput, appendOutput, finishEntry, grepOutput, listOutputs, getO
 const DEFAULT_TIMEOUT = 30_000; // 30s for sync exec
 const DEFAULT_CWD = path.join(process.env.HOME || process.env.USERPROFILE || '.', 'tappi-workspace');
 const SHELL = process.env.SHELL || '/bin/bash';
+const HOME = process.env.HOME || process.env.USERPROFILE || '/';
+
+// ─── Phase 9.096b: Shell Command Guardrails ───
+// Light guardrails — block commands that target critical directories.
+// Not a sandbox. Just a hard floor to prevent catastrophic deletions.
+
+const STATIC_PROTECTED_PATHS = [
+  HOME,                                          // ~/
+  '/',                                           // root
+  path.join(HOME, '.tappi-browser'),             // app data
+  path.join(HOME, '.tappi'),                     // tappi config
+  path.dirname(process.execPath),                // electron binary dir
+  // The app's own source dir (if running in dev mode)
+  path.resolve(__dirname, '..'),                 // tappi-browser project root (dist/../)
+  path.resolve(__dirname, '..', 'src'),          // source dir
+];
+
+// Dynamic protected paths — e.g., the active team's working directory
+const dynamicProtectedPaths = new Set<string>();
+
+/** Add a path to the dynamic protection list (e.g., active team working dir). */
+export function addProtectedPath(p: string): void {
+  const resolved = path.resolve(p.replace(/^~/, HOME));
+  dynamicProtectedPaths.add(resolved);
+}
+
+/** Remove a path from the dynamic protection list. */
+export function removeProtectedPath(p: string): void {
+  const resolved = path.resolve(p.replace(/^~/, HOME));
+  dynamicProtectedPaths.delete(resolved);
+}
+
+function getProtectedPaths(): string[] {
+  return [...STATIC_PROTECTED_PATHS, ...dynamicProtectedPaths];
+}
+
+// Patterns that indicate destructive recursive operations
+const DESTRUCTIVE_PATTERNS = [
+  /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f?|--recursive|-[a-zA-Z]*f[a-zA-Z]*r)\b/,  // rm -rf, rm -r, rm -fr
+  /\brm\s+-[a-zA-Z]*f[a-zA-Z]*\s/,                                          // rm -f (less destructive but flag it on protected paths)
+  /\brmdir\b/,
+  /\btrash\b/,
+  /\bmv\s+.*\s+.*[\/]?\.?Trash/i,                                           // mv ... .Trash
+  /\bsudo\s+rm\b/,
+];
+
+/**
+ * Check if a command targets a protected path with a destructive operation.
+ * Returns an error message if blocked, null if allowed.
+ */
+function checkCommandSafety(command: string): string | null {
+  const isDestructive = DESTRUCTIVE_PATTERNS.some(p => p.test(command));
+  if (!isDestructive) return null;
+
+  // Normalize and expand paths in the command for matching
+  const normalizedCmd = command.replace(/~/g, HOME);
+
+  for (const protectedPath of getProtectedPaths()) {
+    // Check if command contains a path that IS the protected path or is its parent
+    // We check both the exact path and with trailing slash
+    const patterns = [
+      protectedPath,
+      protectedPath + '/',
+      protectedPath + ' ',
+      `"${protectedPath}"`,
+      `'${protectedPath}'`,
+    ];
+
+    for (const pattern of patterns) {
+      if (normalizedCmd.includes(pattern)) {
+        return `🛡️ BLOCKED: Destructive operation targeting protected path "${protectedPath}".\n` +
+               `Protected paths: ~/, /, ~/.tappi-browser/, ~/.tappi/, and the app source directory.\n` +
+               `If you need to delete files, target specific subdirectories or files instead.`;
+      }
+    }
+
+    // Also check if ~ shorthand is used and it matches
+    const tildeVersion = protectedPath.replace(HOME, '~');
+    if (command.includes(tildeVersion + '/') || command.includes(tildeVersion + ' ') ||
+        command.includes(`"${tildeVersion}"`) || command.includes(`'${tildeVersion}'`) ||
+        command.endsWith(tildeVersion)) {
+      // Only block if the tilde path IS the protected path, not a subdir of it
+      // e.g., block "rm -rf ~/" but allow "rm -rf ~/tappi-workspace/temp"
+      const cmdParts = command.split(/\s+/);
+      for (const part of cmdParts) {
+        const cleanPart = part.replace(/^["']|["']$/g, '').replace(/\/+$/, '');
+        const expandedPart = cleanPart.replace(/^~/, HOME);
+        const resolvedProtected = protectedPath.replace(/\/+$/, '');
+        if (expandedPart === resolvedProtected) {
+          return `🛡️ BLOCKED: Destructive operation targeting protected path "${protectedPath}".\n` +
+                 `Protected paths: ~/, /, ~/.tappi-browser/, ~/.tappi/, and the app source directory.\n` +
+                 `If you need to delete files, target specific subdirectories or files instead.`;
+        }
+      }
+    }
+  }
+
+  return null;
+}
 
 // ─── Install Detection ───
 
@@ -88,6 +187,10 @@ export function shellExec(
   command: string,
   options?: { cwd?: string; timeout?: number; env?: Record<string, string> },
 ): string {
+  // Phase 9.096b: Check command safety before execution
+  const safetyError = checkCommandSafety(command);
+  if (safetyError) return safetyError;
+
   const cwd = ensureCwd(options?.cwd || DEFAULT_CWD);
   const timeout = options?.timeout || DEFAULT_TIMEOUT;
 
@@ -136,6 +239,10 @@ export function shellExecBg(
   command: string,
   options?: { cwd?: string; env?: Record<string, string> },
 ): string {
+  // Phase 9.096b: Check command safety before execution
+  const safetyError = checkCommandSafety(command);
+  if (safetyError) return safetyError;
+
   // F16: enforce background process limit
   if (bgProcesses.size >= MAX_BG_PROCESSES) {
     return `❌ Max ${MAX_BG_PROCESSES} background processes reached. Kill existing processes first.`;

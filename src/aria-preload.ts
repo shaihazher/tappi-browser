@@ -158,6 +158,10 @@ contextBridge.exposeInMainWorld('aria', {
   deleteProject: (projectId: string, mode: 'unlink' | 'delete-all') =>
     ipcRenderer.invoke('projects:delete', projectId, mode),
 
+  // Phase 9.096b: Separate IPC for trashing project directory (requires explicit user confirmation)
+  trashProjectDir: (dirPath: string) =>
+    ipcRenderer.invoke('projects:trash-dir', dirPath),
+
   // ─── File Downloads (Phase 9.07 Track 5) ───
   onPresentDownload: (cb: (data: { path: string; name: string; size: number; formats: string[]; description?: string }) => void) => {
     ipcRenderer.on('agent:present-download', (_e, data) => cb(data));

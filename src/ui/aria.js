@@ -579,8 +579,29 @@ async function _executeProjectDelete(project, mode) {
 
     const result = await window.aria.deleteProject(project.id, mode);
     if (!result || !result.success) {
-      console.error('[aria] deleteProject failed:', result);
+      console.error('[aria] deleteProject failed:', result?.error || result);
+      // Show error to user if it's an active-team block
+      if (result?.error) {
+        alert(result.error);
+      }
       return;
+    }
+
+    // Phase 9.096b: After delete-all DB cleanup succeeds, offer to trash the directory
+    // This is a SEPARATE step with its own confirmation
+    if (mode === 'delete-all' && project.working_dir) {
+      const trashConfirm = confirm(
+        `Project data deleted from browser.\n\n` +
+        `Also move the working directory to Trash?\n` +
+        `${project.working_dir}\n\n` +
+        `Click OK to move to Trash, or Cancel to keep files on disk.`
+      );
+      if (trashConfirm) {
+        const trashResult = await window.aria.trashProjectDir(project.working_dir);
+        if (!trashResult?.success) {
+          alert(`Could not trash directory: ${trashResult?.error || 'unknown error'}`);
+        }
+      }
     }
 
     // Remove project from local state
