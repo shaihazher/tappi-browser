@@ -883,7 +883,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     ...createMediaTools(browserCtx),
 
     // ═══ SHELL TOOLS (Developer Mode only — conditionally included) ═══
-    ...(options?.developerMode ? createShellTools(sessionId, browserCtx, options.llmConfig) : {}),
+    ...(options?.developerMode ? createShellTools(sessionId, browserCtx, options.llmConfig, options) : {}),
 
     // ═══ TEAM TOOLS (Coding Mode + Developer Mode — conditionally included) ═══
     ...(options?.developerMode && options?.codingMode
@@ -1011,7 +1011,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
  * Shell tools — only created when Developer Mode is ON.
  * When OFF, these tool schemas are not sent to the LLM at all.
  */
-function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConfig?: LLMConfig) {
+function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConfig?: LLMConfig, toolOptions?: ToolRegistryOptions) {
   return {
     exec: tool({
       description: 'Run a shell command. Output is captured — you see first 20 + last 20 lines. Use exec_grep to search full output. Default timeout: 30s. Default cwd: ~/tappi-workspace/.',
@@ -1099,9 +1099,14 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
       }),
       execute: async ({ task, model }: { task: string; model?: 'primary' | 'secondary' }) => {
         if (!llmConfig) return '❌ No LLM config available for sub-agent.';
-        // Block sub-agents when a team is active — use team_run_teammate instead
-        const activeTeam = teamManager.getActiveTeamId();
-        if (activeTeam) return '❌ You have an active team ("' + activeTeam + '"). Use team_run_teammate to assign work to teammates — they have worktree isolation and contract enforcement. spawn_agent is for non-coding tasks only.';
+        // Block sub-agents entirely in coding mode — use team orchestration instead
+        if (toolOptions?.codingMode) {
+          const activeTeam = teamManager.getActiveTeamId();
+          if (activeTeam) {
+            return '❌ Coding Mode: You have an active team ("' + activeTeam + '"). Use team_run_teammate to assign work to teammates — they have worktree isolation, contract enforcement, and merge validation. Do NOT use spawn_agent as a workaround.';
+          }
+          return '❌ Coding Mode: Use team orchestration (team_create → team_write_contracts → team_run_teammate) instead of spawn_agent. Teams give you worktree isolation, shared contracts, and validated merges. spawn_agent has none of these — teammates would overwrite each other\'s files.';
+        }
         return subAgent.spawnSubAgent(task, browserCtx, llmConfig, sessionId, model || 'secondary');
       },
     }),
