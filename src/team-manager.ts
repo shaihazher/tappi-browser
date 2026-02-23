@@ -447,7 +447,9 @@ async function runTeammateSession(
     }, teammateTimeoutMs);
 
     console.log(`[team] ${name} calling LLM (model: ${tmConfig.model}, provider: ${tmConfig.provider})...`);
-    const result = await streamText({
+    let result;
+    try {
+    result = await streamText({
       model,
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent }],
@@ -566,6 +568,14 @@ async function runTeammateSession(
         } catch {}
       },
     });
+    } catch (initErr: any) {
+      // Catch InvalidPromptError / TypeValidationError on initial teammate invocation
+      const errName = initErr?.name || initErr?.constructor?.name || '';
+      console.error(`[team] ${name} INITIAL streamText failed (${errName}):`, initErr?.message?.slice?.(0, 200));
+      console.error(`[team] ${name} cause:`, initErr?.cause?.message?.slice?.(0, 500) || 'no cause');
+      // Rethrow — we can't simplify the initial invocation (no prior context to summarize)
+      throw initErr;
+    }
 
     let fullResponse = '';
     let tmChunkCount = 0;
