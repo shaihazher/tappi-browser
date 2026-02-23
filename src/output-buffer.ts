@@ -16,6 +16,7 @@
 const HEAD_LINES = 20;   // First N lines the LLM sees
 const TAIL_LINES = 20;   // Last N lines the LLM sees
 const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB max per output entry (ring buffer for bg processes)
+const MAX_TOTAL_BUFFER = 50 * 1024 * 1024; // F16: 50MB total output buffer cap
 
 // ─── Types ───
 
@@ -35,6 +36,7 @@ export interface OutputEntry {
 // Session → OutputEntry[]
 const sessions = new Map<string, OutputEntry[]>();
 let globalId = 0;
+let totalBufferBytes = 0; // F16: track total buffer size across all sessions
 
 // ─── Core Functions ───
 
@@ -71,6 +73,9 @@ export function captureOutput(
   entry.truncatedView = buildTruncatedView(entry);
   entries.push(entry);
 
+  totalBufferBytes += entry.bytes;
+  evictIfOverCap();
+
   return entry;
 }
 
@@ -83,13 +88,16 @@ export function appendOutput(sessionId: string, id: number, newOutput: string): 
   if (!entry) return `[out-${id}] not found`;
 
   // Ring buffer: if over max, keep last MAX_BUFFER_SIZE bytes
+  const oldBytes = entry.bytes;
   entry.stdout += newOutput;
   if (entry.stdout.length > MAX_BUFFER_SIZE) {
     entry.stdout = entry.stdout.slice(-MAX_BUFFER_SIZE);
   }
   entry.lines = entry.stdout.split('\n').length;
   entry.bytes = entry.stdout.length;
+  totalBufferBytes += entry.bytes - oldBytes;
   entry.truncatedView = buildTruncatedView(entry);
+  evictIfOverCap();
 
   return entry.truncatedView;
 }
@@ -228,7 +236,11 @@ export function listOutputs(sessionId: string): string {
  * Purge all output for a session.
  */
 export function purgeSession(sessionId: string): void {
-  sessions.delete(sessionId);
+  const entries = sessions.get(sessionId);
+  if (entries) {
+    for (const e of entries) totalBufferBytes -= e.bytes;
+    sessions.delete(sessionId);
+  }
 }
 
 /**
@@ -242,4 +254,34 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/**
+ * F16: LRU eviction — evict oldest entries across all sessions when over 50MB cap.
+ */
+function evictIfOverCap(): void {
+  while (totalBufferBytes > MAX_TOTAL_BUFFER) {
+    // Find the oldest entry across all sessions
+    let oldestEntry: OutputEntry | null = null;
+    let oldestSessionId: string | null = null;
+    let oldestIdx = -1;
+
+    for (const [sid, entries] of sessions) {
+      for (let i = 0; i < entries.length; i++) {
+        if (!oldestEntry || entries[i].timestamp < oldestEntry.timestamp) {
+          oldestEntry = entries[i];
+          oldestSessionId = sid;
+          oldestIdx = i;
+        }
+      }
+    }
+
+    if (!oldestEntry || !oldestSessionId) break;
+
+    // Remove the oldest entry
+    const entries = sessions.get(oldestSessionId)!;
+    totalBufferBytes -= oldestEntry.bytes;
+    entries.splice(oldestIdx, 1);
+    if (entries.length === 0) sessions.delete(oldestSessionId);
+  }
 }

@@ -394,20 +394,28 @@ body {
   border-color: rgba(139, 92, 246, 0.6);
 }
 
-/* ─── Deep mode plan card ─── */
+/* ─── Deep mode plan card (Claude.ai-inspired) ─── */
 .deep-plan {
   padding: 10px;
   border-radius: 8px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-light);
   font-size: 12px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Deep plan cards should use full chat width */
+.agent-msg:has(.deep-plan) {
+  max-width: 100%;
+  width: 100%;
 }
 
 .deep-plan-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -429,10 +437,30 @@ body {
   color: #34d399;
 }
 
+.deep-plan-mode.parallel {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+}
+
+.deep-progress-bar {
+  height: 3px;
+  background: var(--border-light);
+  border-radius: 2px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.deep-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #8b5cf6, #a78bfa);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+  width: 0%;
+}
+
 .deep-step {
   display: flex;
   flex-direction: column;
-  padding: 6px 0;
+  padding: 5px 0;
   border-bottom: 1px solid var(--border-light);
 }
 .deep-step:last-child { border-bottom: none; }
@@ -485,10 +513,53 @@ body {
 .deep-step-stream.streaming { border-left: 2px solid rgba(139, 92, 246, 0.4); padding-left: 10px; }
 
 .deep-step-tools {
-  padding: 2px 0 0 24px;
-  font-size: 10px;
-  color: var(--text-dim);
+  padding: 3px 0 2px 24px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
+
+.deep-tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: rgba(139, 92, 246, 0.08);
+  border: 1px solid rgba(139, 92, 246, 0.15);
+  font-size: 10px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.deep-tool-chip:hover {
+  background: rgba(139, 92, 246, 0.15);
+  border-color: rgba(139, 92, 246, 0.3);
+}
+.deep-tool-chip .tool-icon { font-size: 10px; flex-shrink: 0; }
+.deep-tool-chip .tool-name { font-weight: 500; }
+.deep-tool-chip .tool-summary { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }
+
+.deep-tool-detail {
+  display: none;
+  padding: 5px 7px;
+  margin: 2px 0 2px 24px;
+  border-radius: 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+  line-height: 1.4;
+}
+.deep-tool-detail.visible { display: block; }
 
 .deep-complete {
   padding: 8px 10px;
@@ -498,6 +569,39 @@ body {
   background: rgba(16, 185, 129, 0.08);
   border: 1px solid rgba(16, 185, 129, 0.2);
   margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.deep-complete-summary { display: flex; align-items: center; gap: 5px; }
+.deep-complete-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* Download button group — flex row of format buttons */
+.deep-download-group {
+  display: flex;
+  flex-direction: row;
+  gap: 5px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.deep-download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: rgba(139, 92, 246, 0.12);
+  border: 1px solid rgba(139, 92, 246, 0.25);
+  color: #a78bfa;
+  font-size: 10px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.deep-download-btn:hover {
+  background: rgba(139, 92, 246, 0.2);
+  border-color: rgba(139, 92, 246, 0.4);
 }
 
 .deep-chevron {
@@ -507,6 +611,12 @@ body {
   flex-shrink: 0;
 }
 .deep-chevron.open { transform: rotate(90deg); }
+
+@keyframes deep-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.deep-step.active .deep-step-status { animation: deep-spin 1s linear infinite; }
 
 /* ─── Agent messages ─── */
 #agent-messages {
@@ -535,6 +645,7 @@ body {
 
 .agent-msg.user {
   align-self: flex-end;
+  max-width: 75%;
   background: var(--accent);
   color: white;
   border-bottom-right-radius: 4px;
@@ -2492,4 +2603,79 @@ body {
   font-variant-numeric: tabular-nums;
   margin-left: 3px;
   opacity: 0.85;
+}
+
+/* ─── File Download Card (Phase 9.07 Track 5) ─── */
+
+.file-download-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--bg-secondary, #16213e);
+  border-radius: 8px;
+  border: 1px solid var(--border, #2a2a4a);
+  margin: 4px 0;
+  max-width: 100%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.file-download-card .file-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.file-download-card .file-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-download-card .file-name {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-primary, #e0e0e0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-download-card .file-size {
+  font-size: 11px;
+  color: var(--text-secondary, #8892a4);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-download-card .file-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.file-download-card .file-actions button {
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border, #3a3a5c);
+  background: var(--bg-panel, #131327);
+  color: var(--text-primary, #e0e0e0);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.file-download-card .file-actions button:hover:not(:disabled) {
+  background: var(--accent, #e94560);
+  color: #fff;
+  border-color: transparent;
+}
+
+.file-download-card .file-actions button:disabled {
+  opacity: 0.6;
+  cursor: default;
 }

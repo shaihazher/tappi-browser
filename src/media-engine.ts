@@ -390,15 +390,18 @@ async function spawnMpv(
 
     // Audio
     '--volume=100',
-
-    // Stream
-    streamInfo.videoUrl,
   ];
 
   // DASH: add separate audio file
   if (streamInfo.audioUrl) {
     args.push(`--audio-file=${streamInfo.audioUrl}`);
   }
+
+  // End of options — prevent URL from being interpreted as flags
+  args.push('--');
+
+  // Stream URL
+  args.push(streamInfo.videoUrl);
 
   console.log('[media-engine] spawning mpv...');
   const proc = spawn(mpvPath, args, {

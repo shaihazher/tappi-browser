@@ -37,8 +37,8 @@ export interface LLMConfig {
   secondaryModel?: string;     // if unset, secondary = primary (no-op)
   secondaryApiKey?: string;    // defaults to same as primary
   // Timeout fields (Phase 8.40) — configurable execution timeouts
-  agentTimeoutMs?: number;      // main agent timeout (default: 600000 = 10 min)
-  teammateTimeoutMs?: number;   // per-teammate timeout (default: 600000 = 10 min)
+  agentTimeoutMs?: number;      // main agent timeout (default: 600000 = 10 min, coding: 1800000 = 30 min)
+  teammateTimeoutMs?: number;   // per-teammate timeout (default: 900000 = 15 min)
   subtaskTimeoutMs?: number;    // per deep-mode subtask timeout (default: 300000 = 5 min)
 }
 
@@ -78,8 +78,6 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
   switch (provider) {
     case 'anthropic':
     case 'bedrock': {
-      // Anthropic supports adaptive thinking (Claude Sonnet 4.6+, Opus 4.6+)
-      // Claude decides if/when to think based on problem complexity
       if (thinkingEnabled) {
         return {
           anthropic: {

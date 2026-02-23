@@ -8,6 +8,7 @@
 import { safeStorage } from 'electron';
 import { saveCredential, getCredentials, deleteCredential, listCredentialDomains, updateCredentialLastUsed } from './database';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
 
 const ENC_PREFIX = 'vlt:';
 
@@ -22,6 +23,7 @@ function encryptPassword(password: string): string {
     console.error('[vault] Encryption unavailable:', e);
   }
   // Fallback: base64 encode (not secure, but functional)
+  console.warn('[security] OS keychain unavailable — credentials stored with file permissions only (chmod 600)');
   return 'b64:' + Buffer.from(password).toString('base64');
 }
 
@@ -47,6 +49,17 @@ function decryptPassword(stored: string): string {
 export function storePassword(domain: string, username: string, password: string): void {
   const enc = encryptPassword(password);
   saveCredential(domain, username, enc);
+
+  // If safeStorage is unavailable, ensure credential files have restrictive permissions
+  try {
+    if (!safeStorage.isEncryptionAvailable()) {
+      const dbPath = require('path').join(process.env.HOME || process.env.USERPROFILE || '.', '.tappi-browser', 'tappi.db');
+      if (fs.existsSync(dbPath)) {
+        fs.chmodSync(dbPath, 0o600);
+      }
+    }
+  } catch {}
+
   console.log(`[vault] Stored credentials for ${username}@${domain}`);
 }
 

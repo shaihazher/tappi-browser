@@ -239,6 +239,7 @@ function saveVault(vault: KeyVault) {
     const dir = path.dirname(keysPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(keysPath, JSON.stringify(vault, null, 2));
+    fs.chmodSync(keysPath, 0o600);
   } catch (e) {
     console.error('[http] vault save failed:', e);
   }
@@ -287,12 +288,56 @@ export interface HttpResponse {
   json?: any;                   // Parsed JSON if content-type is application/json
 }
 
+/** F13: SSRF protection — block requests to private/internal addresses */
+function isBlockedUrl(urlStr: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(urlStr);
+  } catch {
+    return 'Invalid URL';
+  }
+
+  // Block non-HTTP(S) protocols
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return `Blocked: protocol "${parsed.protocol}" is not allowed (only http/https)`;
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+
+  // Block known internal hostnames
+  if (hostname === 'localhost' || hostname === 'metadata.google.internal') {
+    return 'Blocked: requests to private/internal addresses are not allowed';
+  }
+
+  // Block IPv6 loopback
+  if (hostname === '::1' || hostname === '[::1]') {
+    return 'Blocked: requests to private/internal addresses are not allowed';
+  }
+
+  // Check IP ranges
+  const ipMatch = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipMatch) {
+    const [, a, b] = ipMatch.map(Number);
+    if (a === 127) return 'Blocked: requests to private/internal addresses are not allowed';       // 127.0.0.0/8
+    if (a === 10) return 'Blocked: requests to private/internal addresses are not allowed';        // 10.0.0.0/8
+    if (a === 192 && b === 168) return 'Blocked: requests to private/internal addresses are not allowed'; // 192.168.0.0/16
+    if (a === 172 && b >= 16 && b <= 31) return 'Blocked: requests to private/internal addresses are not allowed'; // 172.16.0.0/12
+    if (a === 169 && b === 254) return 'Blocked: requests to private/internal addresses are not allowed'; // 169.254.0.0/16
+  }
+
+  return null;
+}
+
 export async function httpRequest(req: HttpRequest): Promise<string> {
   const method = (req.method || 'GET').toUpperCase();
   const url = req.url;
   const timeout = req.timeout || 30000;
 
   if (!url) return 'Error: URL is required.';
+
+  // F13: SSRF check
+  const blocked = isBlockedUrl(url);
+  if (blocked) return blocked;
 
   // Build headers
   const headers: Record<string, string> = { ...req.headers };

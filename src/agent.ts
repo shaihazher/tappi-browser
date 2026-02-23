@@ -6,7 +6,7 @@
  * Two deep modes: Action (multi-step DO) and Research (gather + compile).
  */
 
-import { streamText, generateText } from 'ai';
+import { streamText, generateText, stepCountIs } from 'ai';
 import type { BrowserWindow, WebContents } from 'electron';
 import { EventEmitter } from 'events';
 import { createModel, buildProviderOptions, getModelConfig, type LLMConfig } from './llm-client';
@@ -43,8 +43,12 @@ import {
   generateAutoTitle,
   getConversationMessageCount,
 } from './conversation-store';
+import { buildProjectContext } from './project-manager';
+import { getDb } from './database';
 
 import { decomposeTask } from './decompose';
+import { bootstrapContext } from './coding-memory';
+import * as teamManager from './team-manager';
 import { runDeepMode } from './subtask-runner';
 import { getLoginHint } from './login-state';
 import { profileManager } from './profile-manager';
@@ -182,11 +186,12 @@ You NEVER see raw DOM, HTML, or page content in your context. The page is opaque
 | Find specific text | \`text({ grep: "refund policy" })\` — searches entire page |
 | Interact with an element | \`click(index)\`, \`type(index, text)\`, \`paste(index, text)\` |
 | Navigate | \`navigate(url)\`, \`search(query)\`, \`back_forward()\` |
-| Recall earlier conversation | \`history({ grep: "what I said" })\` |
+| Work across tabs | \`text({ tab: 2 })\`, \`elements({ tab: 1 })\` — target any tab by index, no switching needed |
+| Recall earlier conversation | \`history({ grep: "what I said" })\` — searches full history including compacted/evicted turns |
 
 ## The Grep Philosophy
 
-grep > scroll > read-all. Always.
+grep > scroll > read-all. Always. **Never screenshot to understand a page.** \`text\` and \`elements\` give you everything you need in tokens, not pixels. Screenshots are only for when the user explicitly asks for a visual capture or for visually complex content (charts, images). For data like listings, search results, prices, reviews — \`text\` is always better.
 
 You can guess what to search for based on context. Shopping page? grep "cart" or "checkout". Login page? grep "email" or "sign in". This is Ctrl+F intuition — you don't need to see everything, just find what you need.
 
@@ -243,6 +248,9 @@ Jobs only run while the browser is open.
 - Narrate briefly: "Navigating to X" / "Found 3 results" / "Clicked sign-in"
 - If something fails, try an alternative before giving up
 - Always respond with text after tool calls
+
+## File Downloads
+When you create a document the user requested (report, analysis, export, spreadsheet), use \`present_download\` to offer it as a downloadable file in the chat. This gives the user one-click access to save in their preferred format (MD, HTML, PDF, TXT). Call it right after writing the file — don't make users ask.
 `;
 
 interface AgentRunOptions {
@@ -266,20 +274,46 @@ const CODING_MODE_SYSTEM_PROMPT_ADDENDUM = `
 
 You are in **Coding Mode** with Agent Team capabilities.
 
-### Team Orchestration
-When given a complex coding task, you can spawn a team:
-1. Use \`team_create\` to create a team with specialized teammates (e.g. @backend, @frontend, @tester)
-2. Use \`team_task_add\` to define the task list with dependencies
-3. Use \`team_run_teammate\` to assign teammates their work
-4. Use \`team_status\` to monitor progress
-5. Use \`team_message\` to communicate with teammates
-6. Use \`team_dissolve\` when all work is done
+### Team Orchestration — MANDATORY for complex tasks
 
-### When to use teams
-- Multi-file refactors spanning frontend + backend
-- Feature implementations with multiple layers
-- Parallel investigations (e.g. debugging with competing hypotheses)
-- Research + implementation (one researches, another codes)
+**You MUST spawn a team (do NOT write code yourself) when the task involves:**
+- Multiple files, components, or layers (frontend + backend, CSS + JS + HTML, etc.)
+- Full feature builds (apps, pages, stores, dashboards, APIs)
+- Any task that would take more than ~20 lines of code across more than 1 file
+
+**For those tasks, your ONLY job as lead is to orchestrate — not to write code directly.**
+
+Protocol — **Contract-First Parallel Work (Phase 9.096):**
+
+**Phase 1: Setup**
+1. \`team_create\` — define specialized teammates
+
+**Phase 2: Contracts (BEFORE spawning anyone)**
+2. \`team_write_contracts\` — write shared interface/type stubs (max 5 per phase). These are REAL FILES that teammates import. Keep each ≤20 lines. Include: type definitions, function signatures, data shapes, shared constants. NO implementations.
+
+**Phase 3: Task Assignment**
+3. \`team_task_add\` — define tasks that reference the contracts
+4. \`team_run_teammate\` — teammates receive contracts in their system prompt and MUST use them
+
+**Phase 4: Monitor & Merge**
+5. \`team_status\` — monitor progress
+6. \`worktree_merge\` — merge completed work (if using worktrees)
+7. \`team_validate\` — run build/test, check contract references
+
+**Phase 5: Iterate (for large projects)**
+8. \`team_advance_phase\` — bump phase counter, write NEW contracts that build on real merged code
+9. Repeat from step 2 with the next batch of work
+
+**Do NOT start writing code yourself or spawning teammates before writing contracts.** Contracts are the shared truth that prevents teammates from producing incompatible code.
+
+Simple single-file fixes or one-liner changes are fine to do directly without a team.
+
+### Contract Best Practices
+- **Types first, functions second.** Define data shapes, then the functions that operate on them.
+- **One concern per file.** \`contracts/types.ts\` for data shapes, \`contracts/api.ts\` for function signatures, etc.
+- **Import paths matter.** Use relative imports that work from teammate worktrees.
+- **No implementations.** Stubs, interfaces, type aliases — not working code. Teammates write the implementations.
+- **If teammates need shared utilities** (not just types), write those as real files first, then contracts reference them.
 
 ### Teammate models
 Teammates can use cheaper/faster models. Specify \`model\` in team_create teammates config.
@@ -288,6 +322,7 @@ Teammates can use cheaper/faster models. Specify \`model\` in team_create teamma
 When working in a git repository with worktree isolation enabled:
 - \`team_create\` automatically creates isolated worktrees for each teammate
 - Each teammate edits their own branch — zero file conflicts
+- Contracts are automatically copied into all worktrees
 - Use \`worktree_status\` and \`worktree_diff\` to review changes
 - Use \`worktree_merge\` to merge teammate branches back to main
 - Use \`worktree_remove\` for cleanup after merging
@@ -297,6 +332,19 @@ When working in a git repository with worktree isolation enabled:
 - Preserve existing code style
 - Run tests after changes
 - Report which files were modified
+
+### Project Context
+When working in Coding Mode, conversations can be linked to projects. The project context (name, dir, artifacts) is injected into your system context when a project is active.
+
+**Starting work on an existing project:** Call \`project_get\` first to see tracked artifacts and recent conversations. Don't assume — check.
+
+**Two-tier grep model:**
+- \`project_search(project_id, query)\` — search conversations belonging to THIS project only
+- \`conversations_search(query)\` — search ALL conversations globally
+
+Prefer \`project_search\` for questions about the current project's history. Use \`conversations_search\` for "have we ever done X" questions spanning all work.
+
+**When you create a project:** Call \`project_link_conversation\` immediately after \`project_create\` to link the current conversation to it.
 `;
 
 let activeRun: AbortController | null = null;
@@ -332,7 +380,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
   // ─── Deep Mode Gate ───────────────────────────────────────────────────────
   // If deep mode is ON, try to decompose the task. The LLM decides if it's
   // simple (direct loop) or complex (action/research deep mode).
-  if (deepMode !== false) {
+  // Phase 9: Skip deep mode when codingMode is on — team orchestration IS
+  // the decomposition. The direct agent loop has team tools and will use them.
+  if (deepMode !== false && !codingMode) {
     try {
       console.log('[agent] Deep mode ON — attempting decomposition...');
       broadcast('agent:stream-start', {});
@@ -360,6 +410,19 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
           codingMode,
           agentBrowsingDataAccess,
           abortSignal: abortController.signal,
+          ariaWebContents,
+          // Phase 9.07: Forward subtask token usage to the UI token bar
+          onTokenUsage: (usage) => {
+            try {
+              broadcast('agent:token-usage', {
+                inputTokens: usage.inputTokens || 0,
+                outputTokens: usage.outputTokens || 0,
+                totalTokens: (usage.inputTokens || 0) + (usage.outputTokens || 0),
+              });
+            } catch (e) {
+              // Non-fatal — token bar update is best-effort
+            }
+          },
         });
 
         // Add summary to conversation history
@@ -368,21 +431,46 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
           : `[Deep mode ${result.mode}: ${result.subtasks.length} steps completed in ${result.durationSeconds.toFixed(1)}s]\n\n${result.finalOutput.slice(0, 2000)}`;
         addMessage(sessionId, { role: 'assistant' as const, content: summary });
 
+        // ─── Persist deep mode to SQLite conversation store ─────────────
+        if (conversationId) {
+          try {
+            addConversationMessage(conversationId, 'user', userMessage);
+            const assistantContent = result.aborted
+              ? `[Deep mode aborted — ${result.subtasks.filter(s => s.status === 'done').length}/${result.subtasks.length} steps completed]`
+              : result.finalOutput || '[Deep mode complete — no final output]';
+            addConversationMessage(conversationId, 'assistant', assistantContent);
+            const msgCount = getConversationMessageCount(conversationId);
+            if (msgCount <= 4) {
+              generateAutoTitle(conversationId, assistantContent);
+            }
+            try { if (ariaWebContents && !ariaWebContents.isDestroyed()) ariaWebContents.send('aria:conversation-updated', { conversationId }); } catch {}
+          } catch (persistErr: any) {
+            console.error('[agent] Deep mode SQLite persist error (non-fatal):', persistErr?.message);
+          }
+        }
+
         // Send completion to UI
         broadcast('agent:deep-complete', {
           mode: result.mode,
           durationSeconds: result.durationSeconds,
           outputDir: result.outputDir,
+          outputDirAbsolute: result.outputDirAbsolute,
           aborted: result.aborted,
           completedSteps: result.subtasks.filter(s => s.status === 'done').length,
           totalSteps: result.subtasks.length,
+          finalOutput: result.mode === 'research' ? result.finalOutput : undefined,
         });
 
-        // BUG-T13: Emit final output via agentEvents so API listeners get the real response
+        // Emit done signal for API listeners. The compile step already streamed
+        // its output via deep-stream-chunk events — don't duplicate the full report
+        // as a regular chat chunk (that causes a raw unrendered duplicate).
         const deepFinalText = result.aborted
           ? `[Task aborted — ${result.subtasks.filter(s => s.status === 'done').length}/${result.subtasks.length} steps completed]`
           : result.finalOutput || '[Deep mode complete]';
-        sendChunk(mainWindow, deepFinalText, true, ariaWebContents);
+        // For API SSE listeners, emit the final text so they get the response
+        try { agentEvents.emit('chunk', { text: deepFinalText, done: true }); } catch {}
+        // For UI, just signal done (no text) — content is already in the plan card
+        sendChunk(mainWindow, '', true, ariaWebContents);
 
         activeRun = null;
         return;
@@ -405,14 +493,52 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
   // ─── Direct Agent Loop (existing) ─────────────────────────────────────────
 
   let errorSent = false;
+  let streamStarted = false;  // hoisted — needed by codingMode early broadcast + lazy guards below
   const toolsUsed: string[] = [];
 
   try {
     const model = createModel(llmConfig);
-    const tools = createTools(browserCtx, sessionId, { developerMode, llmConfig, codingMode, worktreeIsolation, agentBrowsingDataAccess });
+    const tools = createTools(browserCtx, sessionId, { developerMode, llmConfig, codingMode, worktreeIsolation, agentBrowsingDataAccess, conversationId });
     const browserContext = assembleContext(browserCtx, llmConfig);
+
+    // ─── Project context injection (Phase 9.07) ────────────────────────────
+    // If the current conversation has a project_id, inject a compact project
+    // context block (~200-300 tokens) so the agent knows about project state.
+    let projectContextBlock = '';
+    if (conversationId) {
+      try {
+        const row = getDb().prepare(
+          `SELECT project_id FROM conversations WHERE id = ? LIMIT 1`
+        ).get(conversationId) as { project_id: string | null } | undefined;
+        if (row?.project_id) {
+          projectContextBlock = buildProjectContext(row.project_id);
+        }
+      } catch (e: any) {
+        // Non-fatal — project context is optional
+        console.error('[agent] Failed to inject project context:', e?.message);
+      }
+    }
+
+    // ─── Coding Memory Bootstrap (Phase coding-memory) ────────────────────
+    // When in coding mode, check if the active team's project dir (or cwd) has
+    // a .tappi-coding-memory/ directory. If so, inject the last 3 sessions + main.md.
+    let codingMemoryContext = '';
+    if (codingMode) {
+      try {
+        const activeTeam = teamManager.getActiveTeam();
+        const projectDir = activeTeam?.workingDir || process.cwd();
+        const memCtx = bootstrapContext(projectDir);
+        if (memCtx) {
+          codingMemoryContext = '\n\n' + memCtx;
+        }
+      } catch (memErr: any) {
+        // Non-fatal — bootstrap is best-effort
+        console.error('[agent] coding-memory bootstrap error:', memErr?.message);
+      }
+    }
+
     const activeSystemPrompt = codingMode
-      ? SYSTEM_PROMPT + CODING_MODE_SYSTEM_PROMPT_ADDENDUM
+      ? SYSTEM_PROMPT + CODING_MODE_SYSTEM_PROMPT_ADDENDUM + codingMemoryContext
       : SYSTEM_PROMPT;
     console.log('[agent] Run starting:', Object.keys(tools).length, 'tools,', browserContext.length, 'chars context (ZERO page elements), devMode:', developerMode, 'deepMode:', deepMode, 'codingMode:', codingMode);
 
@@ -427,15 +553,19 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
     for (let i = 0; i < history.length; i++) {
       const msg = history[i];
       if (i === history.length - 1 && msg.role === 'user' && typeof msg.content === 'string') {
-        // Inject browser context into the last user message
-        messages.push({ role: 'user', content: `[Browser: ${browserContext}]\n\n${msg.content}` });
+        // Inject browser context (and optional project context) into the last user message
+        const ctxParts = [`[Browser: ${browserContext}]`];
+        if (projectContextBlock) ctxParts.push(projectContextBlock);
+        messages.push({ role: 'user', content: `${ctxParts.join('\n')}\n\n${msg.content}` });
       } else {
         messages.push(msg);
       }
     }
 
     // ─── Phase 8.40: Timeout-Based Execution ────────────────────────────────
-    const timeoutMs = llmConfig.agentTimeoutMs ?? 600_000; // default 10 min
+    // Coding mode with teams needs more time — teammates run in parallel, lead waits
+    const defaultTimeout = codingMode ? 1_800_000 : 600_000; // 30 min coding (lead), 10 min normal
+    const timeoutMs = llmConfig.agentTimeoutMs ?? defaultTimeout;
     const runStart = Date.now();
     let stopReason: string | null = null;
     let warningPending = false;
@@ -467,7 +597,15 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
 
     let result;
     try {
-      console.log('[agent] Calling LLM:', llmConfig.provider, llmConfig.model, 'key:', llmConfig.apiKey.slice(0, 12) + '...');
+      // In coding mode, deep mode is skipped so no stream-start was sent yet — fire it now
+      // so the UI shows a visible indicator while the LLM thinks (can take 30s+ with thinking ON)
+      // Set streamStarted here so the lazy !streamStarted guards below don't fire a second start.
+      if (codingMode && !streamStarted) {
+        broadcast('agent:stream-start', {});
+        streamStarted = true;
+        sendChunk(mainWindow, '🏗️ Planning with team orchestration...', false, ariaWebContents);
+      }
+      console.log('[agent] Calling LLM:', llmConfig.provider, llmConfig.model, 'key:', llmConfig.apiKey.slice(0, 4) + '***');
       const providerOptions = buildProviderOptions(llmConfig);
       console.log('[agent] Thinking:', llmConfig.thinking !== false ? 'ON' : 'OFF', '| providerOptions:', JSON.stringify(providerOptions));
 
@@ -477,7 +615,10 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
         messages: messages as any, // AI SDK accepts ModelMessage[]
         tools,
         ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
-        // Phase 8.40: No stopWhen — runs until model stops or timeout
+        // Phase 8.40 + Phase 9 fix: AI SDK v6 defaults to stepCountIs(1) which
+        // limits the agent to a single LLM call. Override with 200 steps so the
+        // agent loops (navigate → elements → click → …) until it finishes or times out.
+        stopWhen: stepCountIs(200),
         abortSignal: abortController.signal,
         prepareStep: async ({ messages: currentMessages }: { messages: any[] }) => {
           // 80% timeout warning injection
@@ -539,7 +680,10 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
                 recentCalls = [];
               }
 
-              const display = `🔧 ${toolName}${resultStr.length > 200 ? '\n' + resultStr.slice(0, 200) + '...' : resultStr.length > 50 ? '\n' + resultStr : ' → ' + resultStr}`;
+              // Status/info tools get full display; action tools get truncated
+              const isInfoTool = /^(team_status|team_task_list|list_|file_list|exec_list|sub_agent_status|browsing_history|downloads)/.test(toolName);
+              const maxDisplay = isInfoTool ? 1500 : 200;
+              const display = `🔧 ${toolName}${resultStr.length > maxDisplay ? '\n' + resultStr.slice(0, maxDisplay) + '...' : resultStr.length > 50 ? '\n' + resultStr : ' → ' + resultStr}`;
               broadcast('agent:tool-result', { toolName, result: resultStr, display });
             }
           } catch (stepErr: any) {
@@ -559,19 +703,70 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
     }
 
     let fullResponse = '';
-    let streamStarted = false;
 
     try {
       console.log('[agent] Starting stream...');
-      for await (const chunk of result.textStream) {
+      let reasoningBuffer = '';
+      let reasoningChunkCount = 0;
+      let textChunkCount = 0;
+      for await (const chunk of result.fullStream) {
         if (abortController.signal.aborted) break;
-        if (!streamStarted) {
-          console.log('[agent] First chunk received');
-          broadcast('agent:stream-start', {});
-          streamStarted = true;
+
+        if (chunk.type === 'reasoning-start') {
+          console.log('[agent] Thinking started');
+          // Kick off stream-start so the UI is ready before reasoning text arrives
+          if (!streamStarted) {
+            broadcast('agent:stream-start', {});
+            streamStarted = true;
+          }
+
+        } else if (chunk.type === 'reasoning-delta') {
+          reasoningChunkCount++;
+          const rdelta = (chunk as any).delta ?? (chunk as any).text ?? (chunk as any).textDelta ?? '';
+          if (reasoningChunkCount === 1) console.log('[agent] First reasoning token — keys:', Object.keys(chunk as any).join(','), '| delta len:', rdelta.length);
+          if (reasoningChunkCount % 50 === 0) console.log(`[agent] Thinking... (${reasoningBuffer.length} chars)`);
+          reasoningBuffer += rdelta;
+          // Rolling 400-char preview so the chip stays snappy
+          const snippet = reasoningBuffer.length > 400 ? '…' + reasoningBuffer.slice(-400) : reasoningBuffer;
+          broadcast('agent:reasoning-chunk', { text: snippet, done: false });
+
+        } else if (chunk.type === 'reasoning-end') {
+          console.log(`[agent] Thinking done — ${reasoningBuffer.length} chars`);
+          // Collapse chip with full text
+          broadcast('agent:reasoning-chunk', { text: reasoningBuffer, done: true });
+          reasoningBuffer = '';
+
+        } else if (chunk.type === 'text-delta') {
+          textChunkCount++;
+          if (!streamStarted) {
+            console.log('[agent] First chunk received');
+            broadcast('agent:stream-start', {});
+            streamStarted = true;
+          }
+          // Collapse any still-open reasoning chip before text starts
+          if (reasoningBuffer) {
+            broadcast('agent:reasoning-chunk', { text: reasoningBuffer, done: true });
+            reasoningBuffer = '';
+          }
+          const textDelta = (chunk as any).delta ?? (chunk as any).text ?? '';
+          if (textChunkCount === 1) console.log('[agent] First text token — keys:', Object.keys(chunk as any).join(','), '| delta len:', textDelta.length);
+          fullResponse += textDelta;
+          sendChunk(mainWindow, textDelta, false, ariaWebContents);
+
+        } else if (chunk.type === 'finish') {
+          if (reasoningBuffer) {
+            broadcast('agent:reasoning-chunk', { text: reasoningBuffer, done: true });
+            reasoningBuffer = '';
+          }
         }
-        fullResponse += chunk;
-        sendChunk(mainWindow, chunk, false, ariaWebContents);
+        // log any unrecognised chunk types once so we can see what the stream is delivering
+        else {
+          const ct = (chunk as any).type;
+          if (ct !== 'tool-call' && ct !== 'tool-result' && ct !== 'tool-input-start' && ct !== 'tool-input-delta' && ct !== 'raw' && ct !== 'response-metadata' && ct !== 'source') {
+            console.log('[agent] unhandled chunk type:', ct);
+          }
+        }
+        // tool-call / tool-result events handled by onStepFinish — skip here
       }
       console.log('[agent] Stream complete, response:', fullResponse.length, 'chars, tools:', toolsUsed.length);
     } catch (streamErr: any) {
@@ -768,7 +963,7 @@ async function generateEvictionSummaryIfNeeded(sessionId: string, llmConfig: LLM
     });
 
     if (text && text.trim()) {
-      const summary = `[Conversation summary — earlier turns evicted from context window]\n${text.trim()}\n[End summary — current conversation continues below]`;
+      const summary = `[Conversation summary — earlier turns evicted from context window. Use history({ grep: "..." }) to search the full uncompacted history if you need details.]\n${text.trim()}\n[End summary — current conversation continues below]`;
       setEvictionSummary(sessionId, summary, evicted.boundary);
       console.log('[agent] Eviction summary set:', text.trim().length, 'chars');
     }

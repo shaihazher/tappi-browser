@@ -76,10 +76,9 @@ function renderMarkdown(text) {
     return '<pre style="white-space:pre-wrap;margin:0;font-family:inherit;font-size:inherit">' + escapeHtml(text) + '</pre>';
   }
   try {
-    // Sanitize: marked doesn't XSS-protect, but our CSP blocks inline scripts.
-    // Still strip <script> tags as defense-in-depth.
     let html = marked.parse(text);
-    html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+    // Sanitize with DOMPurify (defense-in-depth alongside CSP)
+    html = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
     return html;
   } catch (e) {
     return '<pre style="white-space:pre-wrap;margin:0;font-family:inherit;font-size:inherit">' + escapeHtml(text) + '</pre>';
@@ -886,8 +885,8 @@ function renderMessages() {
     el.className = `agent-msg ${msg.role}`;
 
     if (msg._raw) {
-      // Raw HTML content (deep mode plan cards, etc.)
-      el.innerHTML = msg.content;
+      // Raw HTML content (deep mode plan cards, etc.) — sanitize for safety
+      el.innerHTML = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(msg.content) : msg.content;
     } else if (msg.role === 'tool') {
       // Tool result — compact, dimmed
       el.className = 'agent-msg tool';
@@ -957,8 +956,8 @@ window.tappi.onAgentToggled((open) => setAgentOpen(open));
 // Fix 2: Hide/show agent strip+panel based on active tab.
 // When the Aria tab is active, the agent sidebar is hidden entirely (redundant with aria.html).
 // When a regular tab is active, restore normal agent strip/panel state.
-if (window.tappi.on) {
-  window.tappi.on('agent:visible', (visible) => {
+if (window.tappi.onAgentVisible) {
+  window.tappi.onAgentVisible((visible) => {
     if (!visible) {
       // Aria tab active — hide both strip and panel regardless of isAgentOpen
       if (agentStrip) agentStrip.classList.add('hidden');
@@ -1079,25 +1078,36 @@ if (toggleDeepBtn) {
 
 // Track deep mode subtask text for rendering
 let deepSubtaskText = {};
+let _deepToolDataApp = {};
+let _deepTotalStepsApp = 0;
+let _deepDoneStepsApp = 0;
+let _deepOutputDirApp = null;
+let _deepParallelMode = false;
 
-// Deep mode plan — show subtask cards
+// Deep mode plan — show subtask cards with progress bar
 window.tappi.onDeepPlan((data) => {
-  const { mode, subtasks } = data;
+  const { mode, subtasks, parallel } = data;
   deepSubtaskText = {};
+  _deepToolDataApp = {};
+  _deepTotalStepsApp = subtasks.length;
+  _deepDoneStepsApp = 0;
+  _deepOutputDirApp = null;
+  _deepParallelMode = !!parallel;
 
   let html = '<div class="deep-plan">';
-  html += `<div class="deep-plan-header">📋 ${subtasks.length} steps <span class="deep-plan-mode ${mode}">${mode}</span></div>`;
+  html += `<div class="deep-plan-header">📋 ${subtasks.length} steps <span class="deep-plan-mode ${mode}">${mode}</span>${parallel ? ' <span class="deep-plan-mode parallel">⚡ parallel</span>' : ''}</div>`;
+  html += `<div class="deep-progress-bar"><div class="deep-progress-fill" id="deep-progress"></div></div>`;
 
   subtasks.forEach((s, i) => {
     html += `<div class="deep-step" id="deep-step-${i}">`;
-    html += `<div class="deep-step-header" onclick="window._toggleDeepStep(${i})">`;
+    html += `<div class="deep-step-header" data-step-index="${i}">`;
     html += `<span class="deep-chevron" id="deep-chevron-${i}">▶</span>`;
     html += `<span class="deep-step-status" id="deep-status-${i}">⏳</span>`;
     html += `<span class="deep-step-title"><b>${i + 1}.</b> ${escapeHtml(s.task.slice(0, 80))}${s.task.length > 80 ? '...' : ''}</span>`;
     html += `<span class="deep-step-duration" id="deep-dur-${i}"></span>`;
     html += '</div>';
-    html += `<div class="deep-step-stream" id="deep-stream-${i}"></div>`;
     html += `<div class="deep-step-tools" id="deep-tools-${i}"></div>`;
+    html += `<div class="deep-step-stream" id="deep-stream-${i}"></div>`;
     html += '</div>';
   });
 
@@ -1105,6 +1115,13 @@ window.tappi.onDeepPlan((data) => {
   chatMessages.push({ role: 'assistant', content: html, _raw: true, timestamp: Date.now(), _done: false });
   renderMessages();
 });
+
+function _updateDeepProgressApp() {
+  const fill = document.getElementById('deep-progress');
+  if (fill && _deepTotalStepsApp > 0) {
+    fill.style.width = Math.round((_deepDoneStepsApp / _deepTotalStepsApp) * 100) + '%';
+  }
+}
 
 // Toggle subtask stream visibility
 window._toggleDeepStep = function(idx) {
@@ -1116,6 +1133,11 @@ window._toggleDeepStep = function(idx) {
   if (chev) chev.classList.toggle('open', !visible);
 };
 
+window._toggleToolDetailApp = function(idx, toolIdx) {
+  const detail = document.getElementById(`deep-tool-detail-${idx}-${toolIdx}`);
+  if (detail) detail.classList.toggle('visible');
+};
+
 // Subtask start
 window.tappi.onDeepSubtaskStart((data) => {
   const { index } = data;
@@ -1125,25 +1147,27 @@ window.tappi.onDeepSubtaskStart((data) => {
   const chev = document.getElementById('deep-chevron-' + index);
 
   if (el) el.classList.add('active');
-  if (status) status.textContent = '🔄';
+  if (status) status.textContent = '⟳';
   if (stream) {
     stream.innerHTML = '<em style="color:var(--text-dim)">Working...</em>';
     stream.classList.add('visible', 'streaming');
   }
   if (chev) chev.classList.add('open');
   deepSubtaskText[index] = '';
+  _deepToolDataApp[index] = [];
 
-  // Collapse other streams
-  document.querySelectorAll('.deep-step-stream.visible').forEach(s => {
-    const id = parseInt(s.id.replace('deep-stream-', ''));
-    if (id !== index && !isNaN(id)) {
-      s.classList.remove('visible', 'streaming');
-      const c = document.getElementById('deep-chevron-' + id);
-      if (c) c.classList.remove('open');
-    }
-  });
+  // In sequential mode, collapse other streams. In parallel mode, keep all visible.
+  if (!_deepParallelMode) {
+    document.querySelectorAll('.deep-step-stream.visible').forEach(s => {
+      const id = parseInt(s.id.replace('deep-stream-', ''));
+      if (id !== index && !isNaN(id)) {
+        s.classList.remove('visible', 'streaming');
+        const c = document.getElementById('deep-chevron-' + id);
+        if (c) c.classList.remove('open');
+      }
+    });
+  }
 
-  // Scroll into view
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 });
 
@@ -1163,10 +1187,23 @@ window.tappi.onDeepSubtaskDone((data) => {
   if (durEl && duration) durEl.textContent = duration.toFixed(1) + 's';
   if (stream) stream.classList.remove('streaming');
 
-  // If error, show it
   if (error && stream) {
     stream.innerHTML = `<span style="color:#ef4444">❌ ${escapeHtml(error)}</span>`;
     stream.classList.add('visible');
+  }
+
+  // Auto-collapse done steps after a brief moment
+  if (status === 'done' && stream) {
+    setTimeout(() => {
+      stream.classList.remove('visible');
+      const chev = document.getElementById('deep-chevron-' + index);
+      if (chev) chev.classList.remove('open');
+    }, 800);
+  }
+
+  if (status === 'done') {
+    _deepDoneStepsApp++;
+    _updateDeepProgressApp();
   }
 });
 
@@ -1180,7 +1217,6 @@ window.tappi.onDeepStreamChunk((data) => {
   deepSubtaskText[index] = (deepSubtaskText[index] || '') + chunk;
   stream.classList.add('visible', 'streaming');
 
-  // Debounced markdown render
   clearTimeout(_deepStreamTimers[index]);
   _deepStreamTimers[index] = setTimeout(() => {
     const mdDiv = document.createElement('div');
@@ -1192,29 +1228,150 @@ window.tappi.onDeepStreamChunk((data) => {
   }, 80);
 });
 
-// Subtask tool result
+// Tool results as compact chips (Claude.ai-inspired)
 window.tappi.onDeepToolResult((data) => {
-  const { index, display } = data;
-  const tools = document.getElementById('deep-tools-' + index);
-  if (tools) {
-    const lines = tools.textContent ? tools.textContent.split('\n').length : 0;
-    if (lines < 5) { // Show max 5 tool lines
-      tools.textContent += (tools.textContent ? '\n' : '') + display.slice(0, 100);
-    }
+  const { index, toolName, display } = data;
+  const toolsDiv = document.getElementById('deep-tools-' + index);
+  if (!toolsDiv) return;
+
+  if (!_deepToolDataApp[index]) _deepToolDataApp[index] = [];
+  const toolIdx = _deepToolDataApp[index].length;
+
+  const fullText = display || toolName || 'tool';
+  const shortName = (toolName || 'tool').replace(/_/g, ' ');
+  let summary = '';
+  const lines = fullText.split('\n');
+  if (lines.length > 1) {
+    summary = lines[1].slice(0, 40).trim();
+    if (lines[1].length > 40) summary += '…';
+  } else if (fullText.includes('→')) {
+    summary = fullText.split('→').slice(1).join('→').trim().slice(0, 40);
   }
+
+  _deepToolDataApp[index].push({ toolName, summary, detail: fullText });
+
+  const chip = document.createElement('span');
+  chip.className = 'deep-tool-chip';
+  chip.onclick = () => window._toggleToolDetailApp(index, toolIdx);
+  chip.innerHTML = `<span class="tool-icon">🔧</span><span class="tool-name">${escapeHtml(shortName)}</span>${summary ? `<span class="tool-summary">— ${escapeHtml(summary)}</span>` : ''}`;
+  toolsDiv.appendChild(chip);
+
+  const detail = document.createElement('div');
+  detail.className = 'deep-tool-detail';
+  detail.id = `deep-tool-detail-${index}-${toolIdx}`;
+  detail.textContent = fullText.replace(/^🔧\s*/, '');
+  toolsDiv.appendChild(detail);
 });
 
-// Deep mode complete
+// Deep mode complete — append summary + download button to the existing plan card
 window.tappi.onDeepComplete((data) => {
-  const { mode, durationSeconds, outputDir, aborted, completedSteps, totalSteps } = data;
-  const status = aborted ? '⚠️ Aborted' : '✅ Complete';
-  const html = `<div class="deep-complete">${status} — ${mode} mode, ${completedSteps}/${totalSteps} steps in ${durationSeconds.toFixed(1)}s${outputDir ? ` · 📁 ${escapeHtml(outputDir)}` : ''}</div>`;
-  chatMessages.push({ role: 'assistant', content: html, _raw: true, timestamp: Date.now(), _done: true });
-  renderMessages();
+  const { mode, durationSeconds, outputDir, outputDirAbsolute, aborted, completedSteps, totalSteps, finalOutput } = data;
+  const statusStr = aborted ? '⚠️ Aborted' : '✅ Complete';
+
+  // Build the completion HTML
+  let completeHtml = '<div class="deep-complete">';
+  completeHtml += `<div class="deep-complete-summary">${statusStr} — ${mode} mode, ${completedSteps}/${totalSteps} steps in ${durationSeconds.toFixed(1)}s</div>`;
+  completeHtml += '<div class="deep-complete-actions">';
+  if (mode === 'research' && !aborted && outputDirAbsolute) {
+    _deepOutputDirApp = outputDirAbsolute;
+    completeHtml += `<div class="deep-download-group">`;
+    completeHtml += `<button class="deep-download-btn" data-format="md">📥 .md</button>`;
+    completeHtml += `<button class="deep-download-btn" data-format="html">📥 .html</button>`;
+    completeHtml += `<button class="deep-download-btn" data-format="pdf">📥 .pdf</button>`;
+    completeHtml += `<button class="deep-download-btn" data-format="txt">📥 .txt</button>`;
+    completeHtml += `</div>`;
+  }
+  completeHtml += '</div>';
+  completeHtml += '</div>';
+
+  // Append the completion card to the existing plan card (last _raw message)
+  // instead of creating a separate message
+  const planCard = document.querySelector('.deep-plan');
+  if (planCard) {
+    // If research mode with final output, render it as markdown inside the plan card
+    // (the compile step stream may have already shown it, but re-render clean)
+    if (mode === 'research' && !aborted && finalOutput) {
+      // Find the compile step's stream div and render markdown there
+      const compileIndex = totalSteps - 1; // compile is always last
+      const compileStream = document.getElementById('deep-stream-' + compileIndex);
+      if (compileStream) {
+        const mdDiv = document.createElement('div');
+        mdDiv.className = 'md-content';
+        mdDiv.innerHTML = renderMarkdown(finalOutput);
+        compileStream.innerHTML = '';
+        compileStream.appendChild(mdDiv);
+        compileStream.classList.add('visible');
+        const chev = document.getElementById('deep-chevron-' + compileIndex);
+        if (chev) chev.classList.add('open');
+      }
+    }
+
+    // Append completion summary + download button at the end of the plan card
+    const completeEl = document.createElement('div');
+    completeEl.innerHTML = completeHtml;
+    planCard.appendChild(completeEl.firstElementChild);
+
+    // Update the _raw message content so it persists on re-render
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      if (chatMessages[i]._raw && chatMessages[i].content.includes('deep-plan')) {
+        chatMessages[i].content = planCard.outerHTML;
+        chatMessages[i]._done = true;
+        break;
+      }
+    }
+  } else {
+    // Fallback: push as separate message if plan card not found
+    chatMessages.push({ role: 'assistant', content: completeHtml, _raw: true, timestamp: Date.now(), _done: true });
+    renderMessages();
+  }
+
+  // Fill progress
+  _deepDoneStepsApp = _deepTotalStepsApp;
+  _updateDeepProgressApp();
+
   setStreamingState(false);
 });
 
-// escapeHtml already defined above (line ~797) — removed duplicate
+window._downloadReportApp = async function(format) {
+  if (!_deepOutputDirApp) return;
+  const fmt = format || 'md';
+  try {
+    const result = await window.tappi.saveDeepReport(_deepOutputDirApp, fmt);
+    if (result && result.success) {
+      chatMessages.push({ role: 'system', content: `📥 Report saved to ${result.path}`, timestamp: Date.now() });
+      renderMessages();
+    } else if (result && result.error && result.error !== 'Cancelled') {
+      chatMessages.push({ role: 'system', content: `❌ Save failed: ${result.error}`, timestamp: Date.now() });
+      renderMessages();
+    }
+  } catch (e) {
+    console.error('[app] Failed to save deep report:', e);
+  }
+};
+
+// ─── Deep mode event delegation (CSP-safe, no inline onclick) ───
+// Handles .deep-step-header toggles and .deep-download-btn clicks
+// via a single delegated listener on agentMessages.
+agentMessages.addEventListener('click', (e) => {
+  // Deep step header toggle
+  const header = e.target.closest('.deep-step-header');
+  if (header) {
+    const step = header.closest('.deep-step');
+    if (step && step.id) {
+      const idx = parseInt(step.id.replace('deep-step-', ''), 10);
+      if (!isNaN(idx)) window._toggleDeepStep(idx);
+    }
+    return;
+  }
+
+  // Download format button
+  const dlBtn = e.target.closest('.deep-download-btn');
+  if (dlBtn) {
+    const fmt = dlBtn.dataset.format || 'md';
+    window._downloadReportApp(fmt);
+    return;
+  }
+});
 
 // ═══════════════════════════════════════════
 //  SETTINGS
@@ -2354,7 +2511,7 @@ if (toggleCodingBtn) {
     codingModeActive = newVal;
     updateCodingModeUI(newVal);
     try {
-      await window.tappi.invoke('codingmode:set', newVal);
+      await window.tappi.setCodingMode(newVal);
     } catch (e) {
       console.error('[coding-mode] toggle failed:', e);
     }
@@ -2368,7 +2525,7 @@ if (settingsCodingModeBtn) {
     const newVal = !settingsCodingModeBtn.classList.contains('on');
     updateCodingModeUI(newVal);
     try {
-      await window.tappi.invoke('codingmode:set', newVal);
+      await window.tappi.setCodingMode(newVal);
     } catch (e) {
       console.error('[coding-mode] settings toggle failed:', e);
     }
@@ -2419,8 +2576,6 @@ if (worktreeIsolationBtn) {
     try {
       if (window.tappi.setWorktreeIsolation) {
         await window.tappi.setWorktreeIsolation(newVal);
-      } else {
-        await window.tappi.invoke('worktree-isolation:set', newVal);
       }
     } catch (e) {
       console.error('[worktree-isolation] toggle failed:', e);
@@ -2434,10 +2589,6 @@ if (window.tappi.onWorktreeIsolationChanged) {
   window.tappi.onWorktreeIsolationChanged((enabled) => {
     updateWorktreeIsolationToggle(enabled);
   });
-} else if (window.tappi.on) {
-  window.tappi.on('worktree-isolation:changed', (enabled) => {
-    updateWorktreeIsolationToggle(enabled);
-  });
 }
 
 // Load initial worktree isolation state
@@ -2446,8 +2597,6 @@ if (window.tappi.onWorktreeIsolationChanged) {
     let status;
     if (window.tappi.getWorktreeIsolation) {
       status = await window.tappi.getWorktreeIsolation();
-    } else if (window.tappi.invoke) {
-      status = await window.tappi.invoke('worktree-isolation:get');
     }
     if (status) {
       updateWorktreeIsolationToggle(status.enabled !== false);
@@ -2470,8 +2619,8 @@ if (origDevModeClick) {
 }
 
 // Listen for coding mode changes from main
-if (window.tappi.on) {
-  window.tappi.on('codingmode:changed', (enabled) => {
+if (window.tappi.onCodingModeChanged) {
+  window.tappi.onCodingModeChanged((enabled) => {
     updateCodingModeUI(enabled);
   });
 }
@@ -2564,8 +2713,8 @@ if (teamCardHeader) {
 }
 
 // Listen for team updates from main
-if (window.tappi.on) {
-  window.tappi.on('team:updated', (data) => {
+if (window.tappi.onTeamUpdated) {
+  window.tappi.onTeamUpdated((data) => {
     updateTeamStatusCard(data);
   });
 }
@@ -2573,11 +2722,12 @@ if (window.tappi.on) {
 // Load initial team status on startup
 (async () => {
   try {
-    if (window.tappi.invoke) {
-      const teamStatus = await window.tappi.invoke('team:status');
+    if (window.tappi.getTeamStatus) {
+      const teamStatus = await window.tappi.getTeamStatus();
       if (teamStatus) updateTeamStatusCard(teamStatus);
-
-      const codingStatus = await window.tappi.invoke('codingmode:get');
+    }
+    if (window.tappi.getCodingMode) {
+      const codingStatus = await window.tappi.getCodingMode();
       if (codingStatus && codingStatus.enabled) {
         updateCodingModeUI(true);
       }
@@ -2957,7 +3107,7 @@ document.querySelectorAll('.settings-tab[data-tab="profiles"]').forEach(tab => {
   }
 
   // Listen for media status updates from main process
-  window.tappi.on('media:status', (status) => {
+  window.tappi.onMediaStatus((status) => {
     updateMediaIndicator(status);
     // Update settings toggle
     if (mediaEngineToggle) {
@@ -2974,7 +3124,7 @@ document.querySelectorAll('.settings-tab[data-tab="profiles"]').forEach(tab => {
   if (mediaBtn) {
     mediaBtn.addEventListener('click', async () => {
       try {
-        const result = await window.tappi.invoke('media:toggle-active');
+        const result = await window.tappi.toggleMediaActive();
         if (result && !result.success && result.error) {
           console.warn('[media-ui] toggle failed:', result.error);
         }
@@ -2990,7 +3140,7 @@ document.querySelectorAll('.settings-tab[data-tab="profiles"]').forEach(tab => {
       mediaEnabled = !mediaEnabled;
       mediaEngineToggle.textContent = mediaEnabled ? 'ON' : 'OFF';
       mediaEngineToggle.classList.toggle('on', mediaEnabled);
-      window.tappi.invoke('media:set-enabled', mediaEnabled).catch(() => {});
+      window.tappi.setMediaEnabled(mediaEnabled).catch(() => {});
     });
   }
 })();
@@ -3069,5 +3219,103 @@ document.querySelectorAll('.settings-tab[data-tab="profiles"]').forEach(tab => {
     window.tappi.getRecordingStatus().then((status) => {
       if (status && status.active) updateRecIndicator(status);
     }).catch(() => {});
+  }
+})();
+
+// ─── Phase 9.07 Track 5: Agent-Initiated File Downloads ───
+
+(function() {
+  function formatFileSizeApp(bytes) {
+    if (!bytes || bytes < 0) return '0 B';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function appendDownloadCard(data) {
+    const agentMsgs = document.getElementById('agent-messages');
+    if (!agentMsgs) return;
+
+    const { path: filePath, name, size, formats, description } = data || {};
+    if (!filePath || !formats || formats.length === 0) return;
+
+    const ext = (name || '').split('.').pop()?.toLowerCase() || '';
+    const iconMap = {
+      pdf: '📕', html: '🌐', md: '📝', csv: '📊', json: '📋',
+      png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️', svg: '🎨',
+      txt: '📄', zip: '📦', mp4: '🎬', mp3: '🎵',
+    };
+
+    const card = document.createElement('div');
+    card.className = 'file-download-card';
+
+    const iconEl = document.createElement('div');
+    iconEl.className = 'file-icon';
+    iconEl.textContent = iconMap[ext] || '📄';
+
+    const infoEl = document.createElement('div');
+    infoEl.className = 'file-info';
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'file-name';
+    nameEl.textContent = name || 'file';
+
+    const sizeEl = document.createElement('div');
+    sizeEl.className = 'file-size';
+    sizeEl.textContent = (description ? description + '  ·  ' : '') + formatFileSizeApp(size);
+
+    infoEl.appendChild(nameEl);
+    infoEl.appendChild(sizeEl);
+
+    const actionsEl = document.createElement('div');
+    actionsEl.className = 'file-actions';
+
+    (formats || []).forEach(fmt => {
+      const btn = document.createElement('button');
+      btn.textContent = '↓ ' + fmt.toUpperCase();
+      btn.title = 'Download as ' + fmt.toUpperCase();
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const orig = btn.textContent;
+        btn.textContent = '⏳';
+        try {
+          const result = await window.tappi.downloadFile(filePath, fmt, name);
+          if (result && result.success) {
+            btn.textContent = '✓';
+            btn.style.color = '#22c55e';
+            btn.style.borderColor = '#22c55e';
+          } else if (result && result.error === 'Cancelled') {
+            btn.textContent = orig;
+            btn.disabled = false;
+          } else {
+            btn.textContent = '❌';
+            btn.title = (result && result.error) || 'Save failed';
+            btn.disabled = false;
+          }
+        } catch (e) {
+          btn.textContent = '❌';
+          btn.title = String(e);
+          btn.disabled = false;
+        }
+      });
+      actionsEl.appendChild(btn);
+    });
+
+    card.appendChild(iconEl);
+    card.appendChild(infoEl);
+    card.appendChild(actionsEl);
+
+    // Append as an agent message element
+    const msgEl = document.createElement('div');
+    msgEl.className = 'agent-msg assistant';
+    msgEl.appendChild(card);
+    agentMsgs.appendChild(msgEl);
+    agentMsgs.scrollTop = agentMsgs.scrollHeight;
+  }
+
+  if (window.tappi && window.tappi.onPresentDownload) {
+    window.tappi.onPresentDownload((data) => {
+      appendDownloadCard(data);
+    });
   }
 })();

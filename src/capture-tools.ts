@@ -28,11 +28,18 @@ function ensureDir(dirPath: string): void {
   if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
 
+const WORKSPACE_DIR = path.join(os.homedir(), 'tappi-workspace');
+const DOWNLOADS_DIR = path.join(os.homedir(), 'Downloads');
+
 function resolvePath(saveTo: string | undefined, defaultDir: string, defaultName: string): string {
   if (saveTo) {
     const expanded = saveTo.startsWith('~/') ? path.join(os.homedir(), saveTo.slice(2)) : saveTo;
-    ensureDir(path.dirname(expanded));
-    return expanded;
+    const resolved = path.resolve(expanded);
+    if (!resolved.startsWith(WORKSPACE_DIR) && !resolved.startsWith(DOWNLOADS_DIR)) {
+      throw new Error('Path must be within workspace or downloads directory');
+    }
+    ensureDir(path.dirname(resolved));
+    return resolved;
   }
   ensureDir(defaultDir);
   return path.join(defaultDir, defaultName);

@@ -9,8 +9,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('aria', {
   // ─── Agent communication ───
-  sendMessage: (message: string, conversationId?: string) =>
-    ipcRenderer.send('aria:send', message, conversationId),
+  sendMessage: (message: string, conversationId?: string, codingMode?: boolean) =>
+    ipcRenderer.send('aria:send', message, conversationId, codingMode),
 
   stopAgent: () => ipcRenderer.send('aria:stop'),
 
@@ -24,6 +24,10 @@ contextBridge.exposeInMainWorld('aria', {
 
   onToolResult: (cb: (result: { toolName: string; result: string; display: string }) => void) => {
     ipcRenderer.on('agent:tool-result', (_e, result) => cb(result));
+  },
+
+  onReasoningChunk: (cb: (data: { text: string; done: boolean }) => void) => {
+    ipcRenderer.on('agent:reasoning-chunk', (_e, data) => cb(data));
   },
 
   onTokenUsage: (cb: (data: { inputTokens: number; outputTokens: number; totalTokens: number }) => void) => {
@@ -74,6 +78,10 @@ contextBridge.exposeInMainWorld('aria', {
   onDeepComplete: (cb: (data: any) => void) => {
     ipcRenderer.on('agent:deep-complete', (_e, data) => cb(data));
   },
+  onDeepToolResult: (cb: (data: any) => void) => {
+    ipcRenderer.on('agent:deep-tool-result', (_e, data) => cb(data));
+  },
+  saveDeepReport: (outputDirAbsolute: string, format?: string) => ipcRenderer.invoke('deep:save-report', outputDirAbsolute, format || 'md'),
 
   // ─── Config ───
   getActiveConversationId: () => ipcRenderer.invoke('aria:get-active-conversation'),
@@ -100,4 +108,61 @@ contextBridge.exposeInMainWorld('aria', {
   onTeamUpdated: (cb: (data: any) => void) => {
     ipcRenderer.on('team:updated', (_e, data) => cb(data));
   },
+
+  // ─── Team Live Activity (coding mode) ───
+  onTeammateStart: (cb: (data: { id: string; name: string; role: string; task: string }) => void) => {
+    ipcRenderer.on('team:teammate-start', (_e, data) => cb(data));
+  },
+  onTeammateChunk: (cb: (data: { name: string; text: string; done: boolean }) => void) => {
+    ipcRenderer.on('team:teammate-chunk', (_e, data) => cb(data));
+  },
+  onTeammateTool: (cb: (data: { name: string; toolName: string; display: string }) => void) => {
+    ipcRenderer.on('team:teammate-tool', (_e, data) => cb(data));
+  },
+  onTeammateDone: (cb: (data: { name: string; status: string; summary: string }) => void) => {
+    ipcRenderer.on('team:teammate-done', (_e, data) => cb(data));
+  },
+  onTeamMailboxMessage: (cb: (data: { from: string; to: string; text: string }) => void) => {
+    ipcRenderer.on('team:mailbox-message', (_e, data) => cb(data));
+  },
+
+  // ─── Projects (Phase 9.07) ───
+  listProjects: (includeArchived?: boolean) =>
+    ipcRenderer.invoke('projects:list', includeArchived ?? false),
+
+  getProject: (projectId: string) =>
+    ipcRenderer.invoke('projects:get', projectId),
+
+  createProject: (name: string, workingDir: string, description?: string) =>
+    ipcRenderer.invoke('projects:create', name, workingDir, description),
+
+  getProjectArtifacts: (projectId: string) =>
+    ipcRenderer.invoke('projects:get-artifacts', projectId),
+
+  linkConversationToProject: (conversationId: string, projectId: string) =>
+    ipcRenderer.invoke('projects:link-conversation', conversationId, projectId),
+
+  getProjectConversations: (projectId: string) =>
+    ipcRenderer.invoke('projects:get-conversations', projectId),
+
+  // Phase 9.09: Create a new conversation pre-linked to a project
+  newProjectConversation: (projectId: string) =>
+    ipcRenderer.invoke('projects:new-conversation', projectId),
+
+  // Phase 9.09: Listen for real-time project updates (agent auto-creates project, etc.)
+  onProjectsUpdated: (cb: () => void) => {
+    ipcRenderer.on('projects:updated', () => cb());
+  },
+
+  // Phase 9.095: Delete a project (unlink from sidebar, or delete everything)
+  deleteProject: (projectId: string, mode: 'unlink' | 'delete-all') =>
+    ipcRenderer.invoke('projects:delete', projectId, mode),
+
+  // ─── File Downloads (Phase 9.07 Track 5) ───
+  onPresentDownload: (cb: (data: { path: string; name: string; size: number; formats: string[]; description?: string }) => void) => {
+    ipcRenderer.on('agent:present-download', (_e, data) => cb(data));
+  },
+
+  downloadFile: (sourcePath: string, format: string, defaultName?: string) =>
+    ipcRenderer.invoke('file:download', sourcePath, format, defaultName),
 });

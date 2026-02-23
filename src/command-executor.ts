@@ -438,7 +438,7 @@ Browser commands (B-prefix):
   B0 on|off              Toggle dark mode
   B2 list [domain]       List cookies
   B2 delete <domain|all> Delete cookies
-  B6 close|mute|pin|dup|others|right   Tab management
+  B6 switch <idx>|list|close|mute|pin|dup|others|right   Tab management
   B7 [add|toggle]        Toggle bookmark
   B8 in|out|reset|<pct>  Zoom control
   B9 <text>              Find on page

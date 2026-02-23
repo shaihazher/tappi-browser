@@ -267,6 +267,474 @@ body {
   background: var(--accent-soft);
 }
 
+/* ─── Project sidebar (Phase 9.07) ─── */
+
+.conv-section-header {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  padding: 10px 10px 4px 10px;
+  user-select: none;
+  -webkit-user-select: none;
+  flex-shrink: 0;
+}
+
+.project-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.12s;
+  user-select: none;
+  -webkit-user-select: none;
+  flex-shrink: 0;
+}
+
+.project-item:hover {
+  background: var(--bg-tab-hover);
+}
+
+.project-expand {
+  font-size: 9px;
+  color: var(--text-dim);
+  width: 10px;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+
+.project-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.project-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.project-count {
+  font-size: 10px;
+  color: var(--text-dim);
+  background: rgba(255,255,255,0.07);
+  border-radius: 10px;
+  padding: 1px 6px;
+  flex-shrink: 0;
+}
+
+.conv-item.indented {
+  padding-left: 22px;
+  font-size: 12px;
+}
+
+.conv-empty-indented {
+  padding: 4px 22px 8px 22px;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+body.coding-mode .project-name {
+  color: var(--matrix-bright, #00ff41);
+}
+
+body.coding-mode .project-item:hover {
+  background: rgba(0,255,65,0.05);
+}
+
+/* ─── Phase 9.09: Active project indicator ─── */
+
+#aria-project-indicator {
+  padding: 4px 14px 5px;
+  border-bottom: 1px solid var(--border-light);
+  background: rgba(139, 92, 246, 0.07);
+  flex-shrink: 0;
+}
+
+#aria-project-indicator-text {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+body.coding-mode #aria-project-indicator {
+  background: rgba(0, 255, 65, 0.05);
+  border-color: rgba(0, 255, 65, 0.12);
+}
+body.coding-mode #aria-project-indicator-text {
+  color: #0d660d;
+}
+
+/* ─── Phase 9.09: Projects section header with [+ New Project] ─── */
+
+.projects-section-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 8px 4px 8px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  position: relative;
+}
+
+.projects-section-header:hover {
+  background: var(--bg-tab-hover);
+  border-radius: var(--radius);
+}
+
+.section-collapse {
+  font-size: 9px;
+  color: var(--text-dim);
+  width: 10px;
+  flex-shrink: 0;
+}
+
+.section-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.section-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  flex: 1;
+  min-width: 0;
+}
+
+.section-new-btn {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+  flex-shrink: 0;
+  font-family: inherit;
+}
+
+.section-new-btn:hover {
+  color: var(--lotus);
+  border-color: var(--lotus);
+  background: var(--lotus-soft);
+}
+
+/* ─── Phase 9.09: Project item with [+ New Conv] button ─── */
+
+.project-item {
+  position: relative;
+}
+
+.project-new-conv-btn {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  padding: 2px 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+  flex-shrink: 0;
+  font-family: inherit;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.project-item:hover .project-new-conv-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.project-new-conv-btn:hover {
+  color: var(--lotus);
+  border-color: var(--lotus);
+  background: var(--lotus-soft);
+}
+
+/* ─── Phase 9.095: Project delete button ─── */
+
+.project-delete-btn {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+  flex-shrink: 0;
+  font-family: inherit;
+  opacity: 0;
+  pointer-events: none;
+  line-height: 1;
+}
+
+.project-item:hover .project-delete-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.project-delete-btn:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ─── Phase 9.095: Project deletion modal ─── */
+
+.proj-delete-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.proj-delete-card {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px 28px 20px;
+  min-width: 340px;
+  max-width: 440px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.proj-delete-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+  word-break: break-word;
+}
+
+.proj-delete-subtitle {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.proj-delete-btn-unlink,
+.proj-delete-btn-danger {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: all 0.15s;
+  width: 100%;
+}
+
+.proj-delete-btn-unlink {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.proj-delete-btn-unlink:hover {
+  border-color: var(--lotus);
+  background: var(--lotus-soft);
+}
+
+.proj-delete-btn-danger {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: rgba(233, 69, 96, 0.3);
+}
+
+.proj-delete-btn-danger:hover {
+  background: rgba(233, 69, 96, 0.25);
+  border-color: var(--accent);
+}
+
+.proj-delete-btn-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+  line-height: 1.2;
+}
+
+.proj-delete-btn-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.proj-delete-btn-text strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.proj-delete-btn-text small {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.proj-delete-btn-danger .proj-delete-btn-text small {
+  color: rgba(233, 69, 96, 0.7);
+}
+
+.proj-delete-btn-cancel {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 6px 4px;
+  text-align: center;
+  transition: color 0.15s;
+  align-self: center;
+  margin-top: 2px;
+}
+
+.proj-delete-btn-cancel:hover {
+  color: var(--text-primary);
+}
+
+/* Coding mode variant — accent green for unlink button */
+body.coding-mode .proj-delete-btn-unlink:hover {
+  border-color: #00ff41;
+  background: rgba(0, 255, 65, 0.08);
+}
+
+/* ─── Phase 9.09: Inline new project input ─── */
+
+.new-project-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  flex-shrink: 0;
+}
+
+.new-project-input {
+  flex: 1;
+  background: var(--bg-secondary);
+  border: 1px solid var(--lotus);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 4px 8px;
+  outline: none;
+}
+
+.new-project-confirm-btn {
+  background: var(--lotus-soft);
+  border: 1px solid var(--lotus);
+  border-radius: 4px;
+  color: var(--lotus);
+  font-size: 11px;
+  font-family: inherit;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.new-project-confirm-btn:hover {
+  background: var(--lotus);
+  color: white;
+}
+
+.new-project-cancel-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 2px 4px;
+  transition: color 0.15s;
+  flex-shrink: 0;
+}
+
+.new-project-cancel-btn:hover {
+  color: var(--accent);
+}
+
+/* ─── Phase 9.09: Project picker dropdown ─── */
+
+.project-picker-menu {
+  position: fixed;
+  z-index: 1001;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 0;
+  min-width: 180px;
+  max-width: 260px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  font-size: 13px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.project-picker-header {
+  padding: 6px 12px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.project-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  color: var(--text-primary);
+  transition: background 0.1s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.project-picker-item:hover {
+  background: var(--bg-tab-hover);
+}
+
+.project-picker-empty {
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
 /* ═══════════════════════════════════════════
    MAIN CHAT AREA
 ═══════════════════════════════════════════ */
@@ -398,6 +866,7 @@ body {
 .aria-msg.assistant {
   align-self: flex-start;
   align-items: flex-start;
+  max-width: 95%;
 }
 
 .aria-msg.system {
@@ -409,7 +878,7 @@ body {
 .aria-msg.tool {
   align-self: flex-start;
   align-items: flex-start;
-  max-width: 90%;
+  max-width: 95%;
 }
 
 .aria-bubble {
@@ -455,6 +924,19 @@ body {
   opacity: 0.75;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.aria-msg.tool .tool-content {
+  font-size: 11.5px;
+  white-space: normal;
+}
+
+.aria-msg.tool .tool-content strong {
+  color: var(--text-secondary);
+}
+
+.aria-msg.tool .tool-content p {
+  margin: 2px 0;
 }
 
 /* Message timestamp */
@@ -607,7 +1089,7 @@ body {
   margin: 14px 0;
 }
 
-/* ─── Deep mode plan cards (reuse agent panel style) ─── */
+/* ─── Deep mode plan cards (Claude.ai-inspired) ─── */
 .deep-plan {
   padding: 12px;
   border-radius: var(--radius);
@@ -615,14 +1097,20 @@ body {
   border: 1px solid var(--border-light);
   font-size: 12px;
   width: 100%;
-  max-width: 560px;
+  box-sizing: border-box;
+}
+
+/* Deep plan cards should use full chat width */
+.aria-msg:has(.deep-plan) {
+  max-width: 100%;
+  width: 100%;
 }
 
 .deep-plan-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   font-weight: 600;
   color: var(--text-primary);
   font-size: 13px;
@@ -647,10 +1135,32 @@ body {
   color: #34d399;
 }
 
+.deep-plan-mode.parallel {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+}
+
+/* Progress bar */
+.deep-progress-bar {
+  height: 3px;
+  background: var(--border-light);
+  border-radius: 2px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+.deep-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #8b5cf6, #a78bfa);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+  width: 0%;
+}
+
 .deep-step {
   display: flex;
   flex-direction: column;
-  padding: 7px 0;
+  padding: 6px 0;
   border-bottom: 1px solid var(--border-light);
 }
 
@@ -695,21 +1205,143 @@ body {
 .deep-step-stream.visible   { display: block; }
 .deep-step-stream.streaming { border-left: 2px solid rgba(139, 92, 246, 0.4); padding-left: 10px; }
 
+/* Tool chips — Claude.ai-inspired collapsible tool results */
 .deep-step-tools {
-  padding: 3px 0 0 24px;
-  font-size: 10px;
-  color: var(--text-dim);
+  padding: 4px 0 2px 24px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
-.deep-complete {
-  padding: 8px 12px;
+.deep-tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(139, 92, 246, 0.08);
+  border: 1px solid rgba(139, 92, 246, 0.15);
+  font-size: 10px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.deep-tool-chip:hover {
+  background: rgba(139, 92, 246, 0.15);
+  border-color: rgba(139, 92, 246, 0.3);
+}
+
+.deep-tool-chip .tool-icon {
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.deep-tool-chip .tool-name {
+  font-weight: 500;
+}
+
+.deep-tool-chip .tool-summary {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Expanded tool detail */
+.deep-tool-detail {
+  display: none;
+  padding: 6px 8px;
+  margin: 2px 0 2px 24px;
   border-radius: 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+  line-height: 1.4;
+}
+
+.deep-tool-detail.visible { display: block; }
+
+/* Completion card */
+.deep-complete {
+  padding: 10px 14px;
+  border-radius: 8px;
   font-size: 12px;
   color: var(--text-secondary);
   background: rgba(16, 185, 129, 0.08);
   border: 1px solid rgba(16, 185, 129, 0.2);
   margin-top: 4px;
-  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.deep-complete-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.deep-complete-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+  flex-wrap: wrap;
+}
+
+/* Download button group — flex row of format buttons */
+.deep-download-group {
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.deep-download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(139, 92, 246, 0.12);
+  border: 1px solid rgba(139, 92, 246, 0.25);
+  color: #a78bfa;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.deep-download-btn:hover {
+  background: rgba(139, 92, 246, 0.2);
+  border-color: rgba(139, 92, 246, 0.4);
+}
+
+.deep-open-dir-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(107, 114, 128, 0.1);
+  border: 1px solid rgba(107, 114, 128, 0.2);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.deep-open-dir-btn:hover {
+  background: rgba(107, 114, 128, 0.2);
 }
 
 .deep-chevron {
@@ -720,6 +1352,16 @@ body {
 }
 
 .deep-chevron.open { transform: rotate(90deg); }
+
+/* Spinner animation for active step status */
+@keyframes deep-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.deep-step.active .deep-step-status {
+  animation: deep-spin 1s linear infinite;
+}
 
 /* ═══════════════════════════════════════════
    TOKEN BAR
@@ -1018,10 +1660,36 @@ body {
 
 .aria-team-mate {
   display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 3px 0;
+  font-size: 11px;
+}
+
+.aria-team-mate-row {
+  display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 0;
-  font-size: 11px;
+}
+
+.aria-team-activity {
+  font-size: 10px;
+  color: var(--text-dim);
+  padding-left: 22px;
+  opacity: 0.7;
+}
+
+.aria-team-activity.done {
+  color: #16a34a;
+  opacity: 0.8;
+}
+
+body.coding-mode .aria-team-activity {
+  color: rgba(0, 255, 65, 0.5);
+}
+
+body.coding-mode .aria-team-activity.done {
+  color: rgba(0, 255, 65, 0.7);
 }
 
 .aria-team-name {
@@ -1042,4 +1710,518 @@ body {
   font-size: 10px;
   color: #60a5fa;
   opacity: 0.8;
+}
+
+/* ═══════════════════════════════════════════
+   CODING MODE — MATRIX THEME
+   Overrides CSS variables when body.coding-mode is set.
+   Green phosphor terminal aesthetic.
+═══════════════════════════════════════════ */
+
+body.coding-mode {
+  --bg-primary:    #0a0a0a;
+  --bg-secondary:  #0d1a0d;
+  --bg-tab:        #0a1f0a;
+  --bg-tab-hover:  #122812;
+  --bg-input:      #0d1a0d;
+  --bg-panel:      #060806;
+  --bg-agent:      #050705;
+  --text-primary:  #33ff33;
+  --text-secondary:#1a9e1a;
+  --text-dim:      #0d660d;
+  --accent:        #00ff41;
+  --accent-soft:   rgba(0, 255, 65, 0.1);
+  --accent-glow:   rgba(0, 255, 65, 0.25);
+  --lotus:         #00ff41;
+  --lotus-soft:    rgba(0, 255, 65, 0.1);
+  --border:        #1a3a1a;
+  --border-light:  #0f2a0f;
+}
+
+/* Coding mode: monospace everything */
+body.coding-mode,
+body.coding-mode #aria-input,
+body.coding-mode .aria-bubble,
+body.coding-mode .aria-welcome,
+body.coding-mode .suggestion-chip {
+  font-family: 'SF Mono', 'Menlo', 'Consolas', 'Fira Code', monospace;
+}
+
+/* Coding mode: green scanline overlay */
+body.coding-mode::after {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 255, 65, 0.015) 2px,
+    rgba(0, 255, 65, 0.015) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* Coding mode: glow on assistant bubbles */
+body.coding-mode .aria-msg.assistant .aria-bubble {
+  background: rgba(0, 255, 65, 0.04);
+  border-color: rgba(0, 255, 65, 0.15);
+  box-shadow: 0 0 8px rgba(0, 255, 65, 0.08);
+}
+
+/* Coding mode: user bubbles */
+body.coding-mode .aria-msg.user .aria-bubble {
+  background: rgba(0, 255, 65, 0.1);
+  border-color: rgba(0, 255, 65, 0.2);
+}
+
+/* Coding mode: links */
+body.coding-mode a { color: #00ff41; }
+body.coding-mode a:hover { color: #66ff66; text-shadow: 0 0 6px rgba(0, 255, 65, 0.4); }
+
+/* Coding mode: code blocks — brighter green on darker bg */
+body.coding-mode pre,
+body.coding-mode code {
+  background: #050f05 !important;
+  color: #44ff44 !important;
+  border-color: #1a3a1a !important;
+}
+
+/* Coding mode: input area glow */
+body.coding-mode #aria-input {
+  border-color: rgba(0, 255, 65, 0.25);
+  color: #33ff33;
+  caret-color: #00ff41;
+}
+body.coding-mode #aria-input:focus {
+  border-color: rgba(0, 255, 65, 0.5);
+  box-shadow: 0 0 10px rgba(0, 255, 65, 0.15);
+}
+body.coding-mode #aria-input::placeholder {
+  color: #0d660d;
+}
+
+/* Coding mode: sidebar */
+body.coding-mode #aria-sidebar {
+  background: #060806;
+  border-color: #1a3a1a;
+}
+body.coding-mode .conv-item:hover {
+  background: rgba(0, 255, 65, 0.06);
+}
+body.coding-mode .conv-item.active {
+  background: rgba(0, 255, 65, 0.1);
+  border-color: rgba(0, 255, 65, 0.3);
+}
+
+/* Coding mode: scrollbar */
+body.coding-mode ::-webkit-scrollbar { background: #0a0a0a; }
+body.coding-mode ::-webkit-scrollbar-thumb { background: #1a3a1a; }
+body.coding-mode ::-webkit-scrollbar-thumb:hover { background: #2a4a2a; }
+
+/* Coding mode: team card — green tint */
+body.coding-mode #aria-team-card {
+  background: rgba(0, 255, 65, 0.05);
+  border-color: rgba(0, 255, 65, 0.15);
+}
+body.coding-mode #aria-team-title { color: #00ff41; }
+body.coding-mode #aria-team-progress { color: #00ff41; }
+
+/* Coding mode: mode button — bright green */
+body.coding-mode .aria-mode-btn.on {
+  background: rgba(0, 255, 65, 0.15);
+  border-color: rgba(0, 255, 65, 0.5);
+  color: #00ff41;
+  box-shadow: 0 0 12px rgba(0, 255, 65, 0.3), 0 0 4px rgba(0, 255, 65, 0.15);
+}
+
+/* Coding mode: tool results */
+body.coding-mode .aria-msg.tool {
+  color: #1a9e1a;
+}
+
+/* Coding mode: welcome screen */
+body.coding-mode .welcome-icon { filter: hue-rotate(120deg) brightness(1.5); }
+body.coding-mode .welcome-title { color: #00ff41; text-shadow: 0 0 10px rgba(0, 255, 65, 0.3); }
+body.coding-mode .welcome-subtitle { color: #1a9e1a; }
+body.coding-mode .suggestion-chip {
+  background: rgba(0, 255, 65, 0.06);
+  border-color: rgba(0, 255, 65, 0.2);
+  color: #33ff33;
+}
+body.coding-mode .suggestion-chip:hover {
+  background: rgba(0, 255, 65, 0.12);
+  border-color: rgba(0, 255, 65, 0.4);
+}
+
+/* Coding mode: token bar */
+body.coding-mode #aria-token-bar { background: #0d1a0d; }
+body.coding-mode #aria-token-fill { background: linear-gradient(90deg, #00ff41, #33ff33); }
+body.coding-mode #aria-token-label { color: #1a9e1a; }
+
+/* Coding mode banner — persistent indicator at top of chat */
+.coding-mode-banner {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  background: rgba(0, 255, 65, 0.06);
+  border-bottom: 1px solid rgba(0, 255, 65, 0.15);
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 11px;
+  color: #00ff41;
+  flex-shrink: 0;
+}
+body.coding-mode .coding-mode-banner {
+  display: flex;
+}
+.coding-mode-banner .banner-icon {
+  font-size: 14px;
+  animation: pulse-green 2s ease-in-out infinite;
+}
+@keyframes pulse-green {
+  0%, 100% { opacity: 0.6; text-shadow: 0 0 4px rgba(0, 255, 65, 0.2); }
+  50% { opacity: 1; text-shadow: 0 0 10px rgba(0, 255, 65, 0.5); }
+}
+
+/* ─── File Download Card (Phase 9.07 Track 5) ─── */
+
+.file-download-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--bg-secondary, #16213e);
+  border-radius: 8px;
+  border: 1px solid var(--border-color, #2a2a4a);
+  margin: 4px 0;
+  max-width: 480px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+
+.file-download-card .file-icon {
+  font-size: 28px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.file-download-card .file-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-download-card .file-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary, #e0e0e0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-download-card .file-size {
+  font-size: 11px;
+  color: var(--text-secondary, #8892a4);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-download-card .file-actions {
+  display: flex;
+  gap: 5px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.file-download-card .file-actions button {
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border-color, #3a3a5c);
+  background: var(--bg-panel, #131327);
+  color: var(--text-primary, #e0e0e0);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.file-download-card .file-actions button:hover:not(:disabled) {
+  background: var(--accent, #e94560);
+  color: #fff;
+  border-color: transparent;
+}
+
+.file-download-card .file-actions button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ─── Reasoning / thinking chip ─── */
+
+.aria-thinking-chip {
+  margin: 6px 0 4px 0;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 12px;
+  background: rgba(139, 92, 246, 0.05);
+}
+
+.thinking-chip-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  color: var(--text-dim);
+  transition: background 0.15s;
+}
+
+.thinking-chip-header:hover {
+  background: rgba(139, 92, 246, 0.08);
+}
+
+.thinking-chip-icon { font-size: 13px; }
+
+.thinking-chip-label {
+  flex: 1;
+  font-weight: 500;
+  font-size: 11px;
+}
+
+.thinking-chip-toggle {
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+
+.aria-thinking-chip.expanded .thinking-chip-toggle {
+  transform: rotate(180deg);
+}
+
+.thinking-chip-body {
+  display: none;
+  padding: 8px 12px 10px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-light);
+}
+
+.aria-thinking-chip.expanded .thinking-chip-body {
+  display: block;
+}
+
+body.coding-mode .aria-thinking-chip {
+  background: rgba(0, 255, 65, 0.04);
+  border-color: rgba(0, 255, 65, 0.15);
+}
+body.coding-mode .thinking-chip-header:hover {
+  background: rgba(0, 255, 65, 0.06);
+}
+
+/* ═══════════════════════════════════════════
+   TEAM LIVE PANEL (coding mode)
+   ═══════════════════════════════════════════ */
+
+/* ─── Team Live Panel (in-chat, coding mode) ─── */
+.team-live-panel {
+  margin: 12px 0;
+  border: 1px solid rgba(139, 92, 246, 0.35);
+  border-radius: 12px;
+  overflow: hidden;
+  font-size: 12.5px;
+  background: rgba(139, 92, 246, 0.06);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+body.coding-mode .team-live-panel {
+  border-color: rgba(0, 255, 65, 0.3);
+  background: rgba(0, 255, 65, 0.04);
+  box-shadow: 0 0 12px rgba(0, 255, 65, 0.06);
+}
+
+.team-live-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  font-weight: 600;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-primary);
+  background: rgba(139, 92, 246, 0.04);
+}
+
+body.coding-mode .team-live-header {
+  background: rgba(0, 255, 65, 0.03);
+}
+
+.team-live-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.team-live-body {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.team-mate-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 10px 12px;
+  transition: border-color 0.2s;
+}
+
+.team-mate-card.active {
+  border-color: rgba(139, 92, 246, 0.4);
+}
+
+body.coding-mode .team-mate-card.active {
+  border-color: rgba(0, 255, 65, 0.35);
+}
+
+.team-mate-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.team-mate-name {
+  font-weight: 700;
+  color: var(--lotus);
+  font-size: 12.5px;
+}
+
+body.coding-mode .team-mate-name {
+  color: var(--matrix-bright, #00ff41);
+}
+
+.team-mate-role {
+  font-size: 11px;
+  color: var(--text-dim);
+  flex: 1;
+}
+
+.team-mate-status {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.team-mate-status.working {
+  background: rgba(251, 191, 36, 0.15);
+  color: #d97706;
+  animation: team-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes team-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.team-mate-status.done {
+  background: rgba(34, 197, 94, 0.15);
+  color: #16a34a;
+}
+
+.team-mate-status.failed {
+  background: rgba(239, 68, 68, 0.15);
+  color: #dc2626;
+}
+
+.team-mate-status.blocked {
+  background: rgba(156, 163, 175, 0.15);
+  color: #6b7280;
+}
+
+.team-mate-task {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.team-mate-output {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.team-tool-row {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 3px 0;
+  border-left: 2px solid rgba(139, 92, 246, 0.3);
+  padding-left: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.coding-mode .team-tool-row {
+  border-left-color: rgba(0, 255, 65, 0.3);
+}
+
+.team-text-live {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-style: italic;
+  padding: 3px 8px;
+  border-left: 2px solid rgba(139, 92, 246, 0.2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: team-pulse 2s ease-in-out infinite;
+}
+
+body.coding-mode .team-text-live {
+  border-left-color: rgba(0, 255, 65, 0.2);
+  color: rgba(0, 255, 65, 0.7);
+}
+
+/* ─── Team Mailbox Messages ─── */
+.team-mailbox-log {
+  border-top: 1px solid var(--border-light);
+  padding: 8px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.team-mailbox-row {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  padding: 3px 0;
+  border-left: 2px solid rgba(251, 191, 36, 0.4);
+  padding-left: 8px;
+}
+
+body.coding-mode .team-mailbox-row {
+  border-left-color: rgba(0, 255, 65, 0.3);
+}
+
+.team-mailbox-row b {
+  color: var(--text-secondary);
+}
+
+body.coding-mode .team-mailbox-row b {
+  color: rgba(0, 255, 65, 0.8);
 }

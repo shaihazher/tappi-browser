@@ -130,6 +130,36 @@ export function initDatabase(dbPath?: string): Database.Database {
   `);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_conv_messages ON conversation_messages(conversation_id, created_at)`);
 
+  // ─── Projects (Phase 9.07) ───
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      working_dir TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived INTEGER DEFAULT 0
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS project_artifacts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+      path TEXT NOT NULL,
+      type TEXT NOT NULL,
+      description TEXT,
+      created_at TEXT NOT NULL,
+      conversation_id TEXT
+    )
+  `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_project_artifacts ON project_artifacts(project_id)`);
+
+  // Safe migrations: add project_id + mode columns to conversations if not present
+  try { db.exec(`ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL`); } catch {}
+  try { db.exec(`ALTER TABLE conversations ADD COLUMN mode TEXT DEFAULT 'chat'`); } catch {}
+
   // FTS5 for full-text search across conversation messages
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS conversation_messages_fts USING fts5(

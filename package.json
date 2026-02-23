@@ -25,6 +25,7 @@
     "@ai-sdk/openai": "^3.0.30",
     "ai": "^6.0.97",
     "better-sqlite3": "^12.6.2",
+    "dompurify": "^3.3.1",
     "marked": "^17.0.3",
     "tldts": "^7.0.23",
     "zod": "^4.3.6"

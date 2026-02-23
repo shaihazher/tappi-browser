@@ -5,7 +5,8 @@
  * synthesizes results. Teammates = independent agent sessions with their own context.
  */
 
-import { streamText } from 'ai';
+import { streamText, stepCountIs } from 'ai';
+import type { WebContents } from 'electron';
 import { createModel, getModelConfig, type LLMConfig } from './llm-client';
 import { createTools } from './tool-registry';
 import type { BrowserContext } from './browser-tools';
@@ -33,8 +34,26 @@ import {
   type SharedTask,
 } from './shared-task-list';
 import { WorktreeManager, createWorktreeManager, type WorktreeInfo } from './worktree-manager';
+import * as fs from 'fs';
+import * as path from 'path';
+import {
+  initCodingMemory,
+  logTeamSession,
+  updateMainState,
+  type TeamSessionSummary,
+  type TeammateMemory,
+  type ContractMemory,
+} from './coding-memory';
 
 // ─── Types ───
+
+export interface ContractFile {
+  path: string;          // relative path from workingDir (e.g. "contracts/types.ts")
+  absolutePath: string;  // resolved absolute path
+  description: string;   // what this contract defines
+  phase: number;         // which spawn round this contract belongs to (1-based)
+  createdAt: string;
+}
 
 export interface TeamSession {
   id: string;
@@ -46,6 +65,11 @@ export interface TeamSession {
   taskDescription: string;
   worktreeIsolation?: boolean;    // Phase 8.39: git worktree per teammate
   worktreeManager?: WorktreeManager; // Phase 8.39: manages worktree lifecycle
+  ariaWebContents?: WebContents | null; // Live UI broadcasting
+  // Phase 9.096: Contract-first parallel work
+  contracts: ContractFile[];      // shared contract/interface files written by lead
+  currentPhase: number;           // current spawn round (1-based)
+  validationResults?: string;     // post-merge validation output
 }
 
 export interface Teammate {
@@ -55,8 +79,10 @@ export interface Teammate {
   sessionId: string;
   status: 'idle' | 'working' | 'blocked' | 'done' | 'failed';
   currentTaskId?: string;
+  currentTaskText?: string;       // human-readable task description from team_run_teammate
   model?: string;                 // can use different model than lead
   toolsUsed: string[];
+  filesWritten?: string[];        // passive tracking: files created/modified by this teammate
   result?: string;
   error?: string;
   startedAt: number;
@@ -72,12 +98,19 @@ export interface TeammateRunOptions {
   task: string;
   browserCtx: BrowserContext;
   llmConfig: LLMConfig;
+  ariaWebContents?: WebContents | null;
 }
 
 // ─── Active Teams ───
 
 const activeTeams = new Map<string, TeamSession>();
 let teamCounter = 0;
+let teamDevMode = false;
+
+/** Update teammate developer mode — called when config changes. */
+export function setTeamDevMode(enabled: boolean): void {
+  teamDevMode = enabled;
+}
 
 // ─── IPC Callback ───
 
@@ -102,7 +135,15 @@ export async function createTeam(
   llmConfig: LLMConfig,
   teammateConfigs?: Array<{ name: string; role: string; model?: string }>,
   worktreeIsolation?: boolean,
+  ariaWebContents?: WebContents | null,
 ): Promise<{ teamId: string; summary: string }> {
+  // F16: Max 10 teammates across all teams
+  const totalTeammates = Array.from(activeTeams.values()).reduce((sum, t) => sum + t.teammates.size, 0);
+  const requestedCount = teammateConfigs?.length || 3; // defaultTeammates returns ~3
+  if (totalTeammates + requestedCount > 10) {
+    return { teamId: '', summary: `❌ Cannot create team: would exceed max 10 teammates (currently ${totalTeammates} active). Dissolve existing teams first.` };
+  }
+
   const teamId = `team-${++teamCounter}`;
 
   // Initialize mailbox and task list
@@ -124,6 +165,10 @@ export async function createTeam(
     taskDescription,
     worktreeIsolation: worktreesEnabled,
     worktreeManager: wtManager || undefined,
+    ariaWebContents: ariaWebContents ?? null,
+    // Phase 9.096: Contract-first parallel work
+    contracts: [],
+    currentPhase: 1,
   };
 
   activeTeams.set(teamId, team);
@@ -194,7 +239,13 @@ export async function createTeam(
     summary += '\n' + worktreeWarnings.join('\n');
   }
 
-  summary += `\n\nUse team_task_add to create tasks, then team_run_teammate to assign work.`;
+  summary += `\n\n**Contract-First Protocol (Phase 9.096):**
+1. Write shared contracts FIRST with \`team_write_contracts\` — type definitions, interfaces, function signatures that teammates must import/reference.
+2. Then \`team_task_add\` to define tasks referencing those contracts.
+3. Then \`team_run_teammate\` to spawn teammates — they receive contracts in their system prompt.
+4. After teammates finish, call \`team_validate\` to verify integration before dissolving.
+
+Max ~5 contract files per phase. Later phases build on real merged code, not more stubs.`;
 
   return { teamId, summary };
 }
@@ -202,16 +253,24 @@ export async function createTeam(
 // ─── Run a Teammate ───
 
 export async function runTeammate(opts: TeammateRunOptions): Promise<string> {
-  const { teammate, teamId, task, browserCtx, llmConfig } = opts;
+  const { teammate, teamId, task, browserCtx, llmConfig, ariaWebContents } = opts;
   const team = activeTeams.get(teamId);
   if (!team) return `❌ Team "${teamId}" not found.`;
 
+  // Store ariaWebContents on the team session for future reference
+  if (ariaWebContents && !team.ariaWebContents) {
+    team.ariaWebContents = ariaWebContents;
+  }
+
   teammate.status = 'working';
+  teammate.currentTaskText = task;
   teammate.startedAt = Date.now();
   notifyUpdate(teamId);
 
   // Run in background
-  runTeammateSession(teammate, teamId, task, browserCtx, llmConfig).catch(err => {
+  console.log(`[team] Spawning ${teammate.name}...`);
+  runTeammateSession(teammate, teamId, task, browserCtx, llmConfig, ariaWebContents ?? team.ariaWebContents).catch(err => {
+    console.error(`[team] ${teammate.name} unhandled rejection:`, err?.message, err?.stack?.slice(0, 200));
     teammate.status = 'failed';
     teammate.error = err?.message || 'Unknown error';
     teammate.finishedAt = Date.now();
@@ -227,8 +286,35 @@ async function runTeammateSession(
   task: string,
   browserCtx: BrowserContext,
   llmConfig: LLMConfig,
+  ariaWebContents?: WebContents | null,
 ): Promise<void> {
   const { sessionId, name, role } = teammate;
+  console.log(`[team] ${name} session starting — teamId: ${teamId}, task: ${task.slice(0, 60)}`);
+
+  // ─── Mailbox throttle (max 1 file message per 5s per teammate) ───
+  let lastFileMailTs = 0;
+  let pendingFileCount = 0;
+
+  // ─── Broadcast helper ───
+  function teamBroadcast(channel: string, data: any): void {
+    try {
+      if (ariaWebContents && !ariaWebContents.isDestroyed()) {
+        ariaWebContents.send(channel, data);
+      } else {
+        console.warn(`[team] ${name} broadcast SKIPPED (ariaWebContents ${ariaWebContents ? 'destroyed' : 'null'}): ${channel}`);
+      }
+    } catch (e: any) {
+      console.warn(`[team] ${name} broadcast FAILED: ${channel} — ${e?.message}`);
+    }
+  }
+
+  // Announce teammate start
+  teamBroadcast('team:teammate-start', {
+    id: teammate.id,
+    name,
+    role,
+    task,
+  });
 
   try {
     // Use teammate's explicit model if specified; otherwise use secondary model (Phase 8.85).
@@ -239,7 +325,7 @@ async function runTeammateSession(
       : baseConfig;
 
     const model = createModel(tmConfig);
-    const tools = createTools(browserCtx, sessionId, { developerMode: true, llmConfig: tmConfig });
+    const tools = createTools(browserCtx, sessionId, { developerMode: teamDevMode, llmConfig: tmConfig });
 
     // Get unread messages for this teammate
     const unread = getUnreadMessages(teamId, name);
@@ -257,7 +343,7 @@ async function runTeammateSession(
     addMessage(sessionId, { role: 'user', content: userContent });
 
     // Phase 8.40: Timeout-based execution — no step limit
-    const teammateTimeoutMs = llmConfig.teammateTimeoutMs ?? 600_000; // default 10 min
+    const teammateTimeoutMs = llmConfig.teammateTimeoutMs ?? 900_000; // default 15 min
     const tmRunStart = Date.now();
     let tmTimedOut = false;
     const tmAbortController = new AbortController();
@@ -266,28 +352,103 @@ async function runTeammateSession(
       tmAbortController.abort();
     }, teammateTimeoutMs);
 
+    console.log(`[team] ${name} calling LLM (model: ${tmConfig.model}, provider: ${tmConfig.provider})...`);
     const result = await streamText({
       model,
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent }],
       tools,
-      // No stopWhen — runs until model stops or timeout (Phase 8.40)
+      // Phase 9 fix: AI SDK v6 defaults to stepCountIs(1). Teammates need multi-step.
+      stopWhen: stepCountIs(100),
       abortSignal: tmAbortController.signal,
       onStepFinish: async (event: any) => {
         try {
           const toolResults = event.toolResults || [];
+          const isFirstTool = teammate.toolsUsed.length === 0 && toolResults.length > 0;
           for (const tr of toolResults) {
-            teammate.toolsUsed.push(tr.toolName || 'unknown');
+            const toolName = tr.toolName || 'unknown';
+            teammate.toolsUsed.push(toolName);
+
+            const resultStr = typeof tr.result === 'string'
+              ? tr.result
+              : JSON.stringify(tr.result ?? '');
+
+            // Broadcast tool activity to in-chat panel
+            teamBroadcast('team:teammate-tool', {
+              name,
+              toolName,
+              display: `🔧 ${toolName} → ${resultStr.slice(0, 120)}`,
+            });
+
+            // Passive file tracking + auto mailbox on file writes (throttled)
+            if (toolName === 'file_write' || toolName === 'file_append') {
+              const filePath = (tr as any).args?.path || (tr as any).args?.file_path || '';
+              if (filePath) {
+                if (!teammate.filesWritten) teammate.filesWritten = [];
+                teammate.filesWritten.push(filePath);
+                pendingFileCount++;
+                const now = Date.now();
+                if (now - lastFileMailTs >= 5000) {
+                  lastFileMailTs = now;
+                  const shortPath = filePath.split('/').slice(-2).join('/');
+                  const sizeMatch = resultStr.match(/\(([^)]+)\)/);
+                  const sizeStr = sizeMatch ? ` (${sizeMatch[1]})` : '';
+                  const batchNote = pendingFileCount > 1 ? ` (+${pendingFileCount - 1} more)` : '';
+                  const mailText = `📄 Created ${shortPath}${sizeStr}${batchNote}`;
+                  sendMessage(teamId, name, '@lead', mailText);
+                  teamBroadcast('team:mailbox-message', { from: name, to: '@lead', text: mailText });
+                  pendingFileCount = 0;
+                }
+              }
+            }
+
+            // Auto-generate mailbox for exec results (build/test outcomes)
+            if (toolName === 'exec' && resultStr.length > 0) {
+              const exitMatch = resultStr.match(/exit(?:Code)?[:\s]+(\d+)/i);
+              const exitCode = exitMatch ? parseInt(exitMatch[1]) : null;
+              if (exitCode !== null && exitCode !== 0) {
+                const mailText = `⚠️ Command failed (exit ${exitCode}): ${resultStr.slice(0, 80)}`;
+                sendMessage(teamId, name, '@lead', mailText);
+                teamBroadcast('team:mailbox-message', { from: name, to: '@lead', text: mailText });
+              }
+            }
           }
+
+          // Auto mailbox: announce start on first tool call
+          if (isFirstTool) {
+            const startMail = `🚀 Started working — ${task.slice(0, 60)}`;
+            sendMessage(teamId, name, '@lead', startMail);
+            teamBroadcast('team:mailbox-message', { from: name, to: '@lead', text: startMail });
+          }
+
+          // Passive top card update — every tool step, not just when teammate explicitly reports
+          notifyUpdate(teamId);
         } catch {}
       },
     });
 
     let fullResponse = '';
+    let tmChunkCount = 0;
+    console.log(`[team] ${name} starting stream...`);
     try {
-      for await (const chunk of result.textStream) {
-        fullResponse += chunk;
+      // Use fullStream to capture text-delta chunks for live UI broadcasting
+      for await (const chunk of result.fullStream) {
+        tmChunkCount++;
+        if (tmChunkCount === 1) console.log(`[team] ${name} first chunk: type=${(chunk as any).type}`);
+        if (chunk.type === 'text-delta') {
+          // AI SDK v6: field is 'text' on text-delta chunks (not 'textDelta' or 'delta')
+          const textDelta = (chunk as any).text ?? (chunk as any).delta ?? (chunk as any).textDelta ?? '';
+          fullResponse += textDelta;
+          if (textDelta) {
+            teamBroadcast('team:teammate-chunk', {
+              name,
+              text: textDelta,
+              done: false,
+            });
+          }
+        }
       }
+      console.log(`[team] ${name} stream done — ${fullResponse.length} chars, ${tmChunkCount} chunks, ${teammate.toolsUsed.length} tools`);
     } catch (streamErr: any) {
       if (streamErr?.name === 'AbortError' && tmTimedOut) {
         // Timeout: mark task as blocked, notify lead
@@ -305,11 +466,19 @@ async function runTeammateSession(
           }
         }
 
-        // Notify lead
-        sendMessage(teamId, name, '@lead',
-          `⏰ Timeout: ${name} timed out after ${durStr}. ${teammate.toolsUsed.length} tool calls completed.\n` +
-          (fullResponse ? `Partial output:\n${fullResponse.slice(0, 500)}` : 'No output produced.')
-        );
+        // Notify lead and broadcast mailbox event
+        const timeoutContent = `⏰ Timeout: ${name} timed out after ${durStr}. ${teammate.toolsUsed.length} tool calls completed.\n` +
+          (fullResponse ? `Partial output:\n${fullResponse.slice(0, 500)}` : 'No output produced.');
+        sendMessage(teamId, name, '@lead', timeoutContent);
+        teamBroadcast('team:mailbox-message', {
+          from: name,
+          to: '@lead',
+          text: timeoutContent.slice(0, 200),
+        });
+
+        // Signal stream done
+        teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
+        teamBroadcast('team:teammate-done', { name, status: 'blocked', summary: timeoutMsg });
 
         teammate.result = fullResponse
           ? `${fullResponse}\n\n---\n⏰ Timed out after ${durStr}.`
@@ -330,14 +499,32 @@ async function runTeammateSession(
     teammate.status = 'done';
     teammate.finishedAt = Date.now();
 
-    // Notify lead via mailbox
-    sendMessage(teamId, name, '@lead', `Task complete: ${task.slice(0, 100)}\n\nResult: ${(teammate.result || '').slice(0, 300)}`);
+    // Notify lead via mailbox and broadcast mailbox event
+    const completeContent = `Task complete: ${task.slice(0, 100)}\n\nResult: ${(teammate.result || '').slice(0, 300)}`;
+    sendMessage(teamId, name, '@lead', completeContent);
+    teamBroadcast('team:mailbox-message', {
+      from: name,
+      to: '@lead',
+      text: completeContent.slice(0, 200),
+    });
+
+    // Signal stream done
+    teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
+    teamBroadcast('team:teammate-done', {
+      name,
+      status: 'done',
+      summary: (teammate.result || '').slice(0, 300),
+    });
 
     notifyUpdate(teamId);
 
   } catch (err: any) {
+    const errMsg = err?.message || 'Unknown error';
+    console.error(`[team] ${name} session error:`, errMsg, err?.stack?.slice(0, 300));
+    teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
+    teamBroadcast('team:teammate-done', { name, status: 'failed', summary: errMsg });
     teammate.status = 'failed';
-    teammate.error = err?.message || 'Unknown error';
+    teammate.error = errMsg;
     teammate.finishedAt = Date.now();
     notifyUpdate(teamId);
   } finally {
@@ -345,6 +532,232 @@ async function runTeammateSession(
     purgeSession(sessionId);
     clearHistory(sessionId);
   }
+}
+
+// ─── Phase 9.096: Contract Management ───
+
+/**
+ * Write a contract/interface stub file to the project's contracts directory.
+ * These files define the shared API surface that teammates must reference.
+ * Lead writes contracts BEFORE spawning teammates.
+ */
+export function writeContract(
+  teamId: string,
+  relativePath: string,
+  content: string,
+  description: string,
+): string {
+  const team = activeTeams.get(teamId);
+  if (!team) return `❌ Team "${teamId}" not found.`;
+
+  // Enforce max 5 contracts per phase
+  const phaseContracts = team.contracts.filter(c => c.phase === team.currentPhase);
+  if (phaseContracts.length >= 5) {
+    return `❌ Max 5 contract files per phase (current phase ${team.currentPhase} has ${phaseContracts.length}). Merge current phase results first, then start a new phase for more contracts.`;
+  }
+
+  // Resolve paths
+  const resolvedDir = team.workingDir.replace(/^~/, process.env.HOME || process.env.USERPROFILE || '.');
+  const absolutePath = path.resolve(resolvedDir, relativePath);
+
+  // Ensure parent directory exists
+  const parentDir = path.dirname(absolutePath);
+  fs.mkdirSync(parentDir, { recursive: true });
+
+  // Write the contract file
+  fs.writeFileSync(absolutePath, content, 'utf-8');
+
+  // Track the contract
+  const contract: ContractFile = {
+    path: relativePath,
+    absolutePath,
+    description,
+    phase: team.currentPhase,
+    createdAt: new Date().toISOString(),
+  };
+
+  // Upsert — replace if same relative path exists
+  const existingIdx = team.contracts.findIndex(c => c.path === relativePath);
+  if (existingIdx >= 0) {
+    team.contracts[existingIdx] = contract;
+  } else {
+    team.contracts.push(contract);
+  }
+
+  notifyUpdate(teamId);
+
+  // If worktrees exist, copy contracts into each worktree
+  if (team.worktreeIsolation && team.worktreeManager) {
+    const copyResults: string[] = [];
+    for (const [, tm] of team.teammates) {
+      if (tm.worktreePath) {
+        try {
+          const wtContractPath = path.resolve(tm.worktreePath, relativePath);
+          const wtParentDir = path.dirname(wtContractPath);
+          fs.mkdirSync(wtParentDir, { recursive: true });
+          fs.writeFileSync(wtContractPath, content, 'utf-8');
+          copyResults.push(`✓ ${tm.name}`);
+        } catch (e: any) {
+          copyResults.push(`⚠️ ${tm.name}: ${e?.message}`);
+        }
+      }
+    }
+    if (copyResults.length > 0) {
+      return `✓ Contract written: ${relativePath}\n  ${description}\n  Phase ${team.currentPhase} (${phaseContracts.length + 1}/5)\n  Copied to worktrees: ${copyResults.join(', ')}`;
+    }
+  }
+
+  return `✓ Contract written: ${relativePath}\n  ${description}\n  Phase ${team.currentPhase} (${phaseContracts.length + 1}/5)`;
+}
+
+/**
+ * Get all contract files for a team, formatted for teammate context injection.
+ */
+export function getContractsContext(teamId: string): string {
+  const team = activeTeams.get(teamId);
+  if (!team || team.contracts.length === 0) return '';
+
+  const lines = ['## Shared Contracts (DO NOT modify these — import/reference only)\n'];
+  for (const c of team.contracts) {
+    lines.push(`### ${c.path} — ${c.description} (phase ${c.phase})`);
+    try {
+      const content = fs.readFileSync(c.absolutePath, 'utf-8');
+      // Cap each contract display at 100 lines to keep context manageable
+      const contentLines = content.split('\n');
+      if (contentLines.length > 100) {
+        lines.push('```');
+        lines.push(contentLines.slice(0, 100).join('\n'));
+        lines.push(`... (${contentLines.length - 100} more lines — read the file for full content)`);
+        lines.push('```');
+      } else {
+        lines.push('```');
+        lines.push(content);
+        lines.push('```');
+      }
+    } catch {
+      lines.push('(file not readable)');
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Advance to the next phase. Called after merging phase results.
+ */
+export function advancePhase(teamId: string): string {
+  const team = activeTeams.get(teamId);
+  if (!team) return `❌ Team "${teamId}" not found.`;
+
+  const prevPhase = team.currentPhase;
+  team.currentPhase += 1;
+  notifyUpdate(teamId);
+
+  return `✓ Advanced from phase ${prevPhase} to phase ${team.currentPhase}. You can now write new contracts for this phase.`;
+}
+
+/**
+ * Post-merge validation — run the project (build/lint/test) and report issues.
+ * Returns a structured validation report.
+ */
+export async function validateIntegration(
+  teamId: string,
+  command?: string,
+): Promise<string> {
+  const team = activeTeams.get(teamId);
+  if (!team) return `❌ Team "${teamId}" not found.`;
+
+  const resolvedDir = team.workingDir.replace(/^~/, process.env.HOME || process.env.USERPROFILE || '.');
+
+  // Collect all files touched by teammates
+  const allFiles: string[] = [];
+  for (const [, tm] of team.teammates) {
+    if (tm.filesWritten) allFiles.push(...tm.filesWritten);
+  }
+  const uniqueFiles = [...new Set(allFiles)];
+
+  // Check for import/reference consistency in contract consumers
+  const contractIssues: string[] = [];
+  for (const contract of team.contracts) {
+    const contractBasename = path.basename(contract.path, path.extname(contract.path));
+    // Simple heuristic: check if any teammate file imports/references the contract
+    let referenced = false;
+    for (const file of uniqueFiles) {
+      try {
+        const resolvedFile = file.startsWith('/') ? file : path.resolve(resolvedDir, file);
+        if (fs.existsSync(resolvedFile)) {
+          const content = fs.readFileSync(resolvedFile, 'utf-8');
+          if (content.includes(contractBasename) || content.includes(contract.path)) {
+            referenced = true;
+            break;
+          }
+        }
+      } catch {}
+    }
+    if (!referenced && uniqueFiles.length > 0) {
+      contractIssues.push(`⚠️ Contract "${contract.path}" not referenced by any teammate file`);
+    }
+  }
+
+  // Run validation command if provided
+  let commandOutput = '';
+  if (command) {
+    try {
+      const { execSync } = require('child_process');
+      const result = execSync(command, {
+        cwd: resolvedDir,
+        timeout: 60_000,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      commandOutput = `✅ Validation command passed:\n\`\`\`\n${(result || '').slice(0, 2000)}\n\`\`\``;
+    } catch (e: any) {
+      const stderr = e?.stderr || '';
+      const stdout = e?.stdout || '';
+      commandOutput = `❌ Validation command failed (exit ${e?.status || '?'}):\n\`\`\`\n${(stderr || stdout).slice(0, 2000)}\n\`\`\``;
+    }
+  }
+
+  // Build report
+  const lines = [
+    `**Integration Validation — Team ${teamId}**`,
+    '',
+    `Files touched: ${uniqueFiles.length}`,
+    `Contracts: ${team.contracts.length}`,
+    `Phase: ${team.currentPhase}`,
+  ];
+
+  if (contractIssues.length > 0) {
+    lines.push('', '**Contract Reference Issues:**');
+    lines.push(...contractIssues);
+  } else if (team.contracts.length > 0) {
+    lines.push('', '✅ All contracts referenced by teammate code.');
+  }
+
+  // Check for file conflicts (same file touched by multiple teammates)
+  const fileOwners = new Map<string, string[]>();
+  for (const [, tm] of team.teammates) {
+    for (const f of tm.filesWritten || []) {
+      if (!fileOwners.has(f)) fileOwners.set(f, []);
+      fileOwners.get(f)!.push(tm.name);
+    }
+  }
+  const conflicts = [...fileOwners.entries()].filter(([, owners]) => owners.length > 1);
+  if (conflicts.length > 0) {
+    lines.push('', '**⚠️ File Conflicts (multiple teammates wrote same file):**');
+    for (const [file, owners] of conflicts) {
+      lines.push(`  ${file}: ${owners.join(' vs ')}`);
+    }
+  }
+
+  if (commandOutput) {
+    lines.push('', '**Build/Test Output:**', commandOutput);
+  }
+
+  team.validationResults = lines.join('\n');
+  notifyUpdate(teamId);
+  return lines.join('\n');
 }
 
 // ─── Team Status ───
@@ -359,12 +772,20 @@ export function getTeamStatus(teamId: string): string {
   };
 
   const lines = [
-    `**Team ${teamId}** (${team.status})`,
+    `**Team ${teamId}** (${team.status}) — Phase ${team.currentPhase}`,
     `Task: ${team.taskDescription}`,
     `Working dir: ${team.workingDir}`,
-    '',
-    '**Teammates:**',
   ];
+
+  // Phase 9.096: Show contracts
+  if (team.contracts.length > 0) {
+    lines.push('', `**Contracts (${team.contracts.length}):**`);
+    for (const c of team.contracts) {
+      lines.push(`  📜 ${c.path} — ${c.description} (phase ${c.phase})`);
+    }
+  }
+
+  lines.push('', '**Teammates:**');
 
   for (const [, tm] of team.teammates) {
     const emoji = statusEmoji[tm.status] || '❓';
@@ -372,8 +793,14 @@ export function getTeamStatus(teamId: string): string {
       ? `${((tm.finishedAt - tm.startedAt) / 1000).toFixed(0)}s`
       : `${((Date.now() - tm.startedAt) / 1000).toFixed(0)}s`;
     const wtLabel = tm.worktreeBranch ? ` [${tm.worktreeBranch}]` : '';
-    lines.push(`${emoji} ${tm.name}${wtLabel} (${tm.status}, ${dur}): ${tm.role}`);
-    if (tm.currentTaskId) {
+    const toolCount = tm.toolsUsed.length;
+    const filesCount = tm.filesWritten?.length || 0;
+    const lastTool = toolCount > 0 ? tm.toolsUsed[toolCount - 1] : '';
+    const activityStr = toolCount > 0 ? ` | ${toolCount} tools, ${filesCount} files${lastTool ? `, last: ${lastTool}` : ''}` : '';
+    lines.push(`${emoji} ${tm.name}${wtLabel} (${tm.status}, ${dur}${activityStr}): ${tm.role}`);
+    if (tm.currentTaskText) {
+      lines.push(`   → Task: ${tm.currentTaskText.slice(0, 80)}`);
+    } else if (tm.currentTaskId) {
       const t = getTask(teamId, tm.currentTaskId);
       if (t) lines.push(`   → Working on: ${t.title}`);
     }
@@ -411,9 +838,15 @@ export async function dissolveTeam(teamId: string): Promise<string> {
     '',
     `Task: ${team.taskDescription}`,
     `Duration: ${((Date.now() - new Date(team.created_at).getTime()) / 1000 / 60).toFixed(1)} minutes`,
-    '',
-    '**Teammate Results:**',
+    `Phases completed: ${team.currentPhase}`,
+    `Contracts written: ${team.contracts.length}`,
   ];
+
+  if (team.validationResults) {
+    lines.push('', '**Last Validation:**', team.validationResults);
+  }
+
+  lines.push('', '**Teammate Results:**');
 
   for (const [, tm] of team.teammates) {
     lines.push(`- ${tm.name}: ${tm.status}`);
@@ -422,6 +855,67 @@ export async function dissolveTeam(teamId: string): Promise<string> {
   }
 
   lines.push('', taskSummary);
+
+  // ─── Persist session memory (coding-memory) ───
+  try {
+    const resolvedWorkingDir = team.workingDir.replace(/^~/, process.env.HOME || process.env.USERPROFILE || '.');
+    initCodingMemory(team.workingDir);
+
+    const dissolvedAt = new Date().toISOString();
+    const durationMs = Date.now() - new Date(team.created_at).getTime();
+
+    const teammateSummaries: TeammateMemory[] = Array.from(team.teammates.values()).map(tm => ({
+      name: tm.name,
+      role: tm.role,
+      status: tm.status,
+      result: tm.result,
+      filesWritten: tm.filesWritten,
+      toolsUsed: [...new Set(tm.toolsUsed)],
+      error: tm.error,
+    }));
+
+    const contractSummaries: ContractMemory[] = team.contracts.map(c => ({
+      path: c.path,
+      description: c.description,
+      phase: c.phase,
+    }));
+
+    const sessionSummary: TeamSessionSummary = {
+      teamId: teamId,
+      taskDescription: team.taskDescription,
+      durationMs,
+      createdAt: team.created_at,
+      dissolvedAt,
+      teammates: teammateSummaries,
+      contracts: contractSummaries,
+      phasesCompleted: team.currentPhase,
+      validationResults: team.validationResults,
+      workingDir: team.workingDir,
+    };
+
+    const sessionPath = logTeamSession(team.workingDir, sessionSummary);
+
+    // Build a compact update for main.md
+    const allFiles = teammateSummaries.flatMap(tm => tm.filesWritten || []);
+    const uniqueFiles = [...new Set(allFiles)];
+    const mainUpdate = [
+      `### Session ${teamId} (${dissolvedAt.slice(0, 10)})`,
+      `Task: ${team.taskDescription}`,
+      `Duration: ${Math.round(durationMs / 60000)}m | Phases: ${team.currentPhase} | Files: ${uniqueFiles.length}`,
+      contractSummaries.length > 0
+        ? `Contracts: ${contractSummaries.map(c => c.path).join(', ')}`
+        : '',
+      team.validationResults ? `Validation: see session log` : '',
+    ].filter(Boolean).join('\n');
+
+    updateMainState(team.workingDir, mainUpdate);
+
+    if (sessionPath) {
+      lines.push('', `📝 Session logged to: ${sessionPath.replace(resolvedWorkingDir + '/', '')}`);
+    }
+  } catch (memErr: any) {
+    console.error('[team] coding-memory persist error (non-fatal):', memErr?.message);
+  }
 
   // Cleanup
   for (const [, tm] of team.teammates) {
@@ -495,11 +989,18 @@ export interface TeamStatusUI {
     currentTask?: string;
     worktreeBranch?: string;    // Phase 8.39: branch name for display
     worktreePath?: string;      // Phase 8.39: absolute path
+    toolCount?: number;         // passive: total tools used
+    lastTool?: string;          // passive: last tool called
+    elapsed?: number;           // seconds since start
+    filesWritten?: number;      // passive: files created/modified
   }>;
   taskCount: number;
   doneCount: number;
   activeCount: number;
   worktreeIsolation?: boolean;  // Phase 8.39: whether worktrees are enabled
+  // Phase 9.096: Contract-first
+  contractCount: number;
+  currentPhase: number;
 }
 
 export function getTeamStatusUI(): TeamStatusUI | null {
@@ -516,19 +1017,30 @@ export function getTeamStatusUI(): TeamStatusUI | null {
     taskDescription: team.taskDescription,
     teammates: Array.from(team.teammates.values()).map(tm => {
       const currentTask = tm.currentTaskId ? getTask(team.id, tm.currentTaskId) : undefined;
+      const elapsed = tm.finishedAt
+        ? Math.floor((tm.finishedAt - tm.startedAt) / 1000)
+        : Math.floor((Date.now() - tm.startedAt) / 1000);
+      const lastTool = tm.toolsUsed.length > 0 ? tm.toolsUsed[tm.toolsUsed.length - 1] : undefined;
       return {
         name: tm.name,
         role: tm.role,
         status: tm.status,
-        currentTask: currentTask?.title,
+        currentTask: currentTask?.title || tm.currentTaskText,
         worktreeBranch: tm.worktreeBranch,
         worktreePath: tm.worktreePath,
+        toolCount: tm.toolsUsed.length,
+        lastTool,
+        elapsed,
+        filesWritten: tm.filesWritten?.length || 0,
       };
     }),
     taskCount: tasks.length,
     doneCount: done,
     activeCount: active,
     worktreeIsolation: team.worktreeIsolation,
+    // Phase 9.096
+    contractCount: team.contracts.length,
+    currentPhase: team.currentPhase,
   };
 }
 
@@ -599,17 +1111,28 @@ You have your own branch — make changes freely without affecting teammates.
 `
     : '';
 
+  // Phase 9.096: Inject contract files into teammate context
+  const contractsContext = getContractsContext(teamId);
+  const contractsSection = contractsContext
+    ? `\n${contractsContext}
+**CRITICAL:** These contract files define the shared API surface. You MUST:
+- Import types/interfaces from the contract files — do NOT redefine them.
+- Use the exact function signatures specified in contracts.
+- If a contract specifies a data shape, use it as-is.
+- If you need something not in the contracts, message @lead to update them.
+`
+    : '';
+
   return `You are ${name}, a member of a coding team (team ID: ${teamId}).
 
 Your role: ${role}
-${cwdSection}
-## Team Collaboration Rules
+${cwdSection}${contractsSection}
+## Team Collaboration Rules — MANDATORY
 1. Check your inbox before starting work — teammates may have sent relevant info.
-2. Update the task list when you start/finish tasks using team_task_update.
-3. When you touch files, log them with files_touched so conflicts are detected.
-4. If you need info from another teammate, send them a message with team_message.
-5. If you're blocked, update the task status to "blocked" with a clear reason.
-6. Be specific in your result summaries — the lead synthesizes everything.
+2. **ALWAYS call team_task_update** when you start a task (status: "in-progress") and when you finish (status: "done" with result summary and files_touched). This drives the progress bar — if you don't update, the team looks stuck.
+3. If you need info from another teammate, send them a message with team_message.
+4. If you're blocked, update the task status to "blocked" with a clear reason.
+5. When done with ALL your work: update every task you worked on to "done", then send a completion summary to @lead via team_message.
 
 ## Current Task List
 ${taskList}
@@ -619,6 +1142,7 @@ ${taskList}
 - Write clean, documented code.
 - Report what files you modified and what tests you ran.
 - If you discover new tasks needed, add them with team_task_add.
+- **Commit your work** with git when you finish (if in a git worktree).
 
 ## Tools Available
 You have full access to: page tools, browser tools (you can browse docs!), HTTP tools, file tools, and shell tools.

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, session, Menu, safeStorage, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, session, Menu, safeStorage, dialog, shell } from 'electron';
 // Phase 8.5: Media Engine
 import {
   initMediaEngine,
@@ -33,6 +33,7 @@ import { setLoginHint, clearLoginHint } from './login-state';
 import { checkCredentials, testConnection } from './credential-checker';
 import { getDefaultModel } from './llm-client';
 import { loadTools, verifyAllTools } from './tool-manager';
+import { setProjectUpdateCallback } from './tool-registry';
 import { cleanupAll as cleanupShell } from './shell-tools';
 import { cleanupAllSubAgents } from './sub-agent';
 import { cleanupAllTeams, getTeamStatusUI, setTeamUpdateCallback } from './team-manager';
@@ -47,6 +48,14 @@ import {
   getConversationMessages,
   searchConversations,
 } from './conversation-store';
+import {
+  createProject,
+  getProject,
+  listProjects,
+  getArtifacts,
+  linkConversation as linkConvToProject,
+  getProjectConversations,
+} from './project-manager';
 // Phase 8.6: Self-Capture
 import { captureCleanupOnQuit, getRecordingStatus, handleRecord } from './capture-tools';
 // Phase 8.45: Local HTTP API server
@@ -408,6 +417,14 @@ function createWindow() {
   // Load chrome UI in the main window's webContents
   mainWindow.loadFile(path.join(__dirname, 'ui', 'index.html'));
 
+  // F5: Prevent main window navigation to non-file URLs
+  mainWindow.webContents.on('will-navigate', (e, url) => {
+    if (!url.startsWith('file://')) e.preventDefault();
+  });
+
+  // F6: Deny window.open from main chrome window
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' as const }));
+
   // Tab manager uses BrowserViews for web content
   tabManager = new TabManager(mainWindow, CHROME_HEIGHT, (wc) => {
     setupPageContextMenu(wc);
@@ -422,6 +439,17 @@ function createWindow() {
   });
   mainWindow.on('leave-full-screen', () => {
     mainWindow.webContents.send('fullscreen:changed', false);
+    // When macOS exits fullscreen (e.g. Esc), the tab's webContents may still
+    // be in HTML5 fullscreen mode (leave-html-full-screen hasn't fired yet).
+    // Force the tab manager out of fullscreen state so layoutActiveTab() uses
+    // normal bounds, then tell the page to exit HTML5 fullscreen too.
+    if (tabManager) {
+      tabManager.isFullscreen = false;
+      const wc = tabManager.activeWebContents;
+      if (wc && !wc.isDestroyed()) {
+        wc.executeJavaScript('if (document.fullscreenElement) document.exitFullscreen().catch(()=>{})').catch(() => {});
+      }
+    }
     layoutViews();
   });
 
@@ -791,7 +819,7 @@ function createWindow() {
   });
 
   // ─── Aria Tab IPC (Phase 8.35) ───
-  ipcMain.on('aria:send', async (_e, message: string, conversationId?: string) => {
+  ipcMain.on('aria:send', async (_e, message: string, conversationId?: string, codingMode?: boolean) => {
     const apiKey = decryptApiKey(currentConfig.llm.apiKey);
     if (!apiKey) {
       try {
@@ -841,6 +869,7 @@ function createWindow() {
       window: mainWindow,
       developerMode: currentConfig.developerMode,
       deepMode: currentConfig.llm.deepMode !== false,
+      codingMode: codingMode ?? false,
       conversationId: convId || activeConversationId || undefined,
       ariaWebContents: tabManager?.ariaWebContents,
     });
@@ -899,6 +928,100 @@ function createWindow() {
 
   ipcMain.handle('aria:get-active-conversation', () => {
     return activeConversationId;
+  });
+
+  // ─── Projects IPC (Phase 9.07) ───────────────────────────────────────────
+
+  ipcMain.handle('projects:list', (_e, includeArchived = false) => {
+    return listProjects(includeArchived);
+  });
+
+  ipcMain.handle('projects:get', (_e, projectId: string) => {
+    return getProject(projectId);
+  });
+
+  ipcMain.handle('projects:create', (_e, name: string, workingDir: string, description?: string) => {
+    const project = createProject(name, workingDir || '', description);
+    // Notify Aria tab that projects changed (Phase 9.09)
+    try { tabManager?.ariaWebContents?.send('projects:updated'); } catch {}
+    return project;
+  });
+
+  ipcMain.handle('projects:get-artifacts', (_e, projectId: string) => {
+    return getArtifacts(projectId);
+  });
+
+  ipcMain.handle('projects:link-conversation', (_e, conversationId: string, projectId: string) => {
+    linkConvToProject(conversationId, projectId);
+    // Notify Aria tab that projects changed (Phase 9.09)
+    try { tabManager?.ariaWebContents?.send('projects:updated'); } catch {}
+    return { success: true };
+  });
+
+  ipcMain.handle('projects:get-conversations', (_e, projectId: string) => {
+    return getProjectConversations(projectId);
+  });
+
+  // Phase 9.09: Create a new conversation pre-linked to a project
+  ipcMain.handle('projects:new-conversation', async (_e, projectId: string) => {
+    const { randomUUID } = require('crypto');
+    const convId = randomUUID();
+    const now = new Date().toISOString();
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO conversations (id, title, created_at, updated_at, message_count, preview, archived, project_id, mode)
+       VALUES (?, 'New conversation', ?, ?, 0, '', 0, ?, 'coding')`
+    ).run(convId, now, now, projectId);
+    // Bump project updated_at
+    db.prepare(`UPDATE projects SET updated_at = ? WHERE id = ?`).run(now, projectId);
+    // Switch active conversation
+    activeConversationId = convId;
+    clearHistory('default');
+    // Notify Aria tab
+    try {
+      const ariaWC = tabManager?.ariaWebContents;
+      if (ariaWC) {
+        ariaWC.send('aria:conversation-switched', { conversationId: convId });
+        ariaWC.send('projects:updated');
+      }
+    } catch {}
+    return convId;
+  });
+
+  // Phase 9.095: Delete a project (unlink or delete-all)
+  ipcMain.handle('projects:delete', async (_e, projectId: string, mode: 'unlink' | 'delete-all') => {
+    const db = getDb();
+    const project = getProject(projectId);
+    if (!project) return { success: false, error: 'Project not found' };
+
+    if (mode === 'delete-all') {
+      // 1. Delete all linked conversations
+      const convRows = db.prepare(
+        `SELECT id FROM conversations WHERE project_id = ?`
+      ).all(projectId) as { id: string }[];
+      for (const row of convRows) {
+        db.prepare(`DELETE FROM conversations WHERE id = ?`).run(row.id);
+      }
+      // 2. Delete the project record (CASCADE handles artifacts)
+      db.prepare(`DELETE FROM projects WHERE id = ?`).run(projectId);
+      // 3. Move working directory to trash
+      if (project.working_dir) {
+        try {
+          await shell.trashItem(project.working_dir);
+        } catch (trashErr) {
+          console.warn('[projects:delete] trashItem failed:', trashErr);
+        }
+      }
+    } else {
+      // 'unlink': just delete the project record.
+      // Conversations get project_id = NULL via ON DELETE SET NULL.
+      // project_artifacts CASCADE-deleted automatically.
+      db.prepare(`DELETE FROM projects WHERE id = ?`).run(projectId);
+    }
+
+    // Notify Aria tab
+    try { tabManager?.ariaWebContents?.send('projects:updated'); } catch {}
+    return { success: true };
   });
 
   // ─── Overlay IPC (hide/show BrowserViews for modals) ───
@@ -1308,6 +1431,11 @@ function createWindow() {
     try { tabManager?.ariaWebContents?.send('team:updated', teamStatus); } catch {}
   });
 
+  // Phase 9.09: Register project update callback so agent tools can push sidebar refreshes
+  setProjectUpdateCallback(() => {
+    try { tabManager?.ariaWebContents?.send('projects:updated'); } catch {}
+  });
+
   // ─── CLI Tools IPC ───
   ipcMain.handle('tools:list', () => {
     return loadTools();
@@ -1591,6 +1719,339 @@ function createWindow() {
   ipcMain.handle('permission:set', (_e, domain: string, perm: string, allowed: boolean) => {
     setPermission(domain, perm, allowed);
     return { success: true };
+  });
+
+  // ─── Deep Mode Report Save ───
+  const _deepSaveReportHandler = async (_e: Electron.IpcMainInvokeEvent, outputDirAbsolute: string, format: string = 'md') => {
+    const fsSync = require('fs') as typeof import('fs');
+    const pathMod = require('path') as typeof import('path');
+    const os = require('os') as typeof import('os');
+    const { execSync } = require('child_process') as typeof import('child_process');
+
+    // Find the final report markdown file in the output directory
+    let reportPath = '';
+    if (fsSync.existsSync(outputDirAbsolute)) {
+      const files = fsSync.readdirSync(outputDirAbsolute).filter((f: string) => f.endsWith('.md')).sort();
+      const finalReport = files.find((f: string) => f.includes('final_report') || f.includes('final'));
+      reportPath = pathMod.join(outputDirAbsolute, finalReport || files[files.length - 1] || '');
+    }
+
+    if (!reportPath || !fsSync.existsSync(reportPath)) {
+      return { success: false, error: 'Report file not found' };
+    }
+
+    const mdContent = fsSync.readFileSync(reportPath, 'utf-8');
+    const baseName = pathMod.basename(reportPath, '.md');
+
+    // Determine output format details
+    const fmt = (format || 'md').toLowerCase();
+    let outExt = fmt;
+    let outContent: string | Buffer = mdContent;
+    let filterName = 'Markdown';
+    let filterExts = ['md'];
+
+    if (fmt === 'html') {
+      filterName = 'HTML';
+      filterExts = ['html'];
+      // Use marked (available in main process via require)
+      try {
+        const { marked } = require('marked') as typeof import('marked');
+        const htmlBody = (marked as any).parse(mdContent);
+        outContent = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${baseName}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 900px; margin: 40px auto; padding: 0 24px; line-height: 1.6; color: #1a1a2e; background: #fff; }
+  h1, h2, h3, h4 { color: #0f3460; margin-top: 1.5em; }
+  h1 { font-size: 2em; border-bottom: 2px solid #e94560; padding-bottom: 0.3em; }
+  h2 { font-size: 1.5em; border-bottom: 1px solid #ddd; padding-bottom: 0.2em; }
+  pre { background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 6px; padding: 16px; overflow-x: auto; font-size: 0.9em; }
+  code { background: #f0f0f0; padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }
+  pre code { background: none; padding: 0; }
+  blockquote { border-left: 4px solid #e94560; margin: 0; padding: 0 16px; color: #555; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+  th { background: #f0f0f0; font-weight: 600; }
+  a { color: #0f3460; }
+  img { max-width: 100%; }
+</style>
+</head>
+<body>
+${htmlBody}
+</body>
+</html>`;
+      } catch (e) {
+        // If marked fails, produce basic wrapped content
+        const escaped = mdContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        outContent = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${baseName}</title></head><body><pre>${escaped}</pre></body></html>`;
+      }
+    } else if (fmt === 'pdf') {
+      filterName = 'PDF';
+      filterExts = ['pdf'];
+      outExt = 'pdf';
+      // We'll write the HTML to a temp file and use weasyprint or Electron printToPDF
+      // This will be handled AFTER the save dialog (we need the output path first).
+      outContent = mdContent; // placeholder; PDF generation happens below
+    } else if (fmt === 'txt') {
+      filterName = 'Text';
+      filterExts = ['txt'];
+      // Strip markdown formatting
+      let txt = mdContent;
+      txt = txt.replace(/^#{1,6}\s+/gm, '');           // headings
+      txt = txt.replace(/\*\*(.+?)\*\*/g, '$1');         // bold
+      txt = txt.replace(/\*(.+?)\*/g, '$1');             // italic
+      txt = txt.replace(/__(.+?)__/g, '$1');             // bold alt
+      txt = txt.replace(/_(.+?)_/g, '$1');               // italic alt
+      txt = txt.replace(/~~(.+?)~~/g, '$1');             // strikethrough
+      txt = txt.replace(/`{3}[\s\S]*?`{3}/g, (m) => {   // code fences
+        const lines = m.split('\n');
+        return lines.slice(1, -1).join('\n');
+      });
+      txt = txt.replace(/`(.+?)`/g, '$1');               // inline code
+      txt = txt.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // links [text](url) → text
+      txt = txt.replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1'); // images
+      txt = txt.replace(/^[-*+]\s+/gm, '• ');            // unordered lists
+      txt = txt.replace(/^\d+\.\s+/gm, '');              // ordered lists
+      txt = txt.replace(/^>\s+/gm, '');                  // blockquotes
+      txt = txt.replace(/^-{3,}$/gm, '─'.repeat(40));   // horizontal rules
+      txt = txt.replace(/\|/g, ' | ');                   // table pipes → spaced
+      outContent = txt;
+    }
+
+    // Determine default output filename
+    const defaultName = `${baseName}.${outExt}`;
+
+    const saveResult = await dialog.showSaveDialog(mainWindow, {
+      title: 'Save Research Report',
+      defaultPath: pathMod.join(os.homedir(), 'Downloads', defaultName),
+      filters: [
+        { name: filterName, extensions: filterExts },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    });
+
+    if (saveResult.canceled || !saveResult.filePath) {
+      return { success: false, error: 'Cancelled' };
+    }
+
+    const outPath = saveResult.filePath;
+
+    if (fmt === 'pdf') {
+      // Try weasyprint first, fall back to Electron printToPDF
+      try {
+        // Build HTML for PDF
+        let htmlForPdf = '';
+        try {
+          const { marked } = require('marked') as typeof import('marked');
+          const htmlBody = (marked as any).parse(mdContent);
+          htmlForPdf = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${baseName}</title><style>body{font-family:sans-serif;max-width:900px;margin:40px auto;line-height:1.6;}h1,h2,h3{color:#333;}pre{background:#f6f8fa;padding:16px;border-radius:6px;}code{background:#f0f0f0;padding:2px 5px;}table{border-collapse:collapse;}th,td{border:1px solid #ddd;padding:8px;}th{background:#eee;}</style></head><body>${htmlBody}</body></html>`;
+        } catch {
+          htmlForPdf = `<!DOCTYPE html><html><body><pre>${mdContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></body></html>`;
+        }
+
+        // Check if weasyprint is available
+        let weasyprintAvailable = false;
+        try {
+          execSync('which weasyprint', { stdio: 'ignore' });
+          weasyprintAvailable = true;
+        } catch { /* not available */ }
+
+        if (weasyprintAvailable) {
+          // Write HTML to temp file and convert
+          const tmpHtml = pathMod.join(os.tmpdir(), `tappi-report-${Date.now()}.html`);
+          fsSync.writeFileSync(tmpHtml, htmlForPdf, 'utf-8');
+          execSync(`weasyprint "${tmpHtml}" "${outPath}"`, { timeout: 30000 });
+          try { fsSync.unlinkSync(tmpHtml); } catch { /* ignore */ }
+        } else {
+          // Use Electron's printToPDF via hidden BrowserWindow
+          const { BrowserWindow: BW } = require('electron');
+          const pdfWin = new BW({ show: false, webPreferences: { sandbox: false } });
+          await pdfWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlForPdf));
+          const pdfData = await pdfWin.webContents.printToPDF({
+            printBackground: true,
+            pageSize: 'A4',
+            marginsType: 1,
+          });
+          pdfWin.destroy();
+          fsSync.writeFileSync(outPath, pdfData);
+        }
+      } catch (e: any) {
+        return { success: false, error: 'PDF generation failed: ' + (e.message || e) };
+      }
+    } else {
+      // Write text/html/md content
+      fsSync.writeFileSync(outPath, outContent as string, 'utf-8');
+    }
+
+    return { success: true, path: outPath };
+  };
+
+  ipcMain.handle('deep:save-report', _deepSaveReportHandler);
+
+  // ─── File Download (Phase 9.07 Track 5) — general-purpose file → save dialog ───
+  ipcMain.handle('file:download', async (_e, sourcePath: string, format: string, defaultName?: string) => {
+    const fsSync = require('fs') as typeof import('fs');
+    const pathMod = require('path') as typeof import('path');
+    const os = require('os') as typeof import('os');
+    const { execSync } = require('child_process') as typeof import('child_process');
+
+    if (!sourcePath || !fsSync.existsSync(sourcePath)) {
+      return { success: false, error: 'File not found: ' + sourcePath };
+    }
+
+    const baseName = defaultName || pathMod.basename(sourcePath);
+    const baseNoExt = baseName.replace(/\.[^.]+$/, '');
+    const sourceExt = pathMod.extname(sourcePath).toLowerCase();
+    const fmt = (format || sourceExt.slice(1) || 'bin').toLowerCase();
+
+    // Determine dialog filter + default name
+    const filterMap: Record<string, { name: string; exts: string[] }> = {
+      md:   { name: 'Markdown', exts: ['md'] },
+      html: { name: 'HTML', exts: ['html'] },
+      pdf:  { name: 'PDF', exts: ['pdf'] },
+      txt:  { name: 'Text', exts: ['txt'] },
+      csv:  { name: 'CSV', exts: ['csv'] },
+      json: { name: 'JSON', exts: ['json'] },
+    };
+    const fmtInfo = filterMap[fmt] || { name: 'File', exts: [fmt] };
+    const saveDefaultName = baseNoExt + '.' + (fmtInfo.exts[0] || fmt);
+
+    const saveResult = await dialog.showSaveDialog(mainWindow, {
+      title: 'Save File',
+      defaultPath: pathMod.join(os.homedir(), 'Downloads', saveDefaultName),
+      filters: [
+        { name: fmtInfo.name, extensions: fmtInfo.exts },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    });
+
+    if (saveResult.canceled || !saveResult.filePath) {
+      return { success: false, error: 'Cancelled' };
+    }
+
+    const outPath = saveResult.filePath;
+
+    const escHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    function buildHtmlDoc(title: string, body: string): string {
+      return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${escHtml(title)}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Georgia, serif; max-width: 820px; margin: 48px auto; padding: 0 24px; line-height: 1.75; color: #1a1a2e; background: #fff; font-size: 16px; }
+  h1, h2, h3, h4, h5, h6 { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #0f3460; margin: 1.5em 0 0.5em; }
+  h1 { font-size: 2em; border-bottom: 2px solid #e94560; padding-bottom: 0.3em; }
+  h2 { font-size: 1.5em; border-bottom: 1px solid #e0e0e0; padding-bottom: 0.2em; }
+  p { margin: 0.9em 0; }
+  pre { background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 6px; padding: 16px; overflow-x: auto; font-size: 0.88em; line-height: 1.45; }
+  code { background: #f0f2f4; padding: 2px 5px; border-radius: 3px; font-size: 0.88em; font-family: 'Courier New', Consolas, monospace; }
+  pre code { background: none; padding: 0; }
+  blockquote { border-left: 4px solid #e94560; margin: 1em 0; padding: 0.5em 1em; color: #555; background: #fafafa; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+  th { background: #f5f5f5; font-weight: 600; }
+  tr:nth-child(even) { background: #fafafa; }
+  a { color: #0f3460; }
+  img { max-width: 100%; }
+  hr { border: none; border-top: 1px solid #e0e0e0; margin: 2em 0; }
+  ul, ol { margin: 0.8em 0; padding-left: 2em; }
+  li { margin: 0.3em 0; }
+</style>
+</head>
+<body>
+${body}
+</body>
+</html>`;
+    }
+
+    function stripMarkdownToText(md: string): string {
+      return md
+        .replace(/^#{1,6}\s+/gm, '')
+        .replace(/\*\*(.+?)\*\*/g, '$1')
+        .replace(/\*(.+?)\*/g, '$1')
+        .replace(/__(.+?)__/g, '$1')
+        .replace(/_(.+?)_/g, '$1')
+        .replace(/~~(.+?)~~/g, '$1')
+        .replace(/`{3}[\s\S]*?`{3}/gm, (m) => m.split('\n').slice(1, -1).join('\n'))
+        .replace(/`(.+?)`/g, '$1')
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+        .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+        .replace(/^[-*+]\s+/gm, '• ')
+        .replace(/^\d+\.\s+/gm, '')
+        .replace(/^>\s*/gm, '')
+        .replace(/^-{3,}$/gm, '─'.repeat(40))
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    }
+
+    try {
+      const sourceContent = fsSync.readFileSync(sourcePath, 'utf-8');
+
+      if (fmt === 'html') {
+        let htmlBody = '';
+        if (sourceExt === '.md') {
+          try {
+            const { marked } = require('marked') as typeof import('marked');
+            htmlBody = (marked as any).parse(sourceContent) as string;
+          } catch {
+            htmlBody = '<pre>' + escHtml(sourceContent) + '</pre>';
+          }
+        } else {
+          htmlBody = '<pre>' + escHtml(sourceContent) + '</pre>';
+        }
+        fsSync.writeFileSync(outPath, buildHtmlDoc(baseNoExt, htmlBody), 'utf-8');
+
+      } else if (fmt === 'pdf') {
+        let htmlForPdf = '';
+        try {
+          const { marked } = require('marked') as typeof import('marked');
+          const htmlBody = sourceExt === '.md'
+            ? ((marked as any).parse(sourceContent) as string)
+            : '<pre>' + escHtml(sourceContent) + '</pre>';
+          htmlForPdf = buildHtmlDoc(baseNoExt, htmlBody);
+        } catch {
+          htmlForPdf = buildHtmlDoc(baseNoExt, '<pre>' + escHtml(sourceContent) + '</pre>');
+        }
+
+        let weasyprintAvailable = false;
+        try { execSync('which weasyprint', { stdio: 'ignore' }); weasyprintAvailable = true; } catch {}
+
+        if (weasyprintAvailable) {
+          const tmpHtml = pathMod.join(os.tmpdir(), `tappi-dl-${Date.now()}.html`);
+          fsSync.writeFileSync(tmpHtml, htmlForPdf, 'utf-8');
+          try {
+            execSync(`weasyprint "${tmpHtml}" "${outPath}"`, { timeout: 30000 });
+          } finally {
+            try { fsSync.unlinkSync(tmpHtml); } catch {}
+          }
+        } else {
+          const { BrowserWindow: BW } = require('electron');
+          const pdfWin = new BW({ show: false, webPreferences: { sandbox: false } });
+          await pdfWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlForPdf));
+          const pdfData = await pdfWin.webContents.printToPDF({ printBackground: true, pageSize: 'A4', marginsType: 1 });
+          pdfWin.destroy();
+          fsSync.writeFileSync(outPath, pdfData);
+        }
+
+      } else if (fmt === 'txt') {
+        const txt = sourceExt === '.md' ? stripMarkdownToText(sourceContent) : sourceContent;
+        fsSync.writeFileSync(outPath, txt, 'utf-8');
+
+      } else {
+        // md, csv, json, original extension — copy as-is
+        fsSync.copyFileSync(sourcePath, outPath);
+      }
+
+      return { success: true, path: outPath };
+    } catch (e: any) {
+      return { success: false, error: e.message || String(e) };
+    }
   });
 
   // ─── Context menu IPC ───
@@ -1910,13 +2371,33 @@ import * as net from 'net';
 const DEV_PORT = 18900;
 
 function startDevServer() {
+  // F12: Read API token for TCP auth
+  const tokenPath = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.tappi-browser', 'api-token');
+  let devToken = '';
+  try { devToken = fs.readFileSync(tokenPath, 'utf-8').trim(); } catch {}
+
   const server = net.createServer((socket) => {
     let buffer = '';
     let processing = false;
+    let authenticated = false;
 
     async function processCommand(cmd: string) {
       if (!cmd || processing) return;
       processing = true;
+
+      // F12: First command must be the auth token
+      if (!authenticated) {
+        if (!devToken || cmd !== devToken) {
+          if (!socket.destroyed) socket.write('Error: Authentication failed. Send API token as first line.\n');
+          if (!socket.destroyed) socket.end();
+          processing = false;
+          return;
+        }
+        authenticated = true;
+        if (!socket.destroyed) socket.write('OK\n');
+        processing = false;
+        return;
+      }
       console.log('[dev] Command:', cmd);
 
       // "agent: <message>" → run through LLM agent

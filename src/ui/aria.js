@@ -20,15 +20,28 @@ let streamBuffer = '';       // accumulates streaming chunks
 let searchDebounce = null;
 let _streamRenderTimer = null;
 
+// Phase 9.07: Projects state
+let projects = [];           // list of project objects
+let projectConvMap = {};     // { [projectId]: conversation[] }
+let expandedProjects = {};   // { [projectId]: boolean } — whether expanded in sidebar
+
+// Phase 9.09: Sidebar section state
+let projectSectionCollapsed = false;  // whether "Coding Projects" section is collapsed
+let currentProjectId = null;          // project_id of the current conversation
+let currentProjectName = null;        // name of the active project
+
 const TOKEN_CONTEXT_LIMIT = 200000;
 
 // ═══════════════════════════════════════════
 //  DOM REFERENCES
 // ═══════════════════════════════════════════
 
-const convList       = document.getElementById('conversation-list');
-const sidebarSearch  = document.getElementById('sidebar-search');
-const newChatBtn     = document.getElementById('new-chat-btn');
+const convList             = document.getElementById('conversation-list');
+const sidebarSearch        = document.getElementById('sidebar-search');
+const newChatBtn           = document.getElementById('new-chat-btn');
+// Phase 9.09: Project indicator elements
+const ariaProjectIndicator = document.getElementById('aria-project-indicator');
+const ariaProjectIndicatorText = document.getElementById('aria-project-indicator-text');
 const ariaMessages   = document.getElementById('aria-messages');
 const ariaInput      = document.getElementById('aria-input');
 const ariaSendBtn    = document.getElementById('aria-send-btn');
@@ -73,7 +86,8 @@ function renderMarkdown(text) {
   }
   try {
     let html = marked.parse(text);
-    html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+    // Sanitize with DOMPurify (defense-in-depth alongside CSP)
+    html = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
     return html;
   } catch (e) {
     return '<pre style="white-space:pre-wrap;margin:0;font-family:inherit;">' + escHtml(text) + '</pre>';
@@ -181,8 +195,28 @@ function hideWelcome() {
 
 async function loadConversations() {
   try {
-    const list = await window.aria.listConversations();
+    const [list, projectList] = await Promise.all([
+      window.aria.listConversations(),
+      (window.aria.listProjects ? window.aria.listProjects(false) : Promise.resolve([])).catch(() => []),
+    ]);
     conversations = list || [];
+    projects = projectList || [];
+
+    // Fetch conversations for each project
+    projectConvMap = {};
+    if (projects.length > 0 && window.aria.getProjectConversations) {
+      await Promise.all(projects.map(async (p) => {
+        try {
+          projectConvMap[p.id] = await window.aria.getProjectConversations(p.id) || [];
+        } catch {
+          projectConvMap[p.id] = [];
+        }
+      }));
+    }
+
+    // Phase 9.09: Detect current project from active conversation
+    _detectCurrentProject();
+
     renderConversationList(conversations);
   } catch (e) {
     console.error('[aria] listConversations error:', e);
@@ -190,38 +224,484 @@ async function loadConversations() {
   }
 }
 
-function renderConversationList(list) {
-  convList.innerHTML = '';
-  if (!list || list.length === 0) {
-    convList.innerHTML = '<div class="conv-empty">No conversations yet.<br>Start a new chat below.</div>';
+// Phase 9.09: Determine the project for the active conversation
+function _detectCurrentProject() {
+  currentProjectId = null;
+  currentProjectName = null;
+  if (!currentConversationId) {
+    updateActiveProjectIndicator();
     return;
   }
+  // Check projectConvMap
+  for (const proj of projects) {
+    const convs = projectConvMap[proj.id] || [];
+    if (convs.some(c => c.id === currentConversationId)) {
+      currentProjectId = proj.id;
+      currentProjectName = proj.name;
+      break;
+    }
+  }
+  // Also check conversation's own project_id field if present
+  if (!currentProjectId) {
+    const conv = conversations.find(c => c.id === currentConversationId);
+    if (conv && conv.project_id) {
+      currentProjectId = conv.project_id;
+      const proj = projects.find(p => p.id === conv.project_id);
+      currentProjectName = proj ? proj.name : '(project)';
+    }
+  }
+  updateActiveProjectIndicator();
+}
 
-  list.forEach(conv => {
-    const el = document.createElement('div');
-    el.className = 'conv-item' + (conv.id === currentConversationId ? ' active' : '');
-    el.dataset.id = conv.id;
+// Phase 9.09: Show/hide the active project indicator in the sidebar header
+function updateActiveProjectIndicator() {
+  if (!ariaProjectIndicator || !ariaProjectIndicatorText) return;
+  if (currentProjectName) {
+    ariaProjectIndicatorText.textContent = '🏗 ' + currentProjectName;
+    ariaProjectIndicator.classList.remove('hidden');
+  } else {
+    ariaProjectIndicator.classList.add('hidden');
+  }
+}
 
-    const title = conv.title || '(New chat)';
-    const dateStr = formatDate(conv.updated_at);
-    const preview = conv.preview ? escHtml(conv.preview.slice(0, 40)) : '';
+function renderConversationList(list) {
+  convList.innerHTML = '';
 
-    el.innerHTML = `
-      <div class="conv-item-title">${escHtml(title)}</div>
-      <div class="conv-item-meta">
-        <span class="conv-item-date">${dateStr}</span>
-        ${preview ? `<span class="conv-item-preview">— ${preview}</span>` : ''}
-      </div>
-    `;
+  // Collect IDs of conversations that belong to a project
+  const projectedConvIds = new Set();
+  projects.forEach(p => {
+    const projConvs = projectConvMap[p.id] || [];
+    projConvs.forEach(c => projectedConvIds.add(c.id));
+  });
 
-    el.addEventListener('click', () => switchToConversation(conv.id));
-    el.addEventListener('contextmenu', e => {
-      e.preventDefault();
-      showConvContextMenu(e.clientX, e.clientY, conv);
+  // ─── Coding Projects section ─────────────────────────────────────────────
+  if (projects.length > 0) {
+    // Section header row: ▾/▸ 🏗 Coding Projects  [+ New Project]
+    const sectionHeader = document.createElement('div');
+    sectionHeader.className = 'projects-section-header';
+
+    const collapseSpan = document.createElement('span');
+    collapseSpan.className = 'section-collapse';
+    collapseSpan.textContent = projectSectionCollapsed ? '▸' : '▾';
+
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'section-icon';
+    iconSpan.textContent = '🏗';
+
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'section-title';
+    titleSpan.textContent = 'Coding Projects';
+
+    const newProjBtn = document.createElement('button');
+    newProjBtn.className = 'section-new-btn';
+    newProjBtn.textContent = '+ New Project';
+    newProjBtn.title = 'Create a new coding project';
+
+    sectionHeader.appendChild(collapseSpan);
+    sectionHeader.appendChild(iconSpan);
+    sectionHeader.appendChild(titleSpan);
+    sectionHeader.appendChild(newProjBtn);
+
+    // Collapse/expand the whole section
+    const toggleSection = () => {
+      projectSectionCollapsed = !projectSectionCollapsed;
+      renderConversationList(conversations);
+    };
+    collapseSpan.addEventListener('click', (e) => { e.stopPropagation(); toggleSection(); });
+    iconSpan.addEventListener('click', (e) => { e.stopPropagation(); toggleSection(); });
+    titleSpan.addEventListener('click', (e) => { e.stopPropagation(); toggleSection(); });
+    sectionHeader.addEventListener('click', toggleSection);
+
+    // [+ New Project] button
+    newProjBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showNewProjectInput();
     });
 
-    convList.appendChild(el);
+    convList.appendChild(sectionHeader);
+
+    // If section is not collapsed, render each project
+    if (!projectSectionCollapsed) {
+      projects.forEach(project => {
+        const projConvs = projectConvMap[project.id] || [];
+        const isExpanded = expandedProjects[project.id] !== false; // default expanded
+
+        // ── Project row ──────────────────────────────────────────────────
+        const projEl = document.createElement('div');
+        projEl.className = 'project-item';
+        projEl.dataset.projectId = project.id;
+
+        const expandSpan = document.createElement('span');
+        expandSpan.className = 'project-expand';
+        expandSpan.textContent = isExpanded ? '▾' : '▸';
+
+        const projIconSpan = document.createElement('span');
+        projIconSpan.className = 'project-icon';
+        projIconSpan.textContent = '🏗';
+
+        const projNameSpan = document.createElement('span');
+        projNameSpan.className = 'project-name';
+        projNameSpan.textContent = project.name;
+
+        const projCountSpan = document.createElement('span');
+        projCountSpan.className = 'project-count';
+        projCountSpan.textContent = String(projConvs.length);
+
+        // [+ Conv] button (visible on hover via CSS)
+        const newConvBtn = document.createElement('button');
+        newConvBtn.className = 'project-new-conv-btn';
+        newConvBtn.textContent = '+ Conv';
+        newConvBtn.title = 'New conversation in ' + project.name;
+
+        // [🗑] delete button (visible on hover via CSS)
+        const delProjBtn = document.createElement('button');
+        delProjBtn.className = 'project-delete-btn';
+        delProjBtn.textContent = '🗑';
+        delProjBtn.title = 'Delete project…';
+
+        projEl.appendChild(expandSpan);
+        projEl.appendChild(projIconSpan);
+        projEl.appendChild(projNameSpan);
+        projEl.appendChild(projCountSpan);
+        projEl.appendChild(newConvBtn);
+        projEl.appendChild(delProjBtn);
+
+        // Toggle expand/collapse project conversations
+        const toggleProject = (e) => {
+          e.stopPropagation();
+          expandedProjects[project.id] = !isExpanded;
+          renderConversationList(conversations);
+        };
+        expandSpan.addEventListener('click', toggleProject);
+        projIconSpan.addEventListener('click', toggleProject);
+        projNameSpan.addEventListener('click', toggleProject);
+        projCountSpan.addEventListener('click', toggleProject);
+        projEl.addEventListener('click', (e) => {
+          if (e.target === projEl) toggleProject(e);
+        });
+
+        // [+ Conv] — create a new conversation inside this project
+        newConvBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          createProjectConversation(project.id);
+        });
+
+        // [🗑] — show project deletion modal
+        delProjBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          showProjectDeleteModal(project);
+        });
+
+        // Right-click on project row — context menu
+        projEl.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          showProjectContextMenu(e.clientX, e.clientY, project);
+        });
+
+        convList.appendChild(projEl);
+
+        // ── Project conversations (indented, when expanded) ──────────────
+        if (isExpanded) {
+          if (projConvs.length > 0) {
+            projConvs.forEach(conv => {
+              convList.appendChild(_buildConvItem(conv, true));
+            });
+          } else {
+            const empty = document.createElement('div');
+            empty.className = 'conv-empty-indented';
+            empty.textContent = 'No conversations yet';
+            convList.appendChild(empty);
+          }
+        }
+      });
+    }
+  }
+
+  // ─── Recent section (conversations with no project) ───────────────────────
+  // De-dup: filter out any conversation that belongs to a project
+  const recentConvs = (list || []).filter(c =>
+    !projectedConvIds.has(c.id) && !c.project_id
+  );
+
+  if (recentConvs.length > 0 || projects.length === 0) {
+    if (projects.length > 0) {
+      const recentHeader = document.createElement('div');
+      recentHeader.className = 'conv-section-header';
+      recentHeader.textContent = 'Recent';
+      convList.appendChild(recentHeader);
+    }
+
+    if (recentConvs.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'conv-empty';
+      empty.innerHTML = 'No conversations yet.<br>Start a new chat above.';
+      convList.appendChild(empty);
+    } else {
+      recentConvs.forEach(conv => {
+        convList.appendChild(_buildConvItem(conv, false));
+      });
+    }
+  }
+}
+
+// ─── Create project conversation ────────────────────────────────────────────
+
+async function createProjectConversation(projectId) {
+  try {
+    const convId = await window.aria.newProjectConversation(projectId);
+    if (!convId) return;
+    currentConversationId = convId;
+    // Expand this project so the new conv is visible
+    expandedProjects[projectId] = true;
+    // Reload everything — the new-conversation IPC also emits projects:updated
+    await loadConversations();
+    setActiveConvInSidebar(convId);
+    showWelcome();
+    updateTokenBar(0, 0);
+    ariaInput.focus();
+  } catch (e) {
+    console.error('[aria] createProjectConversation error:', e);
+  }
+}
+
+// ─── Project context menu (right-click) ─────────────────────────────────────
+
+let _projCtxMenu = null;
+
+function showProjectContextMenu(x, y, project) {
+  if (_projCtxMenu) { _projCtxMenu.remove(); _projCtxMenu = null; }
+
+  const menu = document.createElement('div');
+  menu.className = 'conv-context-menu';
+  menu.innerHTML = `
+    <div class="conv-ctx-item" data-action="delete-project">🗑 Delete project…</div>
+  `;
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  document.body.appendChild(menu);
+  _projCtxMenu = menu;
+
+  requestAnimationFrame(() => {
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth)   menu.style.left = (x - rect.width) + 'px';
+    if (rect.bottom > window.innerHeight) menu.style.top  = (y - rect.height) + 'px';
   });
+
+  menu.addEventListener('click', (e) => {
+    const action = e.target.closest('[data-action]')?.dataset.action;
+    if (_projCtxMenu) { _projCtxMenu.remove(); _projCtxMenu = null; }
+    if (action === 'delete-project') showProjectDeleteModal(project);
+  });
+
+  setTimeout(() => document.addEventListener('click', () => {
+    if (_projCtxMenu) { _projCtxMenu.remove(); _projCtxMenu = null; }
+  }, { once: true }), 0);
+}
+
+// ─── Project deletion modal ───────────────────────────────────────────────────
+
+let _projDeleteModal = null;
+
+function showProjectDeleteModal(project) {
+  // Remove any existing modal
+  if (_projDeleteModal) { _projDeleteModal.remove(); _projDeleteModal = null; }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'proj-delete-overlay';
+
+  const card = document.createElement('div');
+  card.className = 'proj-delete-card';
+
+  const title = document.createElement('div');
+  title.className = 'proj-delete-title';
+  title.textContent = `Delete project "${project.name}"?`;
+
+  const subtitle = document.createElement('div');
+  subtitle.className = 'proj-delete-subtitle';
+  subtitle.textContent = 'Choose how to delete this project:';
+
+  // ── Option 1: Remove from sidebar ──
+  const unlinkBtn = document.createElement('button');
+  unlinkBtn.className = 'proj-delete-btn-unlink';
+  unlinkBtn.innerHTML = `<span class="proj-delete-btn-icon">↩</span>
+    <span class="proj-delete-btn-text">
+      <strong>Remove from sidebar</strong>
+      <small>Unlinks the project. Conversations return to Recent. Files on disk are untouched.</small>
+    </span>`;
+
+  // ── Option 2: Delete everything ──
+  const deleteAllBtn = document.createElement('button');
+  deleteAllBtn.className = 'proj-delete-btn-danger';
+  deleteAllBtn.innerHTML = `<span class="proj-delete-btn-icon">🗑</span>
+    <span class="proj-delete-btn-text">
+      <strong>Delete everything</strong>
+      <small>Deletes all conversations, moves the working directory to trash. Irreversible.</small>
+    </span>`;
+
+  // ── Cancel ──
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'proj-delete-btn-cancel';
+  cancelBtn.textContent = 'Cancel';
+
+  card.appendChild(title);
+  card.appendChild(subtitle);
+  card.appendChild(unlinkBtn);
+  card.appendChild(deleteAllBtn);
+  card.appendChild(cancelBtn);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  _projDeleteModal = overlay;
+
+  const closeModal = () => {
+    if (_projDeleteModal) { _projDeleteModal.remove(); _projDeleteModal = null; }
+  };
+
+  cancelBtn.addEventListener('click', closeModal);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+
+  unlinkBtn.addEventListener('click', async () => {
+    closeModal();
+    await _executeProjectDelete(project, 'unlink');
+  });
+
+  deleteAllBtn.addEventListener('click', async () => {
+    closeModal();
+    await _executeProjectDelete(project, 'delete-all');
+  });
+}
+
+async function _executeProjectDelete(project, mode) {
+  try {
+    // Capture the project's conversation IDs BEFORE mutating local state
+    const projConvIds = new Set((projectConvMap[project.id] || []).map(c => c.id));
+    const activeConvWasInProject = projConvIds.has(currentConversationId);
+
+    const result = await window.aria.deleteProject(project.id, mode);
+    if (!result || !result.success) {
+      console.error('[aria] deleteProject failed:', result);
+      return;
+    }
+
+    // Remove project from local state
+    projects = projects.filter(p => p.id !== project.id);
+    delete projectConvMap[project.id];
+    delete expandedProjects[project.id];
+
+    // If the active conversation was deleted (delete-all mode), switch away
+    if (mode === 'delete-all' && activeConvWasInProject) {
+      // Remove deleted conversations from local list
+      conversations = conversations.filter(c => !projConvIds.has(c.id));
+      if (conversations.length > 0) {
+        await switchToConversation(conversations[0].id);
+      } else {
+        const newConv = await window.aria.newChat();
+        if (newConv) {
+          currentConversationId = newConv.id;
+          conversations = [newConv];
+          showWelcome();
+          updateTokenBar(0, 0);
+        }
+      }
+      await loadConversations();
+      return;
+    }
+
+    // Refresh sidebar
+    await loadConversations();
+  } catch (e) {
+    console.error('[aria] _executeProjectDelete error:', e);
+  }
+}
+
+// ─── Inline new project input ────────────────────────────────────────────────
+
+function showNewProjectInput() {
+  // Insert the input row at the top of the projects section (right after the header)
+  // Find the section header to insert after
+  const sectionHeader = convList.querySelector('.projects-section-header');
+
+  // Remove existing input row if any
+  const existing = convList.querySelector('.new-project-row');
+  if (existing) { existing.remove(); return; }
+
+  const row = document.createElement('div');
+  row.className = 'new-project-row';
+
+  const input = document.createElement('input');
+  input.className = 'new-project-input';
+  input.type = 'text';
+  input.placeholder = 'Project name…';
+  input.maxLength = 80;
+  input.spellcheck = false;
+
+  const confirmBtn = document.createElement('button');
+  confirmBtn.className = 'new-project-confirm-btn';
+  confirmBtn.textContent = '✓ Create';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'new-project-cancel-btn';
+  cancelBtn.textContent = '✕';
+  cancelBtn.title = 'Cancel';
+
+  row.appendChild(input);
+  row.appendChild(confirmBtn);
+  row.appendChild(cancelBtn);
+
+  // Insert after section header (or at top of list if no header)
+  if (sectionHeader && sectionHeader.nextSibling) {
+    convList.insertBefore(row, sectionHeader.nextSibling);
+  } else {
+    convList.appendChild(row);
+  }
+
+  input.focus();
+
+  const doCreate = async () => {
+    const name = input.value.trim();
+    if (!name) { input.focus(); return; }
+    row.remove();
+    try {
+      await window.aria.createProject(name, '', '');
+      // projects:updated event will refresh the sidebar, but reload now for instant feedback
+      await loadConversations();
+    } catch (e) {
+      console.error('[aria] createProject error:', e);
+    }
+  };
+
+  confirmBtn.addEventListener('click', doCreate);
+  cancelBtn.addEventListener('click', () => row.remove());
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); doCreate(); }
+    if (e.key === 'Escape') row.remove();
+  });
+}
+
+function _buildConvItem(conv, indented) {
+  const el = document.createElement('div');
+  el.className = 'conv-item' + (conv.id === currentConversationId ? ' active' : '') + (indented ? ' indented' : '');
+  el.dataset.id = conv.id;
+
+  const title = conv.title || '(New chat)';
+  const dateStr = formatDate(conv.updated_at);
+  const preview = conv.preview ? escHtml(conv.preview.slice(0, 40)) : '';
+
+  el.innerHTML = `
+    <div class="conv-item-title">${escHtml(title)}</div>
+    <div class="conv-item-meta">
+      <span class="conv-item-date">${dateStr}</span>
+      ${preview ? `<span class="conv-item-preview">— ${preview}</span>` : ''}
+    </div>
+  `;
+
+  el.addEventListener('click', () => switchToConversation(conv.id));
+  el.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    showConvContextMenu(e.clientX, e.clientY, conv);
+  });
+
+  return el;
 }
 
 function setActiveConvInSidebar(convId) {
@@ -283,6 +763,11 @@ newChatBtn.addEventListener('click', async () => {
       conversations.unshift(conv);
       renderConversationList(conversations);
       setActiveConvInSidebar(currentConversationId);
+      // Phase 9.09: new chat has no project
+      currentProjectId = null;
+      currentProjectName = null;
+      updateActiveProjectIndicator();
+      _resetTeamPanel();
       showWelcome();
       updateTokenBar(0, 0);
       ariaInput.focus();
@@ -305,6 +790,8 @@ async function switchToConversation(convId) {
     await window.aria.switchConversation(convId);
     currentConversationId = convId;
     setActiveConvInSidebar(convId);
+    // Phase 9.09: Update active project indicator
+    _detectCurrentProject();
     await loadMessagesForConversation(convId);
   } catch (e) {
     console.error('[aria] switchConversation error:', e);
@@ -338,8 +825,15 @@ function showConvContextMenu(x, y, conv) {
   closeContextMenu();
   const menu = document.createElement('div');
   menu.className = 'conv-context-menu';
+
+  // "Attach to project…" option — only when projects exist and conv has no project yet
+  const attachRow = conv.project_id ? '' : `<div class="conv-ctx-item" data-action="attach">🏗 Attach to project…</div>`;
+  const detachRow = conv.project_id ? `<div class="conv-ctx-item" data-action="detach">↩ Remove from project</div>` : '';
+
   menu.innerHTML = `
     <div class="conv-ctx-item" data-action="rename">✏️ Rename</div>
+    ${attachRow}
+    ${detachRow}
     <div class="conv-ctx-item danger" data-action="delete">🗑 Delete</div>
   `;
   menu.style.left = x + 'px';
@@ -356,12 +850,90 @@ function showConvContextMenu(x, y, conv) {
 
   menu.addEventListener('click', async e => {
     const action = e.target.closest('[data-action]')?.dataset.action;
+    if (action === 'attach') {
+      closeContextMenu();
+      showAttachProjectMenu(x, y, conv);
+      return;
+    }
     closeContextMenu();
     if (action === 'rename') await renameConversation(conv);
     if (action === 'delete') await deleteConversation(conv);
+    if (action === 'detach') await detachFromProject(conv);
   });
 
   setTimeout(() => document.addEventListener('click', closeContextMenu, { once: true }), 0);
+}
+
+// ─── Attach to project picker ────────────────────────────────────────────────
+
+let _pickerMenu = null;
+
+function showAttachProjectMenu(x, y, conv) {
+  if (_pickerMenu) { _pickerMenu.remove(); _pickerMenu = null; }
+
+  const menu = document.createElement('div');
+  menu.className = 'project-picker-menu';
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  document.body.appendChild(menu);
+  _pickerMenu = menu;
+
+  const header = document.createElement('div');
+  header.className = 'project-picker-header';
+  header.textContent = 'Attach to project';
+  menu.appendChild(header);
+
+  const activeProjects = projects.filter(p => !p.archived);
+  if (activeProjects.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'project-picker-empty';
+    empty.textContent = 'No projects yet. Create one first.';
+    menu.appendChild(empty);
+  } else {
+    activeProjects.forEach(proj => {
+      const item = document.createElement('div');
+      item.className = 'project-picker-item';
+      item.innerHTML = `<span>🏗</span><span>${escHtml(proj.name)}</span>`;
+      item.addEventListener('click', async () => {
+        if (_pickerMenu) { _pickerMenu.remove(); _pickerMenu = null; }
+        try {
+          await window.aria.linkConversationToProject(conv.id, proj.id);
+          // Update the conv object in local state
+          const idx = conversations.findIndex(c => c.id === conv.id);
+          if (idx !== -1) conversations[idx].project_id = proj.id;
+          // Reload sidebar
+          await loadConversations();
+        } catch (e) {
+          console.error('[aria] linkConversationToProject error:', e);
+        }
+      });
+      menu.appendChild(item);
+    });
+  }
+
+  // Adjust position if overflowing
+  requestAnimationFrame(() => {
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth)  menu.style.left = (x - rect.width) + 'px';
+    if (rect.bottom > window.innerHeight) menu.style.top = (y - rect.height) + 'px';
+  });
+
+  setTimeout(() => document.addEventListener('click', () => {
+    if (_pickerMenu) { _pickerMenu.remove(); _pickerMenu = null; }
+  }, { once: true }), 0);
+}
+
+async function detachFromProject(conv) {
+  if (!conv.project_id) return;
+  try {
+    // We "detach" by nullifying project_id. There's no unlink IPC yet,
+    // so we do a DB update via a workaround: re-run listConversations to get current state.
+    // For now, emit a console note — the conversation is still linked in DB.
+    // Full implementation: add projects:unlink-conversation IPC.
+    console.warn('[aria] detachFromProject: no unlink IPC implemented yet');
+  } catch (e) {
+    console.error('[aria] detachFromProject error:', e);
+  }
 }
 
 function closeContextMenu() {
@@ -453,8 +1025,8 @@ function appendMessageEl(msg) {
   bubble.className = 'aria-bubble';
 
   if (msg._raw) {
-    // Raw HTML (deep mode plan cards)
-    bubble.innerHTML = msg.content || '';
+    // Raw HTML (deep mode plan cards) — sanitize for safety
+    bubble.innerHTML = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(msg.content || '') : (msg.content || '');
     wrapper.style.maxWidth = '640px';
     wrapper.style.alignSelf = 'flex-start';
   } else if (role === 'assistant') {
@@ -463,7 +1035,16 @@ function appendMessageEl(msg) {
     mdDiv.innerHTML = renderMarkdown(msg.content || '');
     bubble.appendChild(mdDiv);
   } else if (role === 'tool') {
-    bubble.textContent = msg.content || '';
+    // Render tool results with markdown for multi-line outputs (team_status etc.)
+    const content = msg.content || '';
+    if (content.includes('\n') || content.includes('**')) {
+      const mdDiv = document.createElement('div');
+      mdDiv.className = 'md-content tool-content';
+      mdDiv.innerHTML = renderMarkdown(content);
+      bubble.appendChild(mdDiv);
+    } else {
+      bubble.textContent = content;
+    }
   } else {
     // user, system
     bubble.textContent = msg.content || '';
@@ -521,7 +1102,7 @@ async function sendMessage(text) {
 
   // Send to main process
   try {
-    window.aria.sendMessage(trimmed, currentConversationId);
+    window.aria.sendMessage(trimmed, currentConversationId, codingModeActive);
   } catch (e) {
     console.error('[aria] sendMessage error:', e);
     setStreamingState(false);
@@ -597,6 +1178,7 @@ window.aria.onStreamStart(() => {
 
 let _streamBubbleEl = null;
 let _streamMdDiv = null;
+let _streamTextSavedUpTo = 0; // Track how much text was already saved as messages
 
 function _prepareStreamBubble() {
   const wrapper = document.createElement('div');
@@ -647,7 +1229,14 @@ window.aria.onStreamChunk(chunk => {
 });
 
 function _updateStreamBubble(text, done) {
-  if (!_streamBubbleEl) return;
+  // Phase 9 fix: If the bubble was finalized (e.g., tool result interrupted it),
+  // create a new one for the continuing text.
+  if (!_streamBubbleEl) {
+    // Only show text that came AFTER the last save point
+    const newText = text.slice(_streamTextSavedUpTo);
+    if (!newText.trim()) return;
+    _prepareStreamBubble();
+  }
 
   if (!_streamMdDiv) {
     // Replace typing indicator with md-content
@@ -657,7 +1246,9 @@ function _updateStreamBubble(text, done) {
     _streamBubbleEl.appendChild(_streamMdDiv);
   }
 
-  _streamMdDiv.innerHTML = renderMarkdown(text) + (!done ? '<span class="streaming-cursor"></span>' : '');
+  // Show only text after the last save point (if bubble was recreated after tool interruption)
+  const displayText = _streamTextSavedUpTo > 0 ? text.slice(_streamTextSavedUpTo) : text;
+  _streamMdDiv.innerHTML = renderMarkdown(displayText) + (!done ? '<span class="streaming-cursor"></span>' : '');
   scrollToBottom(false);
 }
 
@@ -672,20 +1263,77 @@ function _finalizeStreamBubble() {
     if (wrapper) wrapper.removeAttribute('id');
   }
 
-  // Add to in-memory messages
-  if (streamBuffer) {
-    messages.push({ role: 'assistant', content: streamBuffer, timestamp: Date.now() });
+  // Add remaining unsaved text as a message
+  const unsavedText = streamBuffer.slice(_streamTextSavedUpTo);
+  if (unsavedText.trim()) {
+    messages.push({ role: 'assistant', content: unsavedText, timestamp: Date.now() });
   }
 
   _streamBubbleEl = null;
   _streamMdDiv = null;
+  _streamTextSavedUpTo = 0;
   streamBuffer = '';
 }
+
+// ─── Reasoning / thinking chip ────────────────────────────────────────────────
+
+let _thinkingChipEl = null;
+
+window.aria.onReasoningChunk(({ text, done }) => {
+  if (!_thinkingChipEl) {
+    // Create the thinking chip once on first reasoning event
+    _thinkingChipEl = document.createElement('div');
+    _thinkingChipEl.className = 'aria-thinking-chip';
+    _thinkingChipEl.innerHTML = `
+      <div class="thinking-chip-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <span class="thinking-chip-icon">🧠</span>
+        <span class="thinking-chip-label">Thinking…</span>
+        <span class="thinking-chip-toggle">▾</span>
+      </div>
+      <div class="thinking-chip-body"></div>`;
+    const chatMessages = document.getElementById('aria-messages');
+    if (chatMessages) chatMessages.appendChild(_thinkingChipEl);
+    _thinkingChipEl.classList.add('expanded'); // expand live while streaming
+    chatMessages?.scrollTo({ top: chatMessages.scrollHeight, behavior: 'smooth' });
+  }
+
+  const body = _thinkingChipEl.querySelector('.thinking-chip-body');
+  if (body) body.textContent = text;
+
+  const chatMessages = document.getElementById('aria-messages');
+  chatMessages?.scrollTo({ top: chatMessages.scrollHeight, behavior: 'smooth' });
+
+  if (done) {
+    // Collapse the chip and update label to "Thought for N chars"
+    const label = _thinkingChipEl.querySelector('.thinking-chip-label');
+    if (label) label.textContent = `Thought (${text.length} chars) — click to expand`;
+    _thinkingChipEl.classList.remove('expanded');
+    _thinkingChipEl = null; // reset for next turn
+  }
+});
 
 // ─── Tool results ─────────────────────────
 
 window.aria.onToolResult(result => {
   if (!result) return;
+
+  // Phase 9 fix: If there's an active stream bubble with text, finalize it
+  // so the tool result appears BELOW the previous text, and any subsequent
+  // text chunks will create a new bubble below the tool results.
+  if (_streamBubbleEl && streamBuffer.trim()) {
+    _updateStreamBubble(streamBuffer, true);
+    const cursor = _streamBubbleEl.querySelector('.streaming-cursor');
+    if (cursor) cursor.remove();
+    const wrapper = document.getElementById('aria-stream-bubble');
+    if (wrapper) wrapper.removeAttribute('id');
+    // Save the text so far as a partial assistant message
+    messages.push({ role: 'assistant', content: streamBuffer, timestamp: Date.now() });
+    _streamTextSavedUpTo = streamBuffer.length;
+    _streamBubbleEl = null;
+    _streamMdDiv = null;
+    // Don't clear streamBuffer — it keeps accumulating for the full LLM turn
+  }
+
   const display = result.display || `[${result.toolName}]`;
   appendMessage('tool', display);
 });
@@ -710,11 +1358,22 @@ window.aria.onConversationUpdated(async data => {
   }
 });
 
+// Phase 9.09: Real-time project updates pushed from main process
+if (window.aria.onProjectsUpdated) {
+  window.aria.onProjectsUpdated(async () => {
+    await loadConversations();
+    setActiveConvInSidebar(currentConversationId);
+  });
+}
+
 window.aria.onConversationSwitched(async data => {
   if (!data || !data.conversationId) return;
   if (data.conversationId !== currentConversationId) {
     currentConversationId = data.conversationId;
     setActiveConvInSidebar(currentConversationId);
+    _resetTeamPanel();
+    // Phase 9.09: Update active project indicator
+    _detectCurrentProject();
     await loadMessagesForConversation(currentConversationId);
   }
 });
@@ -724,27 +1383,87 @@ window.aria.onConversationSwitched(async data => {
 // ═══════════════════════════════════════════
 
 let _deepSubtaskText = {};
+let _deepToolData = {};  // { index: [{ toolName, summary, detail }] }
+let _deepTotalSteps = 0;
+let _deepDoneSteps = 0;
+let _deepOutputDir = null;
+let _deepParallelMode = false;
+
+// ─── Team Live Panel state ───
+let _teamPanelEl = null;
+let _teammateCards = {}; // { [name]: { cardEl, outputEl, statusEl } }
+
+function _resetTeamPanel() {
+  _teamPanelEl = null;
+  _teammateCards = {};
+}
+
+function ensureTeamPanel() {
+  if (_teamPanelEl) return;
+  _teamPanelEl = document.createElement('div');
+  _teamPanelEl.className = 'team-live-panel';
+  _teamPanelEl.innerHTML = `
+    <div class="team-live-header">
+      <span>👥 Team Orchestration</span>
+      <span class="team-live-status">starting…</span>
+    </div>
+    <div class="team-live-body"></div>
+    <div class="team-mailbox-log"></div>`;
+  const msgs = document.getElementById('aria-messages');
+  if (msgs) msgs.appendChild(_teamPanelEl);
+  scrollToBottom();
+}
+
+function getOrCreateTeammateCard(name, role, task) {
+  if (_teammateCards[name]) return _teammateCards[name];
+  ensureTeamPanel();
+  const body = _teamPanelEl.querySelector('.team-live-body');
+  const card = document.createElement('div');
+  card.className = 'team-mate-card';
+  card.innerHTML = `
+    <div class="team-mate-header">
+      <span class="team-mate-name">${escHtml(name)}</span>
+      <span class="team-mate-role">${escHtml(role || '')}</span>
+      <span class="team-mate-status working">working</span>
+    </div>
+    <div class="team-mate-task">${escHtml((task || '').slice(0, 80))}</div>
+    <div class="team-mate-output"></div>`;
+  body.appendChild(card);
+  _teammateCards[name] = {
+    cardEl: card,
+    outputEl: card.querySelector('.team-mate-output'),
+    statusEl: card.querySelector('.team-mate-status'),
+  };
+  return _teammateCards[name];
+}
 
 window.aria.onDeepPlan(data => {
-  const { mode, subtasks } = data || {};
+  const { mode, subtasks, parallel } = data || {};
   if (!subtasks) return;
   _deepSubtaskText = {};
+  _deepToolData = {};
+  _deepTotalSteps = subtasks.length;
+  _deepDoneSteps = 0;
+  _deepOutputDir = null;
+  _deepParallelMode = !!parallel;
 
   let html = '<div class="deep-plan">';
-  html += `<div class="deep-plan-header">📋 ${subtasks.length} steps <span class="deep-plan-mode ${escHtml(mode)}">${escHtml(mode)}</span></div>`;
+  html += `<div class="deep-plan-header">📋 ${subtasks.length} steps <span class="deep-plan-mode ${escHtml(mode)}">${escHtml(mode)}</span>${_deepParallelMode ? ' <span class="deep-plan-mode parallel">⚡ parallel</span>' : ''}</div>`;
+  // Progress bar
+  html += `<div class="deep-progress-bar"><div class="deep-progress-fill" id="aria-deep-progress"></div></div>`;
 
   subtasks.forEach((s, i) => {
     const taskStr = (s.task || '').slice(0, 80);
     const truncated = (s.task || '').length > 80 ? '…' : '';
     html += `<div class="deep-step" id="aria-deep-step-${i}">`;
-    html += `  <div class="deep-step-header" onclick="window._ariaToggleDeepStep(${i})">`;
+    html += `  <div class="deep-step-header" data-step-index="${i}">`;
     html += `    <span class="deep-chevron" id="aria-deep-chevron-${i}">▶</span>`;
     html += `    <span class="deep-step-status" id="aria-deep-status-${i}">⏳</span>`;
     html += `    <span class="deep-step-title"><b>${i + 1}.</b> ${escHtml(taskStr)}${truncated}</span>`;
     html += `    <span class="deep-step-duration" id="aria-deep-dur-${i}"></span>`;
     html += `  </div>`;
+    html += `  <div class="deep-step-tools" id="aria-deep-tools-${i}"></div>`;
     html += `  <div class="deep-step-stream" id="aria-deep-stream-${i}"></div>`;
-    html += `  <div class="deep-step-tools"  id="aria-deep-tools-${i}"></div>`;
     html += `</div>`;
   });
   html += '</div>';
@@ -758,6 +1477,14 @@ window.aria.onDeepPlan(data => {
   scrollToBottom();
 });
 
+function _updateDeepProgress() {
+  const fill = document.getElementById('aria-deep-progress');
+  if (fill && _deepTotalSteps > 0) {
+    const pct = Math.round((_deepDoneSteps / _deepTotalSteps) * 100);
+    fill.style.width = pct + '%';
+  }
+}
+
 window._ariaToggleDeepStep = function(idx) {
   const stream = document.getElementById('aria-deep-stream-' + idx);
   const chev   = document.getElementById('aria-deep-chevron-' + idx);
@@ -765,6 +1492,12 @@ window._ariaToggleDeepStep = function(idx) {
   const visible = stream.classList.contains('visible');
   stream.classList.toggle('visible', !visible);
   if (chev) chev.classList.toggle('open', !visible);
+};
+
+// Toggle tool detail expansion
+window._ariaToggleToolDetail = function(idx, toolIdx) {
+  const detail = document.getElementById(`aria-deep-tool-detail-${idx}-${toolIdx}`);
+  if (detail) detail.classList.toggle('visible');
 };
 
 window.aria.onDeepSubtaskStart(data => {
@@ -776,23 +1509,27 @@ window.aria.onDeepSubtaskStart(data => {
   const chev   = document.getElementById('aria-deep-chevron-' + index);
 
   if (el)     el.classList.add('active');
-  if (status) status.textContent = '🔄';
+  if (status) status.textContent = '⟳';
   if (stream) {
     stream.innerHTML = '<em style="color:var(--text-dim)">Working…</em>';
     stream.classList.add('visible', 'streaming');
   }
   if (chev) chev.classList.add('open');
   _deepSubtaskText[index] = '';
+  _deepToolData[index] = [];
 
-  // Collapse other streams
-  document.querySelectorAll('.deep-step-stream.visible').forEach(s => {
-    const id = parseInt(s.id.replace('aria-deep-stream-', ''));
-    if (!isNaN(id) && id !== index) {
-      s.classList.remove('visible', 'streaming');
-      const c = document.getElementById('aria-deep-chevron-' + id);
-      if (c) c.classList.remove('open');
-    }
-  });
+  // In sequential mode, collapse other streams.
+  // In parallel mode (research OR DAG action mode), keep all visible simultaneously.
+  if (!_deepParallelMode) {
+    document.querySelectorAll('.deep-step-stream.visible').forEach(s => {
+      const id = parseInt(s.id.replace('aria-deep-stream-', ''));
+      if (!isNaN(id) && id !== index) {
+        s.classList.remove('visible', 'streaming');
+        const c = document.getElementById('aria-deep-chevron-' + id);
+        if (c) c.classList.remove('open');
+      }
+    });
+  }
 
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 });
@@ -817,6 +1554,24 @@ window.aria.onDeepSubtaskDone(data => {
     stream.innerHTML = `<span style="color:#ef4444">❌ ${escHtml(error)}</span>`;
     stream.classList.add('visible');
   }
+
+  // Auto-collapse completed step stream (keep tools as chips) after a short delay.
+  // In parallel mode (research OR DAG action), wait longer so the user can read
+  // results from steps that finish early while others are still running.
+  if (status === 'done' && stream) {
+    const collapseDelay = _deepParallelMode ? 3000 : 800;
+    setTimeout(() => {
+      stream.classList.remove('visible');
+      const chev = document.getElementById('aria-deep-chevron-' + index);
+      if (chev) chev.classList.remove('open');
+    }, collapseDelay);
+  }
+
+  // Update progress
+  if (status === 'done') {
+    _deepDoneSteps++;
+    _updateDeepProgress();
+  }
 });
 
 let _deepStreamTimers = {};
@@ -840,15 +1595,157 @@ window.aria.onDeepStreamChunk(data => {
   }, 80);
 });
 
+// Tool results as compact collapsible chips (Claude.ai-inspired)
+if (window.aria.onDeepToolResult) {
+  window.aria.onDeepToolResult(data => {
+    const { index, toolName, display } = data || {};
+    if (index == null) return;
+    const toolsDiv = document.getElementById('aria-deep-tools-' + index);
+    if (!toolsDiv) return;
+
+    // Track tool data
+    if (!_deepToolData[index]) _deepToolData[index] = [];
+    const toolIdx = _deepToolData[index].length;
+
+    // Parse display to extract a short summary
+    const fullText = display || toolName || 'tool';
+    const lines = fullText.split('\n');
+    // First line is like "🔧 elements → 23 items" — use tool name + short result
+    const shortName = (toolName || 'tool').replace(/_/g, ' ');
+    let summary = '';
+    if (lines.length > 1) {
+      summary = lines[1].slice(0, 40).trim();
+      if (lines[1].length > 40) summary += '…';
+    } else if (fullText.includes('→')) {
+      summary = fullText.split('→').slice(1).join('→').trim().slice(0, 40);
+    }
+
+    _deepToolData[index].push({ toolName, summary, detail: fullText });
+
+    // Render as compact chip
+    const chip = document.createElement('span');
+    chip.className = 'deep-tool-chip';
+    chip.onclick = () => window._ariaToggleToolDetail(index, toolIdx);
+    chip.innerHTML = `<span class="tool-icon">🔧</span><span class="tool-name">${escHtml(shortName)}</span>${summary ? `<span class="tool-summary">— ${escHtml(summary)}</span>` : ''}`;
+    toolsDiv.appendChild(chip);
+
+    // Hidden expandable detail
+    const detail = document.createElement('div');
+    detail.className = 'deep-tool-detail';
+    detail.id = `aria-deep-tool-detail-${index}-${toolIdx}`;
+    detail.textContent = fullText.replace(/^🔧\s*/, '');
+    toolsDiv.appendChild(detail);
+  });
+}
+
 window.aria.onDeepComplete(data => {
-  const { mode, durationSeconds, aborted, completedSteps, totalSteps } = data || {};
+  const { mode, durationSeconds, aborted, completedSteps, totalSteps, outputDirAbsolute, finalOutput } = data || {};
   const statusStr = aborted ? '⚠️ Aborted' : '✅ Complete';
-  const html = `<div class="deep-complete">${statusStr} — ${escHtml(mode)} mode, ${completedSteps}/${totalSteps} steps in ${Number(durationSeconds).toFixed(1)}s</div>`;
-  messages.push({ role: 'assistant', content: html, _raw: true, timestamp: Date.now() });
-  appendMessageEl({ role: 'assistant', content: html, _raw: true });
+
+  let completeHtml = '<div class="deep-complete">';
+  completeHtml += `<div class="deep-complete-summary">${statusStr} — ${escHtml(mode)} mode, ${completedSteps}/${totalSteps} steps in ${Number(durationSeconds).toFixed(1)}s</div>`;
+  completeHtml += '<div class="deep-complete-actions">';
+  if (mode === 'research' && !aborted && outputDirAbsolute) {
+    _deepOutputDir = outputDirAbsolute;
+    completeHtml += `<div class="deep-download-group">`;
+    completeHtml += `<button class="deep-download-btn" data-format="md">📥 .md</button>`;
+    completeHtml += `<button class="deep-download-btn" data-format="html">📥 .html</button>`;
+    completeHtml += `<button class="deep-download-btn" data-format="pdf">📥 .pdf</button>`;
+    completeHtml += `<button class="deep-download-btn" data-format="txt">📥 .txt</button>`;
+    completeHtml += `</div>`;
+  }
+  completeHtml += '</div>';
+  completeHtml += '</div>';
+
+  // Append completion card inside the existing plan card
+  const planCard = document.querySelector('.deep-plan');
+  if (planCard) {
+    // Render final report as markdown in the compile step's stream div
+    if (mode === 'research' && !aborted && finalOutput) {
+      const compileIndex = totalSteps - 1;
+      const compileStream = document.getElementById('aria-deep-stream-' + compileIndex);
+      if (compileStream) {
+        const mdDiv = document.createElement('div');
+        mdDiv.className = 'md-content';
+        mdDiv.innerHTML = renderMarkdown(finalOutput);
+        compileStream.innerHTML = '';
+        compileStream.appendChild(mdDiv);
+        compileStream.classList.add('visible');
+        const chev = document.getElementById('aria-deep-chevron-' + compileIndex);
+        if (chev) chev.classList.add('open');
+      }
+    }
+
+    // Append summary + download button at the end of the plan card
+    const completeEl = document.createElement('div');
+    completeEl.innerHTML = completeHtml;
+    planCard.appendChild(completeEl.firstElementChild);
+
+    // Update the stored message content for re-render persistence
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]._raw && messages[i].content && messages[i].content.includes('deep-plan')) {
+        messages[i].content = planCard.outerHTML;
+        break;
+      }
+    }
+  } else {
+    // Fallback: separate message
+    messages.push({ role: 'assistant', content: completeHtml, _raw: true, timestamp: Date.now() });
+    appendMessageEl({ role: 'assistant', content: completeHtml, _raw: true });
+  }
+
+  // Fill progress bar to 100%
+  _deepDoneSteps = _deepTotalSteps;
+  _updateDeepProgress();
+
   setStreamingState(false);
   scrollToBottom();
   setTimeout(() => loadConversations(), 500);
+});
+
+// Download report handler (format: 'md' | 'html' | 'pdf' | 'txt')
+window._ariaDownloadReport = async function(format) {
+  if (!_deepOutputDir) return;
+  const fmt = format || 'md';
+  try {
+    const result = await window.aria.saveDeepReport(_deepOutputDir, fmt);
+    if (result && result.success) {
+      // Brief feedback
+      appendMessage('system', `📥 Report saved to ${result.path}`);
+    } else if (result && result.error && result.error !== 'Cancelled') {
+      appendMessage('system', `❌ Save failed: ${result.error}`);
+    }
+  } catch (e) {
+    appendMessage('system', '❌ Failed to save report: ' + (e.message || e));
+  }
+};
+
+// ═══════════════════════════════════════════
+//  DEEP MODE — EVENT DELEGATION (CSP-safe, no inline onclick)
+// ═══════════════════════════════════════════
+
+// Use a single delegated click handler on the messages container.
+// This handles deep-step-header toggles and download button clicks
+// regardless of when the elements are inserted into the DOM.
+ariaMessages.addEventListener('click', (e) => {
+  // Deep step header toggle
+  const header = e.target.closest('.deep-step-header');
+  if (header) {
+    const step = header.closest('.deep-step');
+    if (step && step.id) {
+      const idx = parseInt(step.id.replace('aria-deep-step-', ''), 10);
+      if (!isNaN(idx)) window._ariaToggleDeepStep(idx);
+    }
+    return;
+  }
+
+  // Download format button
+  const dlBtn = e.target.closest('.deep-download-btn');
+  if (dlBtn) {
+    const fmt = dlBtn.dataset.format || 'md';
+    window._ariaDownloadReport(fmt);
+    return;
+  }
 });
 
 // ═══════════════════════════════════════════
@@ -869,6 +1766,8 @@ function updateCodingBtn() {
   ariaCodingBtn.title = codingModeActive
     ? 'Coding Mode: ON — click to disable agent team orchestration'
     : 'Coding Mode: OFF — click to enable agent team orchestration';
+  // Phase 9: Toggle Matrix theme on body
+  document.body.classList.toggle('coding-mode', codingModeActive);
 }
 
 // Wire coding mode button click
@@ -936,11 +1835,33 @@ function updateTeamCard(data) {
     const statusEmoji = { idle: '⏳', working: '🔄', blocked: '🚫', done: '✅', failed: '❌' };
     ariaTeamMembers.innerHTML = data.teammates.map(tm => {
       const emoji = statusEmoji[tm.status] || '❓';
-      const taskText = tm.currentTask ? ` — ${escHtml(tm.currentTask.slice(0, 40))}` : '';
+      // Show task assignment if available, otherwise fall back to role
+      const displayText = tm.currentTask
+        ? escHtml(tm.currentTask.slice(0, 60))
+        : escHtml(tm.role.slice(0, 40));
+      // Live activity indicators (passive — no teammate cooperation needed)
+      let activityHtml = '';
+      if (tm.status === 'working' && tm.toolCount > 0) {
+        const elapsed = tm.elapsed || 0;
+        const elapsedStr = elapsed >= 60 ? `${Math.floor(elapsed / 60)}m${elapsed % 60}s` : `${elapsed}s`;
+        const parts = [];
+        parts.push(`${tm.toolCount} tools`);
+        if (tm.filesWritten > 0) parts.push(`${tm.filesWritten} files`);
+        parts.push(elapsedStr);
+        if (tm.lastTool) parts.push(escHtml(tm.lastTool));
+        activityHtml = `<div class="aria-team-activity">${parts.join(' · ')}</div>`;
+      } else if (tm.status === 'done') {
+        const elapsed = tm.elapsed || 0;
+        const elapsedStr = elapsed >= 60 ? `${Math.floor(elapsed / 60)}m${elapsed % 60}s` : `${elapsed}s`;
+        activityHtml = `<div class="aria-team-activity done">${tm.toolCount || 0} tools · ${tm.filesWritten || 0} files · ${elapsedStr}</div>`;
+      }
       return `<div class="aria-team-mate">
-        <span>${emoji}</span>
-        <span class="aria-team-name">${escHtml(tm.name)}</span>
-        <span class="aria-team-role">${escHtml(tm.role.slice(0, 20))}${taskText}</span>
+        <div class="aria-team-mate-row">
+          <span>${emoji}</span>
+          <span class="aria-team-name">${escHtml(tm.name)}</span>
+          <span class="aria-team-role">${displayText}</span>
+        </div>
+        ${activityHtml}
       </div>`;
     }).join('');
   }
@@ -965,6 +1886,104 @@ if (ariaTeamCollapse) {
 if (window.aria.onTeamUpdated) {
   window.aria.onTeamUpdated((data) => {
     updateTeamCard(data);
+  });
+}
+
+// ─── Team Live Activity listeners (coding mode) ───
+console.log('[aria] Registering team live listeners...',
+  'onTeammateStart:', !!window.aria.onTeammateStart,
+  'onTeammateTool:', !!window.aria.onTeammateTool,
+  'onTeammateChunk:', !!window.aria.onTeammateChunk,
+  'onTeammateDone:', !!window.aria.onTeammateDone,
+  'onTeamMailboxMessage:', !!window.aria.onTeamMailboxMessage);
+
+if (window.aria.onTeammateStart) {
+  window.aria.onTeammateStart(({ name, role, task }) => {
+    console.log('[aria] team:teammate-start received:', name, role, task?.slice(0, 40));
+    const entry = getOrCreateTeammateCard(name, role, task);
+    entry.cardEl.classList.add('active');
+    scrollToBottom();
+  });
+}
+
+if (window.aria.onTeammateTool) {
+  window.aria.onTeammateTool(({ name, toolName, display }) => {
+    console.log('[aria] team:teammate-tool:', name, toolName);
+    const card = _teammateCards[name];
+    if (!card) return;
+    const row = document.createElement('div');
+    row.className = 'team-tool-row';
+    row.innerHTML = `<b>${escHtml(toolName || '')}</b> ${escHtml((display || '').replace(/^🔧\s*\S+\s*→?\s*/, ''))}`;
+    card.outputEl.appendChild(row);
+    // Auto-prune: keep last 20 tool rows to avoid unbounded growth
+    const rows = card.outputEl.querySelectorAll('.team-tool-row');
+    if (rows.length > 20) rows[0].remove();
+    scrollToBottom();
+  });
+}
+
+if (window.aria.onTeammateChunk) {
+  window.aria.onTeammateChunk(({ name, text, done }) => {
+    const card = _teammateCards[name];
+    if (!card) return;
+    if (done) {
+      card.statusEl.textContent = 'done';
+      card.statusEl.className = 'team-mate-status done';
+      // check if all teammates are done → update header status
+      // Update team header with progress
+      if (_teamPanelEl) {
+        const statusEl = _teamPanelEl.querySelector('.team-live-status');
+        const cards = Object.values(_teammateCards);
+        const doneCount = cards.filter(c => c.statusEl.textContent === 'done').length;
+        const failedCount = cards.filter(c => c.statusEl.textContent === 'failed').length;
+        const total = cards.length;
+        const allDone = (doneCount + failedCount) === total;
+        if (statusEl) {
+          statusEl.textContent = allDone
+            ? (failedCount > 0 ? `⚠️ ${doneCount}/${total} done, ${failedCount} failed` : '✅ complete')
+            : `${doneCount}/${total} done`;
+        }
+      }
+      return;
+    }
+    // Streaming text — show live preview (last 200 chars)
+    let textRow = card.outputEl.querySelector('.team-text-live');
+    if (!textRow) {
+      textRow = document.createElement('div');
+      textRow.className = 'team-text-live';
+      card.outputEl.appendChild(textRow);
+    }
+    const current = textRow.textContent || '';
+    const combined = current + text;
+    textRow.textContent = combined.length > 200 ? '…' + combined.slice(-200) : combined;
+    scrollToBottom();
+  });
+}
+
+if (window.aria.onTeammateDone) {
+  window.aria.onTeammateDone(({ name, status, summary }) => {
+    const card = _teammateCards[name];
+    if (!card) return;
+    card.statusEl.textContent = status;
+    card.statusEl.className = `team-mate-status ${status}`;
+    card.cardEl.classList.remove('active');
+    // Freeze the live text row
+    const textLive = card.outputEl.querySelector('.team-text-live');
+    if (textLive) textLive.classList.remove('team-text-live');
+  });
+}
+
+if (window.aria.onTeamMailboxMessage) {
+  window.aria.onTeamMailboxMessage(({ from, to, text }) => {
+    console.log('[aria] team:mailbox-message:', from, '→', to, text?.slice(0, 60));
+    if (!_teamPanelEl) return;
+    const log = _teamPanelEl.querySelector('.team-mailbox-log');
+    if (!log) return;
+    const row = document.createElement('div');
+    row.className = 'team-mailbox-row';
+    row.innerHTML = `📬 <b>${escHtml(from)}</b> → <b>${escHtml(to)}</b>: ${escHtml((text || '').slice(0, 120))}`;
+    log.appendChild(row);
+    scrollToBottom();
   });
 }
 
@@ -1009,11 +2028,14 @@ async function init() {
     if (activeId) {
       currentConversationId = activeId;
       setActiveConvInSidebar(activeId);
+      // Phase 9.09: detect and show active project
+      _detectCurrentProject();
       await loadMessagesForConversation(activeId);
     } else if (conversations.length > 0) {
       // Switch to most recent
       currentConversationId = conversations[0].id;
       setActiveConvInSidebar(currentConversationId);
+      _detectCurrentProject();
       await loadMessagesForConversation(currentConversationId);
     } else {
       // No conversations yet — show welcome, create one lazily on first message
@@ -1023,6 +2045,106 @@ async function init() {
     console.error('[aria] init error:', e);
     showWelcome();
   }
+}
+
+// ═══════════════════════════════════════════
+//  DOWNLOAD CARD (Phase 9.07 Track 5)
+// ═══════════════════════════════════════════
+
+function formatFileSize(bytes) {
+  if (!bytes || bytes < 0) return '0 B';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function renderDownloadCard(data) {
+  const { path: filePath, name, size, formats, description } = data || {};
+  if (!filePath || !formats || formats.length === 0) return;
+
+  const ext = (name || '').split('.').pop()?.toLowerCase() || '';
+  const iconMap = {
+    pdf: '📕', html: '🌐', md: '📝', csv: '📊', json: '📋',
+    png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️', svg: '🎨',
+    txt: '📄', zip: '📦', mp4: '🎬', mp3: '🎵',
+  };
+
+  const card = document.createElement('div');
+  card.className = 'file-download-card';
+
+  const iconEl = document.createElement('div');
+  iconEl.className = 'file-icon';
+  iconEl.textContent = iconMap[ext] || '📄';
+
+  const infoEl = document.createElement('div');
+  infoEl.className = 'file-info';
+
+  const nameEl = document.createElement('div');
+  nameEl.className = 'file-name';
+  nameEl.textContent = name || 'file';
+
+  const sizeEl = document.createElement('div');
+  sizeEl.className = 'file-size';
+  sizeEl.textContent = (description ? description + '  ·  ' : '') + formatFileSize(size);
+
+  infoEl.appendChild(nameEl);
+  infoEl.appendChild(sizeEl);
+
+  const actionsEl = document.createElement('div');
+  actionsEl.className = 'file-actions';
+
+  (formats || []).forEach(fmt => {
+    const btn = document.createElement('button');
+    btn.textContent = '↓ ' + fmt.toUpperCase();
+    btn.title = 'Download as ' + fmt.toUpperCase();
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const orig = btn.textContent;
+      btn.textContent = '⏳';
+      try {
+        const result = await window.aria.downloadFile(filePath, fmt, name);
+        if (result && result.success) {
+          btn.textContent = '✓';
+          btn.style.color = '#22c55e';
+          btn.style.borderColor = '#22c55e';
+        } else if (result && result.error === 'Cancelled') {
+          btn.textContent = orig;
+          btn.disabled = false;
+        } else {
+          btn.textContent = '❌';
+          btn.title = (result && result.error) || 'Save failed';
+          btn.disabled = false;
+        }
+      } catch (e) {
+        btn.textContent = '❌';
+        btn.title = String(e);
+        btn.disabled = false;
+      }
+    });
+    actionsEl.appendChild(btn);
+  });
+
+  card.appendChild(iconEl);
+  card.appendChild(infoEl);
+  card.appendChild(actionsEl);
+
+  // Wrap in a message bubble like other assistant messages
+  const wrapper = document.createElement('div');
+  wrapper.className = 'aria-msg assistant';
+  const bubble = document.createElement('div');
+  bubble.className = 'aria-bubble';
+  bubble.appendChild(card);
+  wrapper.appendChild(bubble);
+  ariaMessages.appendChild(wrapper);
+  scrollToBottom();
+}
+
+// Listen for download card events from the agent
+if (window.aria && window.aria.onPresentDownload) {
+  window.aria.onPresentDownload((data) => {
+    hideWelcome();
+    renderDownloadCard(data);
+  });
 }
 
 // Wait for DOM + preload to be ready

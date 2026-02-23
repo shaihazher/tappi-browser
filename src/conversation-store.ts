@@ -176,28 +176,31 @@ export function searchConversations(
     let params: any[];
 
     if (conversationId) {
+      // Bug 3 fix: use fully-qualified conversation_messages_fts.rank to avoid SQLITE_ERROR in JOIN context
       sql = `
         SELECT cm.conversation_id, cm.id as message_id, cm.role,
                snippet(conversation_messages_fts, 0, '[', ']', '...', 20) as snippet,
                cm.created_at, c.title as conversation_title
-        FROM conversation_messages_fts fts
-        JOIN conversation_messages cm ON cm.id = fts.rowid
+        FROM conversation_messages_fts
+        JOIN conversation_messages cm ON cm.id = conversation_messages_fts.rowid
         JOIN conversations c ON c.id = cm.conversation_id
         WHERE conversation_messages_fts MATCH ? AND cm.conversation_id = ?
-        ORDER BY rank
+        ORDER BY conversation_messages_fts.rank
         LIMIT ?
       `;
       params = [ftsQuery, conversationId, limit];
     } else {
+      // Bug 3 fix: use fully-qualified conversation_messages_fts.rank to avoid SQLITE_ERROR in JOIN context
       sql = `
         SELECT cm.conversation_id, cm.id as message_id, cm.role,
                snippet(conversation_messages_fts, 0, '[', ']', '...', 20) as snippet,
                cm.created_at, c.title as conversation_title
-        FROM conversation_messages_fts fts
-        JOIN conversation_messages cm ON cm.id = fts.rowid
+        FROM conversation_messages_fts
+        JOIN conversation_messages cm ON cm.id = conversation_messages_fts.rowid
         JOIN conversations c ON c.id = cm.conversation_id
-        WHERE conversation_messages_fts MATCH ? AND c.archived = 0
-        ORDER BY rank
+        WHERE conversation_messages_fts MATCH ?
+          AND c.archived = 0
+        ORDER BY conversation_messages_fts.rank
         LIMIT ?
       `;
       params = [ftsQuery, limit];

@@ -26,6 +26,18 @@ import * as mailbox from './mailbox';
 import * as taskList from './shared-task-list';
 import * as captureTools from './capture-tools';
 import { WorktreeManager, createWorktreeManager } from './worktree-manager';
+import * as projectManager from './project-manager';
+import * as codingMemory from './coding-memory';
+
+// ─── Phase 9.09: Project update callback ─────────────────────────────────────
+// Main process sets this so agent tools can notify the UI when projects change.
+let _projectUpdateCallback: (() => void) | null = null;
+export function setProjectUpdateCallback(cb: () => void): void {
+  _projectUpdateCallback = cb;
+}
+function emitProjectsUpdated(): void {
+  try { _projectUpdateCallback?.(); } catch {}
+}
 
 export interface ToolRegistryOptions {
   developerMode?: boolean;
@@ -36,10 +48,26 @@ export interface ToolRegistryOptions {
   agentBrowsingDataAccess?: boolean; // Phase 8.4.1: grant agent access to history/bookmarks/downloads
   worktreeIsolation?: boolean; // Phase 8.39: git worktree isolation enabled
   repoPath?: string;           // Phase 8.39: current repo path for worktree tools
+  conversationId?: string;     // Bug 4 fix: current conversation ID for project auto-linking
 }
 
 export function createTools(browserCtx: BrowserContext, sessionId = 'default', options?: ToolRegistryOptions) {
-  function getWC(): WebContents {
+  function getWC(tabIndex?: number): WebContents {
+    // Phase 9: If a tab index is specified, resolve to that tab's webContents directly
+    if (tabIndex !== undefined && tabIndex !== null) {
+      const tabs = browserCtx.tabManager.getTabList();
+      if (tabIndex < 0 || tabIndex >= tabs.length) throw new Error(`Tab index ${tabIndex} out of range (0-${tabs.length - 1}).`);
+      const tabId = tabs[tabIndex]?.id;
+      if (!tabId) throw new Error(`Tab ${tabIndex} not found.`);
+      const info = browserCtx.tabManager.getTabInfo(tabId);
+      if (!info) throw new Error(`Tab ${tabIndex} not found.`);
+      // Get webContents for this specific tab
+      const tab = (browserCtx.tabManager as any).tabs?.get(tabId);
+      if (tab?.view?.webContents && !tab.view.webContents.isDestroyed()) {
+        return tab.view.webContents;
+      }
+      throw new Error(`Tab ${tabIndex} webContents unavailable.`);
+    }
     // Phase 8.35: Always use a real web tab, never the Aria tab.
     // activeWebTabWebContents skips the Aria tab and falls back to the last web tab.
     const wc = browserCtx.tabManager.activeWebTabWebContents;
@@ -51,20 +79,22 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     // ═══ PAGE TOOLS ═══
 
     elements: tool({
-      description: 'Index interactive elements on the page. Default: viewport only (~20-40 elements). Use grep to search ALL elements (including offscreen) by text match — like "elements | grep submit" in a terminal.',
+      description: 'Index interactive elements on the page. Default: viewport only (~20-40 elements). Use grep to search ALL elements (including offscreen) by text match — like "elements | grep submit" in a terminal. Use tab param to target a specific tab by index without switching.',
       inputSchema: z.object({
         filter: z.string().optional().describe('CSS selector to scope indexing'),
         grep: z.string().optional().describe('Search all elements (including offscreen) for this text'),
+        tab: z.number().optional().describe('Tab index (0-based) to target — omit for current/agent-targeted tab'),
       }),
-      execute: async ({ filter, grep }: { filter?: string; grep?: string }) => pageTools.pageElements(getWC(), filter, false, grep),
+      execute: async ({ filter, grep, tab }: { filter?: string; grep?: string; tab?: number }) => pageTools.pageElements(getWC(tab), filter, false, grep),
     }),
 
     click: tool({
       description: 'Click an element by its index number from the elements list.',
       inputSchema: z.object({
         index: z.number().describe('Element index from elements output'),
+        tab: z.number().optional().describe('Tab index (0-based) to target'),
       }),
-      execute: async ({ index }: { index: number }) => pageTools.pageClick(getWC(), index),
+      execute: async ({ index, tab }: { index: number; tab?: number }) => pageTools.pageClick(getWC(tab), index),
     }),
 
     type: tool({
@@ -102,21 +132,23 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     text: tool({
-      description: 'Extract text from the page. Default: ~1.5KB of page text. Use selector for targeted sections (up to 4KB). Use grep to search for specific passages across the entire page — returns matching lines with context.',
+      description: 'Extract text from the page. Default: ~1.5KB of page text. Use selector for targeted sections (up to 4KB). Use grep to search for specific passages across the entire page — returns matching lines with context. Use tab param to target a specific tab by index.',
       inputSchema: z.object({
         selector: z.string().optional().describe('CSS selector to scope extraction'),
         grep: z.string().optional().describe('Search page text for this string, return matching passages'),
+        tab: z.number().optional().describe('Tab index (0-based) to target — omit for current/agent-targeted tab'),
       }),
-      execute: async ({ selector, grep }: { selector?: string; grep?: string }) => pageTools.pageText(getWC(), selector, grep),
+      execute: async ({ selector, grep, tab }: { selector?: string; grep?: string; tab?: number }) => pageTools.pageText(getWC(tab), selector, grep),
     }),
 
     scroll: tool({
-      description: 'Scroll the page. Directions: up, down, top, bottom.',
+      description: 'Scroll the page. Directions: up, down, top, bottom. Use tab param to target a specific tab.',
       inputSchema: z.object({
         direction: z.enum(['up', 'down', 'top', 'bottom']),
         amount: z.number().optional().describe('Pixels to scroll (default 500)'),
+        tab: z.number().optional().describe('Tab index (0-based) to target'),
       }),
-      execute: async ({ direction, amount }: { direction: string; amount?: number }) => pageTools.pageScroll(getWC(), direction, amount),
+      execute: async ({ direction, amount, tab }: { direction: string; amount?: number; tab?: number }) => pageTools.pageScroll(getWC(tab), direction, amount),
     }),
 
     keys: tool({
@@ -214,11 +246,16 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     tab: tool({
-      description: 'Tab management — close, mute, pin, duplicate, close others, close right.',
+      description: 'Tab management — list all tabs, close, mute, pin, duplicate, close others, close right. You do NOT need to switch tabs — use the tab param on elements/text/click/scroll to interact with any tab by index directly. Switch is only for when the user explicitly asks to change the visible tab.',
       inputSchema: z.object({
-        action: z.enum(['close', 'mute', 'pin', 'duplicate', 'others', 'right']),
+        action: z.enum(['switch', 'list', 'close', 'mute', 'pin', 'duplicate', 'others', 'right']),
+        index: z.union([z.number(), z.string()]).optional().describe('Tab index (0-based) or tab ID — required for switch'),
       }),
-      execute: async ({ action }: { action: string }) => browserTools.bTab(browserCtx, [action]),
+      execute: async ({ action, index }: { action: string; index?: number | string }) => {
+        const args = [action];
+        if (index !== undefined) args.push(String(index));
+        return browserTools.bTab(browserCtx, args);
+      },
     }),
 
     bookmark: tool({
@@ -859,6 +896,74 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
 
     // ═══ BROWSING DATA TOOLS (Privacy gate — only when agentBrowsingDataAccess is ON) ═══
     ...(options?.agentBrowsingDataAccess ? createBrowsingDataTools() : {}),
+
+    // ═══ PROJECT TOOLS (Coding Mode only — Phase 9.07) ═══
+    ...(options?.codingMode ? createProjectTools(options?.conversationId) : {}),
+
+    // ═══ CODING MEMORY TOOLS (Coding Mode only — Phase coding-memory) ═══
+    ...(options?.codingMode ? createCodingMemoryTools() : {}),
+
+    // ═══ DOWNLOAD TOOLS (Phase 9.07 Track 5 — always available) ═══
+
+    present_download: tool({
+      description: 'Offer a file as a download card in the chat UI. Use this after creating a document, report, or export so the user can download it in multiple formats without leaving the chat.',
+      inputSchema: z.object({
+        path: z.string().describe('File path (absolute or relative to ~/tappi-workspace/)'),
+        description: z.string().optional().describe('What the file is, e.g. "Competitive analysis report"'),
+        formats: z.array(z.string()).optional().describe('Override auto-detected formats, e.g. ["md", "html", "pdf"]'),
+      }),
+      execute: async ({ path: filePath, description, formats }: {
+        path: string; description?: string; formats?: string[];
+      }) => {
+        const fs = await import('fs');
+        const pathMod = await import('path');
+        const os = await import('os');
+
+        // Resolve relative paths against ~/tappi-workspace/
+        let resolved = filePath;
+        if (!filePath.startsWith('/') && !filePath.startsWith('~')) {
+          resolved = pathMod.join(os.homedir(), 'tappi-workspace', filePath);
+        } else if (filePath.startsWith('~/')) {
+          resolved = pathMod.join(os.homedir(), filePath.slice(2));
+        }
+
+        if (!fs.existsSync(resolved)) {
+          return `❌ File not found: ${resolved}`;
+        }
+
+        const stat = fs.statSync(resolved);
+        const name = pathMod.basename(resolved);
+        const ext = pathMod.extname(name).toLowerCase().slice(1);
+        const size = stat.size;
+
+        // Determine available formats from extension
+        let availableFormats = formats;
+        if (!availableFormats) {
+          switch (ext) {
+            case 'md':   availableFormats = ['md', 'html', 'pdf', 'txt']; break;
+            case 'html': availableFormats = ['html', 'pdf', 'txt']; break;
+            case 'csv':  availableFormats = ['csv']; break;
+            case 'json': availableFormats = ['json', 'txt']; break;
+            case 'png': case 'jpg': case 'jpeg': case 'gif': case 'svg':
+              availableFormats = [ext]; break;
+            case 'pdf':  availableFormats = ['pdf']; break;
+            default:     availableFormats = [ext || 'bin']; break;
+          }
+        }
+
+        const payload = { path: resolved, name, size, formats: availableFormats, description };
+
+        // Emit to main window (sidebar panel / app.js)
+        try { browserCtx.window.webContents.send('agent:present-download', payload); } catch {}
+        // Emit to Aria tab (full chat UI / aria.js)
+        try {
+          const ariaWC = (browserCtx.tabManager as any).ariaWebContents;
+          if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:present-download', payload);
+        } catch {}
+
+        return `📎 File offered for download: ${name}`;
+      },
+    }),
   };
 }
 
@@ -981,11 +1086,24 @@ function createTeamTools(
   worktreeIsolation?: boolean,
 ) {
   const isTeammate = !!agentName && agentName !== '@lead';
-  const activeTeamId = teamId || teamManager.getActiveTeamId();
 
   // ─── Helper: resolve team ID ───
+  // MUST call getActiveTeamId() dynamically — NOT cache at tool-creation time.
+  // The lead creates the team AFTER tools are registered, so a cached value would be stale (null).
   function resolveTeamId(provided?: string): string | null {
-    return provided || activeTeamId;
+    return provided || teamId || teamManager.getActiveTeamId();
+  }
+
+  // ─── Helper: broadcast team status to both chrome and Aria webContents ───
+  function broadcastTeamUpdate(): void {
+    try {
+      const status = teamManager.getTeamStatusUI();
+      try { browserCtx.window.webContents.send('team:updated', status); } catch {}
+      try {
+        const aw = (browserCtx.tabManager as any).ariaWebContents;
+        if (aw && !aw.isDestroyed()) aw.send('team:updated', status);
+      } catch {}
+    } catch {}
   }
 
   const tools: Record<string, any> = {
@@ -1040,6 +1158,7 @@ function createTeamTools(
           files_touched,
           blockedBy: blocked_by,
         });
+        broadcastTeamUpdate();
         if (conflicts.length > 0) {
           const conflictLines = conflicts.map(c =>
             `⚠️ File conflict: ${c.file} touched by ${c.taskTitles.join(' and ')}`
@@ -1066,6 +1185,7 @@ function createTeamTools(
         if (!tid) return '❌ No active team.';
         const from = agentName || '@lead';
         const task = taskList.createTask(tid, { title, description, assignee, dependencies, created_by: from });
+        broadcastTeamUpdate();
         return `✓ Task "${task.id}" created: ${task.title} (status: ${task.status})`;
       },
     }),
@@ -1099,10 +1219,12 @@ function createTeamTools(
         }));
         // Use tool param if provided, otherwise fall back to registry option (from config)
         const useWorktrees = worktree_isolation ?? worktreeIsolation ?? true;
+        const aw = (browserCtx.tabManager as any).ariaWebContents ?? null;
         const { teamId, summary } = await teamManager.createTeam(
-          task, working_dir, browserCtx, llmConfig, tmConfigs, useWorktrees
+          task, working_dir, browserCtx, llmConfig, tmConfigs, useWorktrees, aw
         );
         try { browserCtx.window.webContents.send('team:updated', teamManager.getTeamStatusUI()); } catch {}
+        try { const aw = browserCtx.tabManager.ariaWebContents; if (aw && !aw.isDestroyed()) aw.send('team:updated', teamManager.getTeamStatusUI()); } catch {}
         return summary;
       },
     });
@@ -1124,12 +1246,15 @@ function createTeamTools(
         if (!team) return `❌ Team "${tid}" not found.`;
         const teammate = team.teammates.get(teammate_name);
         if (!teammate) return `❌ Teammate "${teammate_name}" not found in team "${tid}".`;
-        return teamManager.runTeammate({ teammate, teamId: tid, task, browserCtx, llmConfig });
+        const aw = (browserCtx.tabManager as any).ariaWebContents ?? null;
+        const result = await teamManager.runTeammate({ teammate, teamId: tid, task, browserCtx, llmConfig, ariaWebContents: aw });
+        broadcastTeamUpdate();
+        return result;
       },
     });
 
     tools.team_dissolve = tool({
-      description: 'End the team session. Compiles final report, shuts down all teammates. Only the lead can dissolve a team.',
+      description: 'End the team session. Compiles final report, shuts down all teammates. Only the lead can dissolve a team. Run team_validate first to check integration.',
       inputSchema: z.object({
         team_id: z.string().optional().describe('Team ID (default: active team)'),
       }),
@@ -1138,7 +1263,54 @@ function createTeamTools(
         if (!tid) return '❌ No active team.';
         const result = await teamManager.dissolveTeam(tid);
         try { browserCtx.window.webContents.send('team:updated', null); } catch {}
+        try { const aw = browserCtx.tabManager.ariaWebContents; if (aw && !aw.isDestroyed()) aw.send('team:updated', null); } catch {}
         return result;
+      },
+    });
+
+    // ─── Phase 9.096: Contract-First Tools (Lead only) ───
+
+    tools.team_write_contracts = tool({
+      description: 'Write a shared contract/interface stub file that all teammates must reference. Call this BEFORE team_run_teammate. Contracts define the shared API surface: type definitions, interfaces, function signatures, data shapes. Max 5 per phase. Teammates receive these in their system prompt and must import/use them — not redefine their own versions.',
+      inputSchema: z.object({
+        path: z.string().describe('Relative path from working dir (e.g. "contracts/types.ts", "shared/api.py", "interfaces/cart.go")'),
+        content: z.string().describe('Contract file content — type defs, interfaces, function stubs. Keep it lean (~20 lines per file). NO implementations, just signatures and shapes.'),
+        description: z.string().describe('What this contract defines (e.g. "Cart data types and API function signatures")'),
+        team_id: z.string().optional().describe('Team ID (default: active team)'),
+      }),
+      execute: async ({ path: filePath, content, description, team_id }: {
+        path: string; content: string; description: string; team_id?: string;
+      }) => {
+        const tid = resolveTeamId(team_id);
+        if (!tid) return '❌ No active team. Use team_create first.';
+        const result = teamManager.writeContract(tid, filePath, content, description);
+        broadcastTeamUpdate();
+        return result;
+      },
+    });
+
+    tools.team_validate = tool({
+      description: 'Run post-merge integration validation. Checks: (1) all contracts are referenced by teammate code, (2) no file conflicts between teammates, (3) optionally runs a build/test command. Call this AFTER teammates finish and worktrees are merged, BEFORE team_dissolve.',
+      inputSchema: z.object({
+        command: z.string().optional().describe('Build/test command to run (e.g. "npm run build", "python -m pytest", "go build ./..."). Runs in the working directory with 60s timeout.'),
+        team_id: z.string().optional().describe('Team ID (default: active team)'),
+      }),
+      execute: async ({ command, team_id }: { command?: string; team_id?: string }) => {
+        const tid = resolveTeamId(team_id);
+        if (!tid) return '❌ No active team.';
+        return teamManager.validateIntegration(tid, command);
+      },
+    });
+
+    tools.team_advance_phase = tool({
+      description: 'Advance to the next phase after merging current phase results. Later phases build on real merged code — write new contracts that reference the actual implementations from the previous phase. Use this for large projects that need multiple rounds of parallel work.',
+      inputSchema: z.object({
+        team_id: z.string().optional().describe('Team ID (default: active team)'),
+      }),
+      execute: async ({ team_id }: { team_id?: string }) => {
+        const tid = resolveTeamId(team_id);
+        if (!tid) return '❌ No active team.';
+        return teamManager.advancePhase(tid);
       },
     });
   }
@@ -1409,6 +1581,221 @@ function createBrowsingDataTools() {
             : 'size unknown';
           return `${r.filename} (${size}, ${r.status})\n  ${r.created_at}\n  From: ${r.url}\n  Saved: ${r.path}`;
         }).join('\n\n');
+      },
+    }),
+  };
+}
+
+/**
+ * Project tools — Phase 9.07. Only available when Coding Mode is ON.
+ * Provides CRUD for projects, artifact tracking, and conversation search within a project.
+ * Bug 4 fix: accepts conversationId for auto-linking and project_link_conversation tool.
+ */
+function createProjectTools(conversationId?: string) {
+  return {
+    project_create: tool({
+      description: 'Create a new project to group related coding conversations. Detects project name from package.json, Cargo.toml, go.mod, or pyproject.toml if not provided.',
+      inputSchema: z.object({
+        working_dir: z.string().describe('Absolute path to the project root directory'),
+        name: z.string().optional().describe('Project name (auto-detected from manifests if omitted)'),
+        description: z.string().optional().describe('Short description of the project'),
+      }),
+      execute: async ({ working_dir, name, description }: { working_dir: string; name?: string; description?: string }) => {
+        try {
+          const resolvedName = name || projectManager.detectProjectName(working_dir);
+          const project = projectManager.createProject(resolvedName, working_dir, description);
+          // Bug 4a fix: auto-link current conversation to the newly created project
+          let linkNote = '';
+          if (conversationId) {
+            try {
+              projectManager.linkConversation(conversationId, project.id);
+              linkNote = '\n  ✓ Current conversation linked to project';
+            } catch (linkErr: any) {
+              linkNote = `\n  ⚠ Auto-link failed: ${linkErr?.message || linkErr}`;
+            }
+          }
+          // Phase 9.09: notify sidebar
+          emitProjectsUpdated();
+          return `✓ Project created: "${project.name}" (ID: ${project.id})\n  Dir: ${project.working_dir || '(none)'}${linkNote}`;
+        } catch (e: any) {
+          return `❌ Failed to create project: ${e?.message || e}`;
+        }
+      },
+    }),
+
+    // Bug 4b fix: explicit tool for linking the current conversation to any project
+    project_link_conversation: tool({
+      description: 'Link the current conversation to a project. Call this after project_create or when continuing work on an existing project.',
+      inputSchema: z.object({
+        project_id: z.string().describe('Project ID to link this conversation to'),
+      }),
+      execute: async ({ project_id }: { project_id: string }) => {
+        try {
+          if (!conversationId) return '❌ No conversation ID available to link';
+          projectManager.linkConversation(conversationId, project_id);
+          // Phase 9.09: notify sidebar
+          emitProjectsUpdated();
+          return `✓ Conversation linked to project ${project_id}`;
+        } catch (e: any) {
+          return `❌ Failed to link: ${e?.message || e}`;
+        }
+      },
+    }),
+
+    project_list: tool({
+      description: 'List all projects (non-archived by default). Shows name, working dir, and conversation count.',
+      inputSchema: z.object({
+        include_archived: z.boolean().optional().describe('Include archived projects (default: false)'),
+      }),
+      execute: async ({ include_archived }: { include_archived?: boolean }) => {
+        try {
+          const projects = projectManager.listProjects(include_archived ?? false);
+          if (projects.length === 0) return 'No projects found. Use project_create to start one.';
+          return projects.map(p => {
+            const convs = projectManager.getProjectConversations(p.id);
+            return `🏗 **${p.name}** (ID: ${p.id})\n  Dir: ${p.working_dir || '(none)'}\n  Conversations: ${convs.length}\n  Updated: ${p.updated_at.slice(0, 10)}${p.archived ? '  [archived]' : ''}`;
+          }).join('\n\n');
+        } catch (e: any) {
+          return `❌ Failed to list projects: ${e?.message || e}`;
+        }
+      },
+    }),
+
+    project_get: tool({
+      description: 'Get full details of a project including artifacts and recent conversations.',
+      inputSchema: z.object({
+        project_id: z.string().describe('Project ID from project_list'),
+      }),
+      execute: async ({ project_id }: { project_id: string }) => {
+        try {
+          const project = projectManager.getProject(project_id);
+          if (!project) return `❌ Project "${project_id}" not found.`;
+
+          const artifacts = projectManager.getArtifacts(project_id);
+          const convs = projectManager.getProjectConversations(project_id);
+
+          const lines = [
+            `🏗 **${project.name}**`,
+            `ID: ${project.id}`,
+            `Dir: ${project.working_dir || '(none)'}`,
+            project.description ? `Description: ${project.description}` : '',
+            `Created: ${project.created_at.slice(0, 10)}`,
+            `Updated: ${project.updated_at.slice(0, 10)}`,
+          ].filter(Boolean);
+
+          if (artifacts.length > 0) {
+            lines.push('', `Artifacts (${artifacts.length}):`);
+            artifacts.slice(0, 15).forEach(a => {
+              const desc = a.description ? ` — ${a.description}` : '';
+              lines.push(`  ${a.type === 'folder' ? '📁' : '📄'} ${a.path}${desc}`);
+            });
+            if (artifacts.length > 15) lines.push(`  ... and ${artifacts.length - 15} more`);
+          }
+
+          if (convs.length > 0) {
+            lines.push('', `Conversations (${convs.length}):`);
+            convs.slice(0, 10).forEach(c => {
+              lines.push(`  ${c.title || '(untitled)'} — ${c.updated_at?.slice(0, 10)}`);
+            });
+          }
+
+          return lines.join('\n');
+        } catch (e: any) {
+          return `❌ Failed to get project: ${e?.message || e}`;
+        }
+      },
+    }),
+
+    project_add_artifact: tool({
+      description: 'Add a file or folder artifact to a project (track files you created or modified).',
+      inputSchema: z.object({
+        project_id: z.string().describe('Project ID'),
+        path: z.string().describe('Absolute or relative path to the file or folder'),
+        type: z.enum(['file', 'folder']).describe('Whether this is a file or folder'),
+        description: z.string().optional().describe('What this artifact is or does'),
+        conversation_id: z.string().optional().describe('Conversation that created this artifact'),
+      }),
+      execute: async ({ project_id, path, type, description, conversation_id }: {
+        project_id: string; path: string; type: 'file' | 'folder'; description?: string; conversation_id?: string;
+      }) => {
+        try {
+          projectManager.addArtifact(project_id, path, type, description, conversation_id);
+          return `✓ Artifact added to project: ${type === 'folder' ? '📁' : '📄'} ${path}`;
+        } catch (e: any) {
+          return `❌ Failed to add artifact: ${e?.message || e}`;
+        }
+      },
+    }),
+
+    project_search: tool({
+      description: 'Search all conversations that belong to a project. Returns matching message snippets.',
+      inputSchema: z.object({
+        project_id: z.string().describe('Project ID to search within'),
+        query: z.string().describe('Text to search for in conversation messages'),
+      }),
+      execute: async ({ project_id, query }: { project_id: string; query: string }) => {
+        try {
+          const project = projectManager.getProject(project_id);
+          if (!project) return `❌ Project "${project_id}" not found.`;
+
+          const convs = projectManager.getProjectConversations(project_id);
+          if (convs.length === 0) return `No conversations in project "${project.name}".`;
+
+          // Use existing search for each conversation
+          const { agentSearchConversations } = require('./conversation-store');
+          const results: string[] = [];
+          for (const conv of convs) {
+            const hits = await agentSearchConversations(query, conv.id, 5);
+            if (hits && hits !== 'No results found.' && !hits.startsWith('No results')) {
+              results.push(`--- ${conv.title || '(untitled)'} ---\n${hits}`);
+            }
+          }
+
+          if (results.length === 0) return `No results found for "${query}" in project "${project.name}".`;
+          return results.slice(0, 5).join('\n\n');
+        } catch (e: any) {
+          return `❌ Search failed: ${e?.message || e}`;
+        }
+      },
+    }),
+  };
+}
+
+// ─── Coding Memory Tools (Phase coding-memory) ────────────────────────────────
+
+/**
+ * Two tools for agents to interact with the cross-session coding memory:
+ * - coding_memory_search: grep past sessions and decisions
+ * - coding_memory_log: manually record a decision or note
+ */
+function createCodingMemoryTools() {
+  // Resolve project dir from active team or cwd
+  function getProjectDir(): string {
+    const activeTeam = teamManager.getActiveTeam();
+    return activeTeam?.workingDir || process.cwd();
+  }
+
+  return {
+    coding_memory_search: tool({
+      description: 'Search past coding session logs and decisions for a query. Useful for recalling what approaches were tried, what decisions were made, or what files were modified in previous sessions.',
+      inputSchema: z.object({
+        query: z.string().describe('Text to search for across all session logs and decisions'),
+      }),
+      execute: async ({ query }: { query: string }) => {
+        const projectDir = getProjectDir();
+        return codingMemory.searchMemory(projectDir, query);
+      },
+    }),
+
+    coding_memory_log: tool({
+      description: 'Manually log a decision or insight to the coding memory. Decisions and notes persist across sessions. Use this to record architectural choices, tradeoffs, or important findings.',
+      inputSchema: z.object({
+        content: z.string().describe('The decision or note to record'),
+        type: z.enum(['decision', 'note']).describe('Type: "decision" for architectural/design choices, "note" for general observations'),
+      }),
+      execute: async ({ content, type }: { content: string; type: 'decision' | 'note' }) => {
+        const projectDir = getProjectDir();
+        return codingMemory.logDecision(projectDir, content, type);
       },
     }),
   };

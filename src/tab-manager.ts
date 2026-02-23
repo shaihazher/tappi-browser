@@ -26,10 +26,13 @@ export class TabManager {
   private activeId: string | null = null;
   private window: BrowserWindow;
   private chromeHeight: number;
-  private isFullscreen: boolean = false;
+  isFullscreen: boolean = false;
   private closedStack: ClosedTab[] = [];
   private bookmarks: Set<string> = new Set();
   private bookmarksPath: string;
+  // Phase 9: Agent can target a specific tab without switching visual focus.
+  // When set, activeWebTabWebContents returns this tab's webContents instead.
+  private _agentTargetId: string | null = null;
   private newtabPath: string;
   private contentPreloadPath: string;
   private ariaPreloadPath: string;
@@ -42,6 +45,8 @@ export class TabManager {
   private preFullscreenStatusBarHeight: number = 0;
   private onWebContentsReady?: (wc: Electron.WebContents) => void;
   public ariaTabId: string | null = null;  // Phase 8.35
+  // F8: Rate-limit window.open — max 3 new tabs per second per source
+  private windowOpenTimestamps: Map<number, number[]> = new Map();
 
   constructor(window: BrowserWindow, chromeHeight: number, onWebContentsReady?: (wc: Electron.WebContents) => void) {
     this.onWebContentsReady = onWebContentsReady;
@@ -72,6 +77,14 @@ export class TabManager {
    * Aria tab never accidentally becomes the target.
    */
   get activeWebTabWebContents(): Electron.WebContents | null {
+    // Phase 9: If agent has a specific target tab, use that
+    if (this._agentTargetId) {
+      const target = this.tabs.get(this._agentTargetId);
+      if (target && !target.view.webContents.isDestroyed()) {
+        return target.view.webContents;
+      }
+      this._agentTargetId = null; // Target was destroyed, clear it
+    }
     // Prefer the active tab if it's not the Aria tab
     if (this.activeId && this.activeId !== this.ariaTabId) {
       return this.tabs.get(this.activeId)?.view.webContents ?? null;
@@ -86,6 +99,13 @@ export class TabManager {
     return null;
   }
 
+  /** Phase 9: Set which tab the agent tools target (without switching visual focus). */
+  setAgentTarget(id: string | null) {
+    this._agentTargetId = id;
+  }
+
+  get agentTargetId() { return this._agentTargetId; }
+
   get activeTabId() { return this.activeId; }
 
   get ariaWebContents() {
@@ -96,7 +116,7 @@ export class TabManager {
   // Phase 8.45: API server helpers
 
   /** Return a flat list of all tabs (in order) for the API. */
-  getTabList(): Array<{ id: string; title: string; url: string; active: boolean; isAria: boolean; isLoading: boolean; isPinned: boolean }> {
+  getTabList(): Array<{ id: string; index: number; title: string; url: string; active: boolean; isAria: boolean; isLoading: boolean; isPinned: boolean }> {
     return this.order.map((id, idx) => {
       const tab = this.tabs.get(id);
       if (!tab) return null;
@@ -132,9 +152,10 @@ export class TabManager {
     const view = new WebContentsView({
       webPreferences: {
         contextIsolation: true,
-        sandbox: false, // Aria tab needs IPC (preload uses ipcRenderer)
+        sandbox: true,
         preload: this.ariaPreloadPath,
         nodeIntegration: false,
+        webSecurity: true,
       },
     });
 
@@ -212,12 +233,14 @@ export class TabManager {
     return this.bookmarks.has(url.replace(/\/$/, ''));
   }
 
-  createTab(url?: string, partition?: string): string {
+  createTab(url?: string, partition?: string, opts?: { background?: boolean }): string {
     const id = randomUUID();
     const finalUrl = url || `file://${this.newtabPath}`;
     const webPrefs: Electron.WebPreferences = {
       contextIsolation: true,
-      sandbox: !partition, // sandbox=false when using named partition (needed for session isolation)
+      sandbox: true,
+      nodeIntegration: false,
+      webSecurity: true,
       preload: this.contentPreloadPath,
       enableBlinkFeatures: 'FullscreenUnprefixed',
     };
@@ -275,12 +298,35 @@ export class TabManager {
     });
 
     wc.setWindowOpenHandler(({ url: openUrl }) => {
-      this.createTab(openUrl);
+      // F8: Rate-limit — max 3 new tabs per second per source webContents
+      const wcId = wc.id;
+      const now = Date.now();
+      let timestamps = this.windowOpenTimestamps.get(wcId);
+      if (!timestamps) {
+        timestamps = [];
+        this.windowOpenTimestamps.set(wcId, timestamps);
+      }
+      // Remove timestamps older than 1 second
+      const cutoff = now - 1000;
+      while (timestamps.length > 0 && timestamps[0] < cutoff) timestamps.shift();
+      if (timestamps.length >= 3) {
+        console.warn('[tab] Rate-limited window.open from webContents', wcId);
+        return { action: 'deny' };
+      }
+      timestamps.push(now);
+
+      // If Aria is the active tab, keep new tabs in the background
+      // so the user's chat view isn't interrupted by page popups/redirects.
+      const isAriaActive = this.activeId === this.ariaTabId;
+      this.createTab(openUrl, undefined, isAriaActive ? { background: true } : undefined);
       return { action: 'deny' };
     });
 
-    wc.on('did-start-navigation', () => {
-      console.log('[tab] navigating:', tab.url);
+    wc.on('did-start-navigation', (_e: any, url: string, isInPlace: boolean, isMainFrame: boolean) => {
+      // Only log main frame navigations to reduce noise from SPA routing/redirects
+      if (isMainFrame && !isInPlace) {
+        console.log('[tab] navigating:', url);
+      }
     });
 
     // Handle tab crashes — auto-reload
@@ -361,7 +407,33 @@ export class TabManager {
 
     wc.loadURL(finalUrl);
     this.window.contentView.addChildView(view);
-    this.switchTab(id);
+    if (opts?.background) {
+      // Background tab: add view with proper bounds so Chromium renders it
+      // (needed for capturePage/screenshots). Then re-add the active tab on top
+      // since Electron's last addChildView is highest z-order.
+      const [contentW, contentH] = this.window.getContentSize();
+      const w = this.lastLayoutWidth || contentW;
+      const h = this.lastLayoutHeight || contentH;
+      const sbh = this.lastStatusBarHeight || 0;
+      const extra = this.lastExtraChrome || 0;
+      view.setBounds({
+        x: 0,
+        y: this.chromeHeight + extra,
+        width: w,
+        height: h - this.chromeHeight - extra - sbh,
+      });
+      // Re-add the active tab so it stays on top (last child = highest z-order)
+      if (this.activeId) {
+        const activeTab = this.tabs.get(this.activeId);
+        if (activeTab) {
+          this.window.contentView.removeChildView(activeTab.view);
+          this.window.contentView.addChildView(activeTab.view);
+        }
+      }
+      this.notifyChrome(); // Update tab bar to show the new tab
+    } else {
+      this.switchTab(id);
+    }
 
     return id;
   }

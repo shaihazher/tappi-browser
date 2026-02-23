@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src * data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src * data:; connect-src 'none';">
   <link rel="stylesheet" href="aria.css">
   <title>Aria — AI Assistant</title>
 </head>
@@ -12,6 +12,11 @@
     <div id="sidebar-header">
       <span class="sidebar-logo">🪷 Aria</span>
       <button id="new-chat-btn" title="New Chat">＋</button>
+    </div>
+
+    <!-- Phase 9.09: Active project indicator (hidden when no project) -->
+    <div id="aria-project-indicator" class="hidden">
+      <span id="aria-project-indicator-text">🏗 project</span>
     </div>
 
     <div id="sidebar-search-wrap">
@@ -25,6 +30,13 @@
 
   <!-- Main chat area -->
   <div id="aria-main">
+    <!-- Coding mode banner — visible only when body.coding-mode is set -->
+    <div class="coding-mode-banner">
+      <span class="banner-icon">⟩_</span>
+      <span>CODING MODE</span>
+      <span style="color: #0d660d; margin-left: auto;">team orchestration active</span>
+    </div>
+
     <!-- Team status card (Fix 4): shown when a coding team is active -->
     <div id="aria-team-card" class="hidden">
       <div id="aria-team-header">
@@ -71,6 +83,7 @@
     </div>
   </div>
 
+  <script src="vendor/dompurify.min.js"></script>
   <script src="vendor/marked.min.js"></script>
   <script src="aria.js"></script>
 </body>

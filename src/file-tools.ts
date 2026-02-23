@@ -11,6 +11,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 
 const WORKSPACE = path.join(process.env.HOME || process.env.USERPROFILE || '.', 'tappi-workspace');
 
@@ -18,11 +19,20 @@ function ensureWorkspace() {
   if (!fs.existsSync(WORKSPACE)) fs.mkdirSync(WORKSPACE, { recursive: true });
 }
 
+/** Bug 2 fix: expand ~ to the home directory */
+function expandPath(p: string): string {
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  if (p === '~') return os.homedir();
+  return p;
+}
+
 function resolvePath(filePath: string): string {
+  // Expand ~ before checking if absolute
+  const expanded = expandPath(filePath);
   // Absolute paths pass through; relative paths resolve to workspace
-  if (path.isAbsolute(filePath)) return filePath;
+  if (path.isAbsolute(expanded)) return expanded;
   ensureWorkspace();
-  return path.join(WORKSPACE, filePath);
+  return path.join(WORKSPACE, expanded);
 }
 
 // ─── File Operations ───

@@ -75,6 +75,7 @@ contextBridge.exposeInMainWorld('tappi', {
   onDeepComplete: (callback: (data: any) => void) => {
     ipcRenderer.on('agent:deep-complete', (_e, data) => callback(data));
   },
+  saveDeepReport: (outputDirAbsolute: string, format?: string) => ipcRenderer.invoke('deep:save-report', outputDirAbsolute, format || 'md'),
 
   // Overlay management (hide/show BrowserViews for modals)
   showOverlay: () => ipcRenderer.send('overlay:show'),
@@ -280,12 +281,15 @@ contextBridge.exposeInMainWorld('tappi', {
   openSiteIdentity: (domain: string, username: string) => ipcRenderer.invoke('profile:open-site-identity', domain, username),
   getSiteIdentities: (domain: string) => ipcRenderer.invoke('profile:site-identities', domain),
 
-  // Generic invoke (for app.js compatibility)
-  invoke: (channel: string, ...args: any[]) => ipcRenderer.invoke(channel, ...args),
+  // Explicit bridges (formerly generic invoke/on — now locked to known channels)
+  toggleMediaActive: () => ipcRenderer.invoke('media:toggle-active'),
+  setMediaEnabled: (enabled: boolean) => ipcRenderer.invoke('media:set-enabled', enabled),
 
-  // Generic on (for app.js compatibility)
-  on: (channel: string, callback: (...args: any[]) => void) => {
-    ipcRenderer.on(channel, (_e, ...args) => callback(...args));
+  onAgentVisible: (callback: (visible: boolean) => void) => {
+    ipcRenderer.on('agent:visible', (_e, visible) => callback(visible));
+  },
+  onMediaStatus: (callback: (status: any) => void) => {
+    ipcRenderer.on('media:status', (_e, status) => callback(status));
   },
 
   // ─── Capture / Self-Recording (Phase 8.6) ───
@@ -294,4 +298,12 @@ contextBridge.exposeInMainWorld('tappi', {
   onRecordingUpdate: (callback: (status: any) => void) => {
     ipcRenderer.on('capture:recording-update', (_e, status) => callback(status));
   },
+
+  // ─── File Downloads (Phase 9.07 Track 5) ───
+  onPresentDownload: (callback: (data: { path: string; name: string; size: number; formats: string[]; description?: string }) => void) => {
+    ipcRenderer.on('agent:present-download', (_e, data) => callback(data));
+  },
+
+  downloadFile: (sourcePath: string, format: string, defaultName?: string) =>
+    ipcRenderer.invoke('file:download', sourcePath, format, defaultName),
 });

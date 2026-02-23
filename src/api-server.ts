@@ -18,6 +18,7 @@ import { createTools } from './tool-registry';
 import * as pageTools from './page-tools';
 import * as browserTools from './browser-tools';
 import * as captureTools from './capture-tools';
+import { getDb } from './database';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -58,6 +59,33 @@ export function ensureApiToken(): string {
 
 function readToken(): string {
   try { return fs.readFileSync(TOKEN_FILE, 'utf-8').trim(); } catch { return ''; }
+}
+
+/** F11: Flatten object keys to dot-notation for config field validation */
+function flattenKeys(obj: any, prefix = ''): string[] {
+  const keys: string[] = [];
+  for (const k of Object.keys(obj)) {
+    const full = prefix ? `${prefix}.${k}` : k;
+    if (obj[k] && typeof obj[k] === 'object' && !Array.isArray(obj[k])) {
+      keys.push(...flattenKeys(obj[k], full));
+    } else {
+      keys.push(full);
+    }
+  }
+  return keys;
+}
+
+/** F9: Constant-time token comparison to prevent timing attacks */
+function timingSafeTokenCompare(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) {
+    // Compare against dummy to avoid timing leak on length mismatch
+    const dummy = Buffer.alloc(bufA.length);
+    crypto.timingSafeEqual(bufA, dummy);
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
 }
 
 // ─── Rate limiter ─────────────────────────────────────────────────────────────
@@ -149,10 +177,16 @@ export function startApiServer(port: number, deps: ApiServerDeps): void {
       return err(res, 429, 'Rate limit exceeded: 100 req/min');
     }
 
-    // Auth
+    // F10: Block cross-origin requests (browsers set Origin; CLI tools don't)
+    if (req.headers['origin']) {
+      return err(res, 403, 'Cross-origin requests blocked');
+    }
+
+    // Auth (F9: timing-safe comparison)
     const auth = req.headers['authorization'] || '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-    if (!token || token !== readToken()) {
+    const validToken = readToken();
+    if (!token || !timingSafeTokenCompare(token, validToken)) {
       return err(res, 401, 'Unauthorized: invalid or missing Bearer token');
     }
 
@@ -248,6 +282,17 @@ async function handleRequest(
       if (tab.isAria) return err(res, 400, 'Cannot close Aria tab');
       tabManager.closeTab(m.id);
       return json(res, 200, { success: true });
+    }
+  }
+
+  // ── POST /api/tabs/:id/activate ─────────────────────────────────────────────
+  {
+    const m = matchRoute('/api/tabs/:id/activate', urlPath);
+    if (method === 'POST' && m) {
+      const tab = tabManager.getTabList().find(t => t.id === m.id);
+      if (!tab) return err(res, 404, 'Tab not found');
+      tabManager.switchTab(m.id);
+      return json(res, 200, { success: true, tab: { id: m.id, title: tab.title, index: tab.index } });
     }
   }
 
@@ -408,6 +453,17 @@ async function handleRequest(
     const apiKey = decryptApiKey(cfg.llm?.apiKey || '');
     if (!apiKey) return err(res, 400, 'No API key configured in Tappi Browser settings');
 
+    // Bug 1 fix: resolve or create conversationId, init row in DB
+    const convId: string = body.conversationId || crypto.randomUUID();
+    try {
+      const now = new Date().toISOString();
+      getDb().prepare(
+        "INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at) VALUES (?, '', ?, ?)"
+      ).run(convId, now, now);
+    } catch (dbErr) {
+      console.error('[api] Failed to init conversation row:', dbErr);
+    }
+
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -437,6 +493,7 @@ async function handleRequest(
 
     runAgent({
       userMessage: body.message,
+      conversationId: convId,
       browserCtx,
       llmConfig: {
         provider: cfg.llm.provider,
@@ -471,6 +528,17 @@ async function handleRequest(
     const cfg = getConfig();
     const apiKey = decryptApiKey(cfg.llm?.apiKey || '');
     if (!apiKey) return err(res, 400, 'No API key configured in Tappi Browser settings');
+
+    // Bug 1 fix: resolve or create conversationId, init row in DB
+    const convId: string = body.conversationId || crypto.randomUUID();
+    try {
+      const now = new Date().toISOString();
+      getDb().prepare(
+        "INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at) VALUES (?, '', ?, ?)"
+      ).run(convId, now, now);
+    } catch (dbErr) {
+      console.error('[api] Failed to init conversation row:', dbErr);
+    }
 
     const browserCtx: browserTools.BrowserContext = { window: mainWindow, tabManager, config: cfg };
 
@@ -512,6 +580,7 @@ async function handleRequest(
 
       runAgent({
         userMessage: body.message,
+        conversationId: convId,
         browserCtx,
         llmConfig: {
           provider: cfg.llm.provider,
@@ -639,6 +708,22 @@ async function handleRequest(
   // ── PATCH /api/config ─────────────────────────────────────────────────────────
   if (method === 'PATCH' && urlPath === '/api/config') {
     const body = await readBody(req);
+
+    // F11: Block dangerous config fields
+    const blockedFields = ['llm.baseUrl', 'developerMode', 'apiKey'];
+    const flatKeys = flattenKeys(body);
+    const blocked = flatKeys.filter(k => blockedFields.some(b => k === b || k.startsWith(b + '.')));
+    if (blocked.length > 0) {
+      return err(res, 400, `Blocked config fields: ${blocked.join(', ')}. These cannot be changed via API.`);
+    }
+
+    // F11: Only allow whitelisted fields
+    const allowedPatterns = ['llm.model', 'llm.provider', 'features.', 'searchEngine'];
+    const disallowed = flatKeys.filter(k => !allowedPatterns.some(p => k === p || k.startsWith(p)));
+    if (disallowed.length > 0) {
+      return err(res, 400, `Disallowed config fields: ${disallowed.join(', ')}. Allowed: llm.model, llm.provider, features.*, searchEngine`);
+    }
+
     try {
       deps.updateConfig(body);
       return json(res, 200, { success: true });

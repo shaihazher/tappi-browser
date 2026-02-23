@@ -22,13 +22,56 @@ export interface BrowserContext {
 // ─── Dark Mode CSS ───
 
 const DARK_MODE_CSS = `
+  :root {
+    color-scheme: dark !important;
+  }
   html {
-    filter: invert(1) hue-rotate(180deg) !important;
-    background: #111 !important;
+    background-color: #1a1a2e !important;
+    color: #e0e0e0 !important;
   }
-  img, video, canvas, picture, svg, [style*="background-image"] {
-    filter: invert(1) hue-rotate(180deg) !important;
+  body {
+    background-color: #1a1a2e !important;
+    color: #e0e0e0 !important;
   }
+  /* Main containers — darken backgrounds */
+  main, article, section, aside, nav, header, footer,
+  div, form, fieldset, details, dialog, summary,
+  table, thead, tbody, tfoot, tr, th, td {
+    background-color: inherit !important;
+    color: inherit !important;
+    border-color: #333 !important;
+  }
+  /* Override bright backgrounds */
+  [style*="background-color: rgb(255"],
+  [style*="background-color: white"],
+  [style*="background-color:#fff"],
+  [style*="background: rgb(255"],
+  [style*="background: white"],
+  [style*="background:#fff"] {
+    background-color: #1a1a2e !important;
+  }
+  /* Links */
+  a, a:visited { color: #7aa2f7 !important; }
+  a:hover { color: #89b4fa !important; }
+  /* Inputs */
+  input, textarea, select, button {
+    background-color: #232340 !important;
+    color: #e0e0e0 !important;
+    border-color: #444 !important;
+  }
+  /* Code blocks */
+  pre, code, .highlight {
+    background-color: #16162a !important;
+    color: #c0caf5 !important;
+  }
+  /* Images, videos, canvases stay untouched */
+  img, video, canvas, picture, svg, iframe {
+    /* do NOT invert — leave media as-is */
+  }
+  /* Scrollbar */
+  ::-webkit-scrollbar { background: #1a1a2e; width: 10px; }
+  ::-webkit-scrollbar-thumb { background: #444; border-radius: 5px; }
+  ::-webkit-scrollbar-thumb:hover { background: #555; }
 `;
 
 const darkModeCSSKeys = new Map<string, string>(); // webContents id → CSS key
@@ -36,7 +79,7 @@ const darkModeCSSKeys = new Map<string, string>(); // webContents id → CSS key
 // ─── B-Command Implementations ───
 
 export async function bDarkMode(ctx: BrowserContext, args: string[]): Promise<string> {
-  const wc = ctx.tabManager.activeWebContents;
+  const wc = ctx.tabManager.activeWebTabWebContents;
   if (!wc) return 'No active tab.';
 
   const mode = args[0]?.toLowerCase();
@@ -173,6 +216,58 @@ export async function bDownloads(ctx: BrowserContext, args: string[]): Promise<s
 export async function bTab(ctx: BrowserContext, args: string[]): Promise<string> {
   const action = args[0]?.toLowerCase();
   const activeId = ctx.tabManager.activeTabId;
+
+  // Switch: when Aria is active, use soft targeting (agent targets tab without
+  // switching visual focus). When user is on a content tab, do a real switch.
+  if (action === 'switch') {
+    const target = args[1];
+    if (!target) return 'Usage: B6 switch <index|id>';
+    const isAriaActive = activeId === ctx.tabManager.ariaTabId;
+
+    // Resolve target to tab ID
+    const idx = parseInt(target, 10);
+    let targetId: string | null = null;
+    let targetTitle = 'unknown';
+
+    if (!isNaN(idx)) {
+      const tabs = ctx.tabManager.getTabList();
+      if (idx < 0 || idx >= tabs.length) return `Tab index ${idx} out of range (0-${tabs.length - 1}).`;
+      targetId = tabs[idx]?.id ?? null;
+      targetTitle = tabs[idx]?.title ?? 'unknown';
+    } else {
+      targetId = target;
+      const info = ctx.tabManager.getTabInfo(target);
+      if (info) targetTitle = info.title;
+    }
+
+    if (!targetId) return 'Tab not found.';
+
+    if (isAriaActive) {
+      // Phase 9: Soft switch — agent targets this tab, Aria stays in focus
+      ctx.tabManager.setAgentTarget(targetId);
+      return `Targeting tab [${!isNaN(idx) ? idx : targetId}]: ${targetTitle} (Aria stays in focus)`;
+    } else {
+      // Real switch — user is browsing, honor the switch
+      if (!isNaN(idx)) {
+        ctx.tabManager.switchToIndex(idx);
+      } else {
+        ctx.tabManager.switchTab(targetId);
+      }
+      const active = ctx.tabManager.getTabList().find((t: any) => t.active);
+      return `Switched to tab [${!isNaN(idx) ? idx : targetId}]: ${active?.title || 'unknown'}`;
+    }
+  }
+
+  // List tabs
+  if (action === 'list') {
+    const tabs = ctx.tabManager.getTabList();
+    return tabs.map((t: any, i: number) => {
+      const marker = t.active ? '→' : ' ';
+      const icon = t.isAria ? '🪷' : '📄';
+      return `${marker} [${i}] ${icon} ${t.title}`;
+    }).join('\n');
+  }
+
   if (!activeId) return 'No active tab.';
 
   switch (action) {
@@ -196,13 +291,13 @@ export async function bTab(ctx: BrowserContext, args: string[]): Promise<string>
       ctx.tabManager.closeTabsToRight(activeId);
       return 'Tabs to right closed.';
     default:
-      return 'Usage: B6 close|mute|pin|duplicate|others|right';
+      return 'Usage: B6 switch <index>|list|close|mute|pin|duplicate|others|right';
   }
 }
 
 export async function bBookmark(ctx: BrowserContext, args: string[]): Promise<string> {
   const action = args[0]?.toLowerCase();
-  const wc = ctx.tabManager.activeWebContents;
+  const wc = ctx.tabManager.activeWebTabWebContents;
   if (!wc) return 'No active tab.';
 
   if (action === 'add' || action === 'toggle' || !action) {
@@ -217,7 +312,7 @@ export async function bBookmark(ctx: BrowserContext, args: string[]): Promise<st
 }
 
 export async function bZoom(ctx: BrowserContext, args: string[]): Promise<string> {
-  const wc = ctx.tabManager.activeWebContents;
+  const wc = ctx.tabManager.activeWebTabWebContents;
   if (!wc) return 'No active tab.';
 
   const action = args[0]?.toLowerCase();
@@ -247,7 +342,7 @@ export async function bZoom(ctx: BrowserContext, args: string[]): Promise<string
 }
 
 export async function bFind(ctx: BrowserContext, args: string[]): Promise<string> {
-  const wc = ctx.tabManager.activeWebContents;
+  const wc = ctx.tabManager.activeWebTabWebContents;
   if (!wc) return 'No active tab.';
 
   const query = args.join(' ');
@@ -267,7 +362,7 @@ export async function bFind(ctx: BrowserContext, args: string[]): Promise<string
 }
 
 export async function bPrint(ctx: BrowserContext, args: string[]): Promise<string> {
-  const wc = ctx.tabManager.activeWebContents;
+  const wc = ctx.tabManager.activeWebTabWebContents;
   if (!wc) return 'No active tab.';
 
   if (args[0]?.toLowerCase() === 'pdf') {
@@ -300,13 +395,15 @@ export async function bNavigate(ctx: BrowserContext, args: string[]): Promise<st
   }
 
   // Phase 8.35: Aria tab must never navigate away — open a new tab instead.
+  // Phase 9: Open in background so Aria stays in focus for the user.
   const activeId = ctx.tabManager.activeTabId;
   if (activeId && activeId === ctx.tabManager.ariaTabId) {
-    ctx.tabManager.createTab(finalUrl);
-    return `Navigating to: ${finalUrl} (opened in new tab)`;
+    const tabId = ctx.tabManager.createTab(finalUrl, undefined, { background: true });
+    ctx.tabManager.setAgentTarget(tabId); // Auto-target the new tab
+    return `Navigating to: ${finalUrl} (opened in background tab)`;
   }
 
-  const wc = ctx.tabManager.activeWebContents;
+  const wc = ctx.tabManager.activeWebTabWebContents;
   if (!wc) return 'No active tab.';
   wc.loadURL(finalUrl);
   return `Navigating to: ${finalUrl}`;
@@ -328,20 +425,22 @@ export async function bSearch(ctx: BrowserContext, args: string[]): Promise<stri
   const searchUrl = engines[engine] || engines.google;
 
   // Phase 8.35: Aria tab must never navigate away — open a new tab instead.
+  // Phase 9: Open in background so Aria stays in focus for the user.
   const activeId = ctx.tabManager.activeTabId;
   if (activeId && activeId === ctx.tabManager.ariaTabId) {
-    ctx.tabManager.createTab(searchUrl);
-    return `Searching: "${query}" (${engine}) — opened in new tab`;
+    const tabId = ctx.tabManager.createTab(searchUrl, undefined, { background: true });
+    ctx.tabManager.setAgentTarget(tabId); // Auto-target the new tab
+    return `Searching: "${query}" (${engine}) — opened in background tab`;
   }
 
-  const wc = ctx.tabManager.activeWebContents;
+  const wc = ctx.tabManager.activeWebTabWebContents;
   if (!wc) return 'No active tab.';
   wc.loadURL(searchUrl);
   return `Searching: "${query}" (${engine})`;
 }
 
 export async function bBackForward(ctx: BrowserContext, args: string[]): Promise<string> {
-  const wc = ctx.tabManager.activeWebContents;
+  const wc = ctx.tabManager.activeWebTabWebContents;
   if (!wc) return 'No active tab.';
 
   const action = args[0]?.toLowerCase();
@@ -357,7 +456,7 @@ export async function bBackForward(ctx: BrowserContext, args: string[]): Promise
 }
 
 export async function bScreenshot(ctx: BrowserContext, args: string[]): Promise<string> {
-  const wc = ctx.tabManager.activeWebContents;
+  const wc = ctx.tabManager.activeWebTabWebContents;
   if (!wc) return 'No active tab.';
 
   const target = args[0]?.toLowerCase() || 'clipboard';
@@ -383,7 +482,7 @@ export async function bScreenshot(ctx: BrowserContext, args: string[]): Promise<
 export function getBrowserState(ctx: BrowserContext): string {
   const tabCount = ctx.tabManager.tabCount;
   const active = ctx.tabManager.activeTabId;
-  const wc = ctx.tabManager.activeWebContents;
+  const wc = ctx.tabManager.activeWebTabWebContents;
 
   let title = 'New Tab';
   let url = '';
@@ -472,7 +571,7 @@ export function getBrowserMenu(): string {
     '',
     'Browser Actions:',
     '[B0] dark_mode(on|off)  [B1] ad_blocker(on|off|status|exception)  [B2] cookies(list|delete)',
-    '[B3] history(search|clear)  [B5] downloads(cancel|clear)  [B6] tab(close|mute|pin|dup|others|right)',
+    '[B3] history(search|clear)  [B5] downloads(cancel|clear)  [B6] tab(switch|list|close|mute|pin|dup|others|right)',
     '[B7] bookmark  [B8] zoom(in|out|reset)  [B9] find(text)  [B10] print [pdf]',
     '[B14] navigate(url)  [B15] search(query)  [B16] back|forward  [B17] screenshot(clipboard|file)',
     '[B19] media(toggle|status|seek|volume|quality)  — mpv overlay control',

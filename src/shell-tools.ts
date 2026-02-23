@@ -73,6 +73,7 @@ interface BgProcess {
 }
 
 const bgProcesses = new Map<number, BgProcess>();
+const MAX_BG_PROCESSES = 20; // F16: max background processes
 
 // Ensure workspace exists
 function ensureCwd(cwd: string): string {
@@ -135,6 +136,11 @@ export function shellExecBg(
   command: string,
   options?: { cwd?: string; env?: Record<string, string> },
 ): string {
+  // F16: enforce background process limit
+  if (bgProcesses.size >= MAX_BG_PROCESSES) {
+    return `❌ Max ${MAX_BG_PROCESSES} background processes reached. Kill existing processes first.`;
+  }
+
   const cwd = ensureCwd(options?.cwd || DEFAULT_CWD);
 
   const child = spawn(SHELL, ['-c', command], {
@@ -212,13 +218,7 @@ export function shellExecKill(pid: number): string {
   const bgProc = bgProcesses.get(pid);
 
   if (!bgProc) {
-    // Try to kill by PID anyway (might be a process we didn't start)
-    try {
-      process.kill(pid, 'SIGTERM');
-      return `Sent SIGTERM to PID ${pid} (not tracked as a background process).`;
-    } catch (err: any) {
-      return `PID ${pid} not found or already dead: ${err.message}`;
-    }
+    return `Cannot kill PID ${pid}: not a tracked agent process`;
   }
 
   try {

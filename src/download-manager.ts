@@ -40,7 +40,8 @@ export function initDownloadManager(window: BrowserWindow, customDir?: string): 
   session.defaultSession.on('will-download', (_event, item, _webContents) => {
     const id = `dl-${++downloadCounter}`;
     const filename = item.getFilename();
-    const savePath = path.join(downloadDir, filename);
+    const safeName = path.basename(filename);
+    const savePath = path.join(downloadDir, safeName);
 
     // Set save path to avoid save dialog
     item.setSavePath(savePath);

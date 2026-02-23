@@ -25,6 +25,10 @@ export interface Subtask {
   result?: string;
   duration?: number;
   error?: string;
+  /** DAG: indices of steps that must complete before this one starts.
+   *  Empty array = independent (can run in parallel with others).
+   *  Omitted = fall back to sequential ordering. */
+  depends_on?: number[];
 }
 
 export interface DecompositionResult {
@@ -62,7 +66,7 @@ For complex tasks:
 {{
   "mode": "action" | "research",
   "subtasks": [
-    {{"task": "Detailed description with enough context to execute independently", "tool": "browser|files|shell|http", "output": "step_1_description.md"}},
+    {{"task": "Detailed description with enough context to execute independently", "tool": "browser|files|shell|http", "output": "step_1_description.md", "depends_on": []}},
     ...
   ]
 }}
@@ -74,6 +78,18 @@ For complex tasks:
 - For **research** mode: end with a compile step ({{"task": "Compile all findings...", "tool": "compile", "output": "final_report.md"}}).
 - For **action** mode: do NOT add a compile step. The last subtask is the final action.
 - If the task mixes research + action (e.g. "find plumbers and email the list"), the final step should be the ACTION, mode = "action".
+
+## Dependency Graph (action mode)
+For **action** mode, use the \`depends_on\` field (array of 0-based step indices) to declare which prior steps must complete before this one:
+- \`"depends_on": []\` — step is **independent**, can run in parallel with other independent steps.
+- \`"depends_on": [0]\` — step must wait for step 0 to finish.
+- \`"depends_on": [0, 2]\` — step must wait for steps 0 AND 2 to finish.
+
+Assign \`depends_on\` thoughtfully:
+- Steps that gather independent information in parallel → \`depends_on: []\`
+- Steps that act on results of prior steps → list those step indices
+- When in doubt, depend on the previous step (conservative/sequential)
+- The LAST step typically depends on all prior steps if it needs their outputs.
 
 User task: {task}`;
 
@@ -267,14 +283,21 @@ function parseDecomposition(text: string): DecompositionResult | null {
   if (parsed?.mode && Array.isArray(parsed.subtasks) && parsed.subtasks.length >= 2) {
     const mode = parsed.mode === 'research' ? 'research' : 'action';
     const total = parsed.subtasks.length;
-    const subtasks: Subtask[] = parsed.subtasks.map((item: any, i: number) => ({
-      task: item.task || '',
-      tool: item.tool || 'browser',
-      output: item.output || `step_${i + 1}.md`,
-      index: i,
-      total,
-      status: 'pending' as const,
-    }));
+    const subtasks: Subtask[] = parsed.subtasks.map((item: any, i: number) => {
+      const st: Subtask = {
+        task: item.task || '',
+        tool: item.tool || 'browser',
+        output: item.output || `step_${i + 1}.md`,
+        index: i,
+        total,
+        status: 'pending',
+      };
+      // Preserve depends_on if present and valid (array of numbers)
+      if (Array.isArray(item.depends_on) && item.depends_on.every((d: any) => typeof d === 'number')) {
+        st.depends_on = item.depends_on.filter((d: number) => d >= 0 && d < i); // only backward refs
+      }
+      return st;
+    });
     return { mode, subtasks };
   }
 
@@ -283,14 +306,20 @@ function parseDecomposition(text: string): DecompositionResult | null {
     const total = parsed.length;
     const hasCompile = parsed.some((s: any) => s.tool === 'compile');
     const mode = hasCompile ? 'research' : 'action';
-    const subtasks: Subtask[] = parsed.map((item: any, i: number) => ({
-      task: item.task || '',
-      tool: item.tool || 'browser',
-      output: item.output || `step_${i + 1}.md`,
-      index: i,
-      total,
-      status: 'pending' as const,
-    }));
+    const subtasks: Subtask[] = parsed.map((item: any, i: number) => {
+      const st: Subtask = {
+        task: item.task || '',
+        tool: item.tool || 'browser',
+        output: item.output || `step_${i + 1}.md`,
+        index: i,
+        total,
+        status: 'pending',
+      };
+      if (Array.isArray(item.depends_on) && item.depends_on.every((d: any) => typeof d === 'number')) {
+        st.depends_on = item.depends_on.filter((d: number) => d >= 0 && d < i);
+      }
+      return st;
+    });
     return { mode, subtasks };
   }
 

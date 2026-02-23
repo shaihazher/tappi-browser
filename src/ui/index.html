@@ -2,8 +2,9 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src * data:; style-src 'self' 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src * data:; connect-src 'none';">
   <link rel="stylesheet" href="styles.css">
+  <script src="vendor/dompurify.min.js"></script>
   <script src="vendor/marked.min.js"></script>
 </head>
 <body>
