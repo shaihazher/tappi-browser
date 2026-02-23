@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld('tappi', {
   toggleAgent: () => ipcRenderer.send('agent:toggle'),
   sendAgentMessage: (message: string) => ipcRenderer.send('agent:send', message),
   stopAgent: () => ipcRenderer.send('agent:stop'),
+  // Phase 9.096d: Unified interrupt/redirect
+  interruptAgent: (target: string, targetName: string | null, message: string) =>
+    ipcRenderer.invoke('agent:interrupt', { target, targetName, message }),
   clearAgent: () => ipcRenderer.send('agent:clear'),
   onAgentToggled: (callback: (isOpen: boolean) => void) => {
     ipcRenderer.on('agent:toggled', (_e, isOpen) => callback(isOpen));

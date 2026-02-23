@@ -15,6 +15,7 @@ const agentClose = document.getElementById('agent-close');
 const agentMessages = document.getElementById('agent-messages');
 const agentInput = document.getElementById('agent-input');
 const agentSend = document.getElementById('agent-send');
+const agentRedirect = document.getElementById('agent-redirect'); // Phase 9.096d
 // Phase 8.40: run status (elapsed timer + tool call counter)
 const agentRunStatus = document.getElementById('agent-run-status');
 
@@ -912,9 +913,31 @@ function addMessage(role, content) {
   renderMessages();
 }
 
+// Phase 9.096d: Redirect mode state
+let _redirectMode = false;
+
 function sendAgentMessage() {
   if (isStreaming) {
-    // Stop the current run
+    // If in redirect mode, send interrupt with new instruction
+    if (_redirectMode) {
+      const msg = agentInput.value.trim();
+      if (!msg) return;
+      exitRedirectMode();
+      // Show redirect notice in chat
+      const noticeEl = document.createElement('div');
+      noticeEl.className = 'agent-msg redirect-notice';
+      noticeEl.textContent = '↪ Redirected: ' + msg;
+      agentMessages.appendChild(noticeEl);
+      agentMessages.scrollTop = agentMessages.scrollHeight;
+      // Send interrupt IPC
+      if (window.tappi && window.tappi.interruptAgent) {
+        window.tappi.interruptAgent('main', null, msg)
+          .then(res => console.log('[app] Interrupt result:', res))
+          .catch(err => console.error('[app] Interrupt error:', err));
+      }
+      return;
+    }
+    // Normal stop
     window.tappi.stopAgent();
     setStreamingState(false);
     return;
@@ -928,15 +951,74 @@ function sendAgentMessage() {
   window.tappi.sendAgentMessage(text);
 }
 
+function enterRedirectMode() {
+  _redirectMode = true;
+  agentInput.disabled = false;
+  agentInput.value = '';
+  agentInput.placeholder = 'Enter redirect instructions…';
+  agentInput.focus();
+  // Show redirect hint above input
+  let hint = document.getElementById('agent-redirect-hint');
+  if (!hint) {
+    hint = document.createElement('div');
+    hint.id = 'agent-redirect-hint';
+    hint.className = 'agent-input-redirect-hint';
+    hint.textContent = '✋ Redirect mode — type new instructions and press Enter';
+    const inputArea = document.getElementById('agent-input-area');
+    if (inputArea && inputArea.parentNode) {
+      inputArea.parentNode.insertBefore(hint, inputArea);
+    }
+  }
+  agentSend.textContent = '↪';
+  agentSend.title = 'Send redirect instruction';
+  if (agentRedirect) agentRedirect.title = 'Cancel redirect';
+}
+
+function exitRedirectMode() {
+  _redirectMode = false;
+  agentInput.placeholder = 'Ask Aria anything...';
+  agentInput.value = '';
+  agentInput.disabled = true;
+  const hint = document.getElementById('agent-redirect-hint');
+  if (hint) hint.remove();
+}
+
 function setStreamingState(streaming) {
   isStreaming = streaming;
-  agentSend.textContent = streaming ? '⏹' : '↑';
-  agentSend.title = streaming ? 'Stop' : 'Send';
-  agentInput.disabled = streaming;
-  if (!streaming) agentInput.focus();
+  if (!streaming) {
+    // Exit redirect mode if active
+    if (_redirectMode) exitRedirectMode();
+    agentSend.textContent = '↑';
+    agentSend.title = 'Send';
+    agentInput.disabled = false;
+    agentInput.placeholder = 'Ask Aria anything...';
+    if (agentRedirect) agentRedirect.style.display = 'none';
+    agentInput.focus();
+  } else {
+    agentSend.textContent = '⏹';
+    agentSend.title = 'Stop';
+    agentInput.disabled = true;
+    if (agentRedirect) agentRedirect.style.display = '';
+  }
 }
 
 agentSend.addEventListener('click', sendAgentMessage);
+
+// Phase 9.096d: Redirect button click — enter redirect mode (or cancel it)
+if (agentRedirect) {
+  agentRedirect.addEventListener('click', () => {
+    if (!isStreaming) return;
+    if (_redirectMode) {
+      // Cancel redirect mode
+      exitRedirectMode();
+      agentSend.textContent = '⏹';
+      agentSend.title = 'Stop';
+      agentInput.disabled = true;
+    } else {
+      enterRedirectMode();
+    }
+  });
+}
 agentInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();

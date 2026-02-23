@@ -2791,3 +2791,70 @@ body {
 .agent-thinking-chip.expanded .thinking-chip-body {
   display: block;
 }
+
+/* ═════════════════════════════════════════════════════════════
+   Phase 9.096d: Sidebar Agent Panel — Stop/Redirect Split
+   ═════════════════════════════════════════════════════════════ */
+
+/* Button group that replaces the single send/stop button during streaming */
+.agent-controls-streaming {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* Redirect button in sidebar agent panel */
+.agent-redirect-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(251, 191, 36, 0.5);
+  background: rgba(251, 191, 36, 0.1);
+  color: rgba(251, 191, 36, 0.9);
+  font-size: 14px;
+  border-radius: 50%;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.agent-redirect-btn:hover {
+  background: rgba(251, 191, 36, 0.22);
+  border-color: rgba(251, 191, 36, 0.8);
+}
+
+/* Redirect mode hint above input */
+.agent-input-redirect-hint {
+  font-size: 10.5px;
+  color: rgba(251, 191, 36, 0.75);
+  text-align: center;
+  padding: 2px 0;
+  width: 100%;
+}
+
+/* "Redirected" system message bubble */
+.agent-msg.redirect-notice {
+  color: rgba(251, 191, 36, 0.8);
+  font-size: 11.5px;
+  font-style: italic;
+  padding: 3px 8px;
+  border-left: 2px solid rgba(251, 191, 36, 0.4);
+  background: rgba(251, 191, 36, 0.06);
+  border-radius: 4px;
+  margin: 2px 4px;
+}
+
+/* Interrupt flash animation for sidebar too */
+@keyframes interrupt-flash {
+  0%   { outline: none; }
+  20%  { outline: 2px solid rgba(251, 191, 36, 0.8); border-radius: 4px; }
+  80%  { outline: 2px solid rgba(251, 191, 36, 0.8); border-radius: 4px; }
+  100% { outline: none; }
+}
+
+.interrupt-flash {
+  animation: interrupt-flash 1.2s ease-out;
+}

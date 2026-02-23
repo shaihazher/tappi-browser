@@ -365,6 +365,11 @@ Prefer \`project_search\` for questions about the current project's history. Use
 let activeRun: AbortController | null = null;
 let _lastStopReason: string | null = null; // Phase 8.40: track why agent stopped
 
+// ── Phase 9.096d: Interrupt/Redirect support ──
+let _activeRunOptions: AgentRunOptions | null = null;
+let _activePartialResponse: string = '';
+let _activeSessionId: string = 'default';
+
 function sendChunk(mainWindow: BrowserWindow, text: string, done: boolean, extraWC?: WebContents | null) {
   try { mainWindow.webContents.send('agent:stream-chunk', { text, done }); } catch {}
   try { if (extraWC && !extraWC.isDestroyed()) extraWC.send('agent:stream-chunk', { text, done }); } catch {}
@@ -391,6 +396,11 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
   if (activeRun) { activeRun.abort(); activeRun = null; }
   const abortController = new AbortController();
   activeRun = abortController;
+
+  // Phase 9.096d: Track live state for interrupt/redirect support
+  _activeRunOptions = opts;
+  _activePartialResponse = '';
+  _activeSessionId = sessionId;
 
   // ─── Deep Mode Gate ───────────────────────────────────────────────────────
   // If deep mode is ON, try to decompose the task. The LLM decides if it's
@@ -766,6 +776,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
           const textDelta = (chunk as any).delta ?? (chunk as any).text ?? '';
           if (textChunkCount === 1) console.log('[agent] First text token — keys:', Object.keys(chunk as any).join(','), '| delta len:', textDelta.length);
           fullResponse += textDelta;
+          _activePartialResponse = fullResponse; // Phase 9.096d: live tracking for interrupt
           sendChunk(mainWindow, textDelta, false, ariaWebContents);
 
         } else if (chunk.type === 'finish') {
@@ -812,6 +823,10 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
           } else {
             sendChunk(mainWindow, '✓ Done (idle stop).', true, ariaWebContents);
           }
+        } else if (_lastStopReason === 'redirect') {
+          // Redirect interrupt — send brief indicator; the re-run will start immediately
+          if (!streamStarted) broadcast('agent:stream-start', {});
+          sendChunk(mainWindow, '↪ Redirecting…', true, ariaWebContents);
         } else {
           // Manual stop
           if (!streamStarted) broadcast('agent:stream-start', {});
@@ -947,6 +962,11 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
   } finally {
     if (activeRun === abortController) activeRun = null;
     _lastStopReason = null;
+    // Phase 9.096d: Clear interrupt state on completion
+    if (_activeRunOptions === opts) {
+      _activeRunOptions = null;
+      _activePartialResponse = '';
+    }
     // Reset progress data on completion
     if (agentProgressData.running) {
       agentProgressData = { running: false, elapsed: agentProgressData.elapsed, toolCalls: agentProgressData.toolCalls, timeoutMs: agentProgressData.timeoutMs };
@@ -995,4 +1015,49 @@ export function stopAgent() {
     activeRun = null;
   }
   agentProgressData = { running: false, elapsed: 0, toolCalls: 0, timeoutMs: 0 };
+}
+
+/**
+ * Phase 9.096d: Interrupt the main agent session and redirect with a new instruction.
+ * - Aborts the current stream
+ * - Adds partial response + redirect message to conversation history
+ * - Re-invokes runAgent with the redirect message so context is preserved
+ */
+export async function interruptMainSession(message: string): Promise<string> {
+  if (!activeRun || !_activeRunOptions) {
+    return 'No active agent session to interrupt';
+  }
+
+  // Save live state before aborting
+  const savedOpts = _activeRunOptions;
+  const savedPartial = _activePartialResponse;
+  const sessionId = _activeSessionId;
+
+  // Signal redirect so the AbortError handler emits "↪ Redirecting…" instead of "⏹ Stopped."
+  _lastStopReason = 'redirect';
+
+  // Abort the current stream
+  activeRun.abort();
+  activeRun = null;
+
+  // Wait briefly for the abort to propagate
+  await new Promise<void>(resolve => setTimeout(resolve, 300));
+
+  // Preserve the partial response in conversation history if any
+  if (savedPartial.trim()) {
+    addMessage(sessionId, { role: 'assistant' as const, content: savedPartial + '\n\n*(interrupted)*' });
+  }
+
+  // Re-invoke with the redirect message (conversation history is preserved in the rolling window)
+  const resumeOpts: AgentRunOptions = {
+    ...savedOpts,
+    userMessage: message,
+  };
+
+  // Fire-and-forget — the resumed run manages its own lifecycle
+  runAgent(resumeOpts).catch(err => {
+    console.error('[agent] Redirect re-run error:', err?.message);
+  });
+
+  return '↪ Redirected — agent resuming with new instructions';
 }

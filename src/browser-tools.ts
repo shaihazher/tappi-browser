@@ -76,6 +76,93 @@ const DARK_MODE_CSS = `
 
 const darkModeCSSKeys = new Map<string, string>(); // webContents id → CSS key
 
+// ─── Return Enrichment Helpers ───
+
+/**
+ * Wait for a WebContents to finish loading (did-finish-load or did-fail-load),
+ * with a configurable timeout. Resolves once either event fires or timeout elapses.
+ */
+function waitForLoad(wc: WebContents, timeoutMs = 4000): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    const timer = setTimeout(finish, timeoutMs);
+    wc.once('did-finish-load', () => { clearTimeout(timer); finish(); });
+    wc.once('did-fail-load', () => { clearTimeout(timer); finish(); });
+  });
+}
+
+/**
+ * Lightweight page-type detection — runs AFTER the page has loaded.
+ * Returns a short string tag describing the page type.
+ */
+async function detectPageType(wc: WebContents): Promise<string> {
+  try {
+    const info = await wc.executeJavaScript(`(() => {
+      const url = location.href;
+
+      // Canvas apps (URL pattern match — cheapest)
+      if (/docs\\.google\\.com\\/(spreadsheets|presentation)/.test(url)) return 'canvas:sheets';
+      if (/figma\\.com\\/file/.test(url)) return 'canvas:figma';
+      if (/excalidraw\\.com/.test(url)) return 'canvas:draw';
+      if (/canva\\.com\\/design/.test(url)) return 'canvas:canva';
+
+      // Canvas apps (DOM check — slightly more expensive)
+      const canvases = document.querySelectorAll('canvas');
+      const viewportArea = window.innerWidth * window.innerHeight;
+      let canvasArea = 0;
+      canvases.forEach(c => { canvasArea += c.offsetWidth * c.offsetHeight; });
+      if (canvasArea > viewportArea * 0.5) return 'canvas:generic';
+
+      // Login form
+      if (document.querySelector('input[type="password"]')) return 'login';
+
+      // Media page
+      const video = document.querySelector('video');
+      if (video && video.offsetWidth > 300) return 'media';
+
+      // Search results (common patterns)
+      if (/\\/search|[?&]q=/.test(url)) return 'search';
+
+      // PDF viewer
+      if (url.endsWith('.pdf') || document.querySelector('embed[type="application/pdf"]')) return 'pdf';
+
+      // Minimal DOM — might be loading SPA
+      const interactiveCount = document.querySelectorAll('a, button, input, select, textarea, [role="button"]').length;
+      if (interactiveCount < 3 && document.body.innerText.trim().length < 100) return 'loading';
+
+      return 'standard';
+    })()`);
+    return info;
+  } catch { return 'standard'; }
+}
+
+/**
+ * Maps page type tags to contextual hints for the agent.
+ */
+function pageTypeHint(pageType: string): string {
+  switch (pageType) {
+    case 'canvas:sheets':
+    case 'canvas:figma':
+    case 'canvas:draw':
+    case 'canvas:canva':
+    case 'canvas:generic':
+      return '⚠️ Canvas-rendered page — elements() will return limited results. Use keys for interaction (arrow keys, tab, shortcuts), screenshot for visual state.';
+    case 'login':
+      return '🔐 Login form detected. Use elements() to see form fields.';
+    case 'media':
+      return '🎬 Media page detected. media_toggle for mpv overlay, keys("space") for play/pause.';
+    case 'search':
+      return '🔍 Search results loaded. elements() to see result links, text(grep: "keyword") to scan snippets.';
+    case 'pdf':
+      return '📄 PDF page — text() for content extraction, screenshot for visual layout.';
+    case 'loading':
+      return '⏳ Page appears to still be loading (minimal DOM). Try wait(1500) then elements().';
+    default:
+      return '💡 Page loaded. Call elements() to see interactive elements.';
+  }
+}
+
 // ─── B-Command Implementations ───
 
 export async function bDarkMode(ctx: BrowserContext, args: string[]): Promise<string> {
@@ -400,13 +487,18 @@ export async function bNavigate(ctx: BrowserContext, args: string[]): Promise<st
   if (activeId && activeId === ctx.tabManager.ariaTabId) {
     const tabId = ctx.tabManager.createTab(finalUrl, undefined, { background: true });
     ctx.tabManager.setAgentTarget(tabId); // Auto-target the new tab
-    return `Navigating to: ${finalUrl} (opened in background tab)`;
+    return `Navigating to: ${finalUrl} (opened in background tab)\n💡 Page loaded. Call elements() to see interactive elements.`;
   }
 
   const wc = ctx.tabManager.activeWebTabWebContents;
   if (!wc) return 'No active tab.';
   wc.loadURL(finalUrl);
-  return `Navigating to: ${finalUrl}`;
+
+  // Enrichment 1+2: Wait for page load, then detect page type and append hint
+  await waitForLoad(wc, 4000);
+  const pageType = await detectPageType(wc);
+  const hint = pageTypeHint(pageType);
+  return `Navigated to: ${finalUrl}\n${hint}`;
 }
 
 export async function bSearch(ctx: BrowserContext, args: string[]): Promise<string> {
@@ -445,12 +537,16 @@ export async function bBackForward(ctx: BrowserContext, args: string[]): Promise
 
   const action = args[0]?.toLowerCase();
   if (action === 'back') {
-    if (wc.canGoBack()) { wc.goBack(); return 'Going back.'; }
-    return 'Cannot go back — no history.';
+    if (!wc.canGoBack()) return 'Cannot go back — no history.';
+    wc.goBack();
+    await waitForLoad(wc, 4000);
+    return `Went back.\n💡 Page loaded. Call elements() to see interactive elements.`;
   }
   if (action === 'forward') {
-    if (wc.canGoForward()) { wc.goForward(); return 'Going forward.'; }
-    return 'Cannot go forward.';
+    if (!wc.canGoForward()) return 'Cannot go forward.';
+    wc.goForward();
+    await waitForLoad(wc, 4000);
+    return `Went forward.\n💡 Page loaded. Call elements() to see interactive elements.`;
   }
   return 'Usage: B16 back|forward';
 }

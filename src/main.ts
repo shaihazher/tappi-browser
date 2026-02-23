@@ -21,7 +21,8 @@ import * as fs from 'fs';
 import { TabManager } from './tab-manager';
 import { executeCommand, getMenu, type ExecutorContext } from './command-executor';
 import type { BrowserContext } from './browser-tools';
-import { runAgent, stopAgent, clearHistory, agentProgressData } from './agent';
+import { runAgent, stopAgent, clearHistory, agentProgressData, interruptMainSession } from './agent';
+import { interruptSubtask } from './subtask-runner';
 import { loadServices, registerService, removeService, storeApiKey, getApiKey, listApiKeys, deleteApiKey } from './http-tools';
 import { initDatabase, getDb, closeDatabase, reinitDatabase, addHistory, searchHistory, getRecentHistory, clearHistory as clearDbHistory, migrateBookmarksFromJson, getPermission, setPermission, getAllBookmarks, searchBookmarks, removeBookmark } from './database';
 import { profileManager } from './profile-manager';
@@ -36,7 +37,7 @@ import { loadTools, verifyAllTools } from './tool-manager';
 import { setProjectUpdateCallback } from './tool-registry';
 import { cleanupAll as cleanupShell } from './shell-tools';
 import { cleanupAllSubAgents } from './sub-agent';
-import { cleanupAllTeams, getActiveTeam, getTeamStatusUI, setTeamUpdateCallback } from './team-manager';
+import { cleanupAllTeams, getActiveTeam, getTeamStatusUI, setTeamUpdateCallback, interruptTeammate, getActiveTeamId } from './team-manager';
 import { scheduleProfileUpdate, deleteProfile, loadUserProfileTxt, saveUserProfileTxt, loadProfile, generateProfile } from './user-profile';
 import { purgeSession } from './output-buffer';
 import { initCronManager, updateCronContext, addJob as cronAddJob, listJobs as cronListJobs, updateJob as cronUpdateJob, deleteJob as cronDeleteJob, runJobNow as cronRunJobNow, getJobsList, getActiveJobCount, cleanupCron } from './cron-manager';
@@ -1497,6 +1498,37 @@ function createWindow() {
     // Fix 4: Also notify Aria tab's team status card
     try { tabManager?.ariaWebContents?.send('team:updated', teamStatus); } catch {}
   });
+
+  // ─── Phase 9.096d: Unified Interrupt IPC ────────────────────────────────
+  // Routes interrupt/redirect requests from the renderer to the correct backend handler.
+  // target: 'main' = main agent session, 'teammate' = team member, 'subtask' = deep mode step
+  ipcMain.handle('agent:interrupt', async (_event, { target, targetName, message }: { target: string; targetName?: string; message: string }) => {
+    try {
+      switch (target) {
+        case 'main':
+          return await interruptMainSession(message);
+        case 'teammate': {
+          const teamId = getActiveTeamId();
+          if (!teamId) return '❌ No active team';
+          return await interruptTeammate(teamId, targetName || '', message);
+        }
+        case 'subtask':
+          return interruptSubtask(targetName ?? 0, message);
+        default:
+          return `❌ Unknown interrupt target: ${target}`;
+      }
+    } catch (err: any) {
+      console.error('[main] agent:interrupt error:', err?.message);
+      return `❌ Interrupt failed: ${err?.message}`;
+    }
+  });
+
+  // Forward new team live events to both windows (team-manager sends directly to ariaWC,
+  // but we also forward from here in case mainWindow needs them)
+  // Note: team:teammate-pulse, team:teammate-reasoning, team:teammate-interrupt are sent
+  // directly from team-manager to ariaWebContents — this forwarding handles mainWindow
+  const _teamLiveEvents = ['team:teammate-pulse', 'team:teammate-reasoning', 'team:teammate-interrupt'];
+  // (These events flow from team-manager → ariaWebContents directly; no main.ts forwarding needed)
 
   // Phase 9.09: Register project update callback so agent tools can push sidebar refreshes
   setProjectUpdateCallback(() => {

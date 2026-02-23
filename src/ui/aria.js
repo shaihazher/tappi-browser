@@ -1454,14 +1454,54 @@ function getOrCreateTeammateCard(name, role, task) {
       <span class="team-mate-name">${escHtml(name)}</span>
       <span class="team-mate-role">${escHtml(role || '')}</span>
       <span class="team-mate-status working">working</span>
+      <button class="team-redirect-btn" title="Redirect ${escHtml(name)} with new instructions">✋</button>
     </div>
     <div class="team-mate-task">${escHtml((task || '').slice(0, 80))}</div>
+    <div class="team-mate-pulse" style="display:none"></div>
+    <div class="team-mate-reasoning" style="display:none"></div>
     <div class="team-mate-output"></div>`;
   body.appendChild(card);
+
+  // Redirect button click — show inline input for redirect instruction
+  const redirectBtn = card.querySelector('.team-redirect-btn');
+  if (redirectBtn) {
+    redirectBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Show inline redirect input
+      let redirectRow = card.querySelector('.team-redirect-row');
+      if (redirectRow) { redirectRow.remove(); return; } // toggle
+      redirectRow = document.createElement('div');
+      redirectRow.className = 'team-redirect-row';
+      redirectRow.innerHTML = `
+        <input class="team-redirect-input" type="text" placeholder="Enter redirect instructions…" autocomplete="off">
+        <button class="team-redirect-send">↪</button>`;
+      card.appendChild(redirectRow);
+      const input = redirectRow.querySelector('.team-redirect-input');
+      const sendBtn = redirectRow.querySelector('.team-redirect-send');
+      if (input) input.focus();
+      const doRedirect = () => {
+        const msg = input ? input.value.trim() : '';
+        if (!msg) return;
+        if (window.aria && window.aria.interruptAgent) {
+          window.aria.interruptAgent('teammate', name, msg)
+            .then(res => console.log('[aria] Redirect result:', res))
+            .catch(err => console.error('[aria] Redirect error:', err));
+        }
+        card.classList.add('interrupt-flash');
+        setTimeout(() => card.classList.remove('interrupt-flash'), 1200);
+        redirectRow.remove();
+      };
+      if (input) input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') doRedirect(); if (ev.key === 'Escape') redirectRow.remove(); });
+      if (sendBtn) sendBtn.addEventListener('click', doRedirect);
+    });
+  }
+
   _teammateCards[name] = {
     cardEl: card,
     outputEl: card.querySelector('.team-mate-output'),
     statusEl: card.querySelector('.team-mate-status'),
+    pulseEl: card.querySelector('.team-mate-pulse'),
+    reasoningEl: card.querySelector('.team-mate-reasoning'),
   };
   return _teammateCards[name];
 }
@@ -1490,6 +1530,7 @@ window.aria.onDeepPlan(data => {
     html += `    <span class="deep-step-status" id="aria-deep-status-${i}">⏳</span>`;
     html += `    <span class="deep-step-title"><b>${i + 1}.</b> ${escHtml(taskStr)}${truncated}</span>`;
     html += `    <span class="deep-step-duration" id="aria-deep-dur-${i}"></span>`;
+    html += `    <button class="deep-redirect-btn" id="aria-deep-redirect-${i}" data-step-index="${i}" style="display:none" title="Redirect this subtask">✋</button>`;
     html += `  </div>`;
     html += `  <div class="deep-step-tools" id="aria-deep-tools-${i}"></div>`;
     html += `  <div class="deep-step-stream" id="aria-deep-stream-${i}"></div>`;
@@ -1532,10 +1573,11 @@ window._ariaToggleToolDetail = function(idx, toolIdx) {
 window.aria.onDeepSubtaskStart(data => {
   const { index } = data || {};
   if (index == null) return;
-  const el     = document.getElementById('aria-deep-step-' + index);
-  const status = document.getElementById('aria-deep-status-' + index);
-  const stream = document.getElementById('aria-deep-stream-' + index);
-  const chev   = document.getElementById('aria-deep-chevron-' + index);
+  const el        = document.getElementById('aria-deep-step-' + index);
+  const status    = document.getElementById('aria-deep-status-' + index);
+  const stream    = document.getElementById('aria-deep-stream-' + index);
+  const chev      = document.getElementById('aria-deep-chevron-' + index);
+  const redirectBtn = document.getElementById('aria-deep-redirect-' + index);
 
   if (el)     el.classList.add('active');
   if (status) status.textContent = '⟳';
@@ -1544,6 +1586,7 @@ window.aria.onDeepSubtaskStart(data => {
     stream.classList.add('visible', 'streaming');
   }
   if (chev) chev.classList.add('open');
+  if (redirectBtn) redirectBtn.style.display = '';
   _deepSubtaskText[index] = '';
   _deepToolData[index] = [];
 
@@ -1566,10 +1609,12 @@ window.aria.onDeepSubtaskStart(data => {
 window.aria.onDeepSubtaskDone(data => {
   const { index, status, duration, error } = data || {};
   if (index == null) return;
-  const el       = document.getElementById('aria-deep-step-' + index);
-  const statusEl = document.getElementById('aria-deep-status-' + index);
-  const durEl    = document.getElementById('aria-deep-dur-' + index);
-  const stream   = document.getElementById('aria-deep-stream-' + index);
+  const el          = document.getElementById('aria-deep-step-' + index);
+  const statusEl    = document.getElementById('aria-deep-status-' + index);
+  const durEl       = document.getElementById('aria-deep-dur-' + index);
+  const stream      = document.getElementById('aria-deep-stream-' + index);
+  const redirectBtn = document.getElementById('aria-deep-redirect-' + index);
+  if (redirectBtn) redirectBtn.style.display = 'none';
 
   if (el) {
     el.classList.remove('active');
@@ -1798,6 +1843,42 @@ window._ariaDownloadReport = async function(format) {
 // This handles deep-step-header toggles and download button clicks
 // regardless of when the elements are inserted into the DOM.
 ariaMessages.addEventListener('click', (e) => {
+  // Phase 9.096d: Deep mode redirect button — must check BEFORE header toggle
+  const deepRedirectBtn = e.target.closest('.deep-redirect-btn');
+  if (deepRedirectBtn) {
+    e.stopPropagation();
+    const idx = parseInt(deepRedirectBtn.dataset.stepIndex, 10);
+    // Toggle inline redirect input
+    const step = document.getElementById('aria-deep-step-' + idx);
+    if (!step) return;
+    let redirectRow = step.querySelector('.deep-step-redirect-row');
+    if (redirectRow) { redirectRow.remove(); return; }
+    redirectRow = document.createElement('div');
+    redirectRow.className = 'deep-step-redirect-row';
+    redirectRow.innerHTML = `
+      <input class="deep-redirect-input" type="text" placeholder="Enter redirect instructions…" autocomplete="off">
+      <button class="deep-redirect-send">↪</button>`;
+    step.appendChild(redirectRow);
+    const input = redirectRow.querySelector('.deep-redirect-input');
+    const sendBtn = redirectRow.querySelector('.deep-redirect-send');
+    if (input) input.focus();
+    const doRedirect = () => {
+      const msg = input ? input.value.trim() : '';
+      if (!msg) return;
+      if (window.aria && window.aria.interruptAgent) {
+        window.aria.interruptAgent('subtask', String(idx), msg)
+          .then(res => console.log('[aria] Subtask redirect:', res))
+          .catch(err => console.error('[aria] Subtask redirect error:', err));
+      }
+      step.classList.add('interrupt-flash');
+      setTimeout(() => step.classList.remove('interrupt-flash'), 1200);
+      redirectRow.remove();
+    };
+    if (input) input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') doRedirect(); if (ev.key === 'Escape') redirectRow.remove(); });
+    if (sendBtn) sendBtn.addEventListener('click', doRedirect);
+    return;
+  }
+
   // Deep step header toggle
   const header = e.target.closest('.deep-step-header');
   if (header) {
@@ -2054,6 +2135,43 @@ if (window.aria.onTeamMailboxMessage) {
     row.innerHTML = `📬 <b>${escHtml(from)}</b> → <b>${escHtml(to)}</b>: ${escHtml((text || '').slice(0, 120))}`;
     log.appendChild(row);
     scrollToBottom();
+  });
+}
+
+// ─── Phase 9.096d: Teammate pulse display ───
+if (window.aria && window.aria.onTeammatePulse) {
+  window.aria.onTeammatePulse(({ name, text }) => {
+    const card = _teammateCards[name];
+    if (!card || !card.pulseEl) return;
+    card.pulseEl.textContent = '🫀 ' + (text || '').slice(0, 120);
+    card.pulseEl.style.display = 'block';
+    scrollToBottom();
+  });
+}
+
+// ─── Phase 9.096d: Teammate reasoning chips ───
+if (window.aria && window.aria.onTeammateReasoning) {
+  window.aria.onTeammateReasoning(({ name, text }) => {
+    const card = _teammateCards[name];
+    if (!card || !card.reasoningEl) return;
+    // Keep only latest ~100 chars of reasoning (rolling)
+    const snippet = (text || '').length > 100 ? '…' + text.slice(-100) : text;
+    card.reasoningEl.textContent = snippet;
+    card.reasoningEl.style.display = 'block';
+    scrollToBottom();
+  });
+}
+
+// ─── Phase 9.096d: Teammate interrupt feedback ───
+if (window.aria && window.aria.onTeammateInterrupt) {
+  window.aria.onTeammateInterrupt(({ name }) => {
+    const card = _teammateCards[name];
+    if (!card) return;
+    card.cardEl.classList.add('interrupt-flash');
+    setTimeout(() => card.cardEl.classList.remove('interrupt-flash'), 1200);
+    // Hide pulse/reasoning since state is being reset
+    if (card.pulseEl) { card.pulseEl.style.display = 'none'; card.pulseEl.textContent = ''; }
+    if (card.reasoningEl) { card.reasoningEl.style.display = 'none'; card.reasoningEl.textContent = ''; }
   });
 }
 

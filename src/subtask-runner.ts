@@ -37,6 +37,22 @@ import {
 /** Maximum number of research subtasks running in parallel. */
 const MAX_PARALLEL = 3;
 
+// ── Phase 9.096d: Subtask interrupt registry ──
+const _subtaskAbortControllers = new Map<number, AbortController>();
+
+/**
+ * Interrupt a running deep mode subtask by index.
+ * Aborts the subtask's abort controller, causing its stream to stop.
+ */
+export function interruptSubtask(indexOrName: number | string, _message: string): string {
+  const index = typeof indexOrName === 'string' ? parseInt(indexOrName, 10) : indexOrName;
+  const ctrl = _subtaskAbortControllers.get(index);
+  if (!ctrl) return `No running subtask found at index ${index}`;
+  ctrl.abort();
+  _subtaskAbortControllers.delete(index);
+  return `Subtask ${index} interrupted`;
+}
+
 // ── Types ──
 
 export interface SubtaskRunnerOptions {
@@ -753,6 +769,8 @@ async function runBrowsingSubtask(
     const subtaskStart = Date.now();
     let subtaskTimedOut = false;
     const subtaskAbortController = new AbortController();
+    // Phase 9.096d: Register for external interrupt support
+    _subtaskAbortControllers.set(subtask.index, subtaskAbortController);
     const subtaskTimeoutHandle = setTimeout(() => {
       subtaskTimedOut = true;
       subtaskAbortController.abort();
@@ -862,6 +880,8 @@ async function runBrowsingSubtask(
     return fullResponse;
 
   } finally {
+    // Phase 9.096d: Deregister from interrupt registry
+    _subtaskAbortControllers.delete(subtask.index);
     cleanupSession(subSessionId);
     purgeSession(subSessionId);
     clearHistory(subSessionId);

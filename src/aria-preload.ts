@@ -129,6 +129,21 @@ contextBridge.exposeInMainWorld('aria', {
     ipcRenderer.on('team:mailbox-message', (_e, data) => cb(data));
   },
 
+  // ─── Phase 9.096d: Teammate pulse / reasoning / interrupt events ───
+  onTeammatePulse: (cb: (data: { name: string; text: string }) => void) => {
+    ipcRenderer.on('team:teammate-pulse', (_e, data) => cb(data));
+  },
+  onTeammateReasoning: (cb: (data: { name: string; text: string }) => void) => {
+    ipcRenderer.on('team:teammate-reasoning', (_e, data) => cb(data));
+  },
+  onTeammateInterrupt: (cb: (data: { name: string; message: string }) => void) => {
+    ipcRenderer.on('team:teammate-interrupt', (_e, data) => cb(data));
+  },
+
+  // ─── Phase 9.096d: Unified interrupt/redirect IPC ───
+  interruptAgent: (target: string, targetName: string | null, message: string) =>
+    ipcRenderer.invoke('agent:interrupt', { target, targetName, message }),
+
   // ─── Projects (Phase 9.07) ───
   listProjects: (includeArchived?: boolean) =>
     ipcRenderer.invoke('projects:list', includeArchived ?? false),

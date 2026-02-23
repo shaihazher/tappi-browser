@@ -77,7 +77,7 @@ export interface Teammate {
   name: string;                   // e.g. "@backend"
   role: string;
   sessionId: string;
-  status: 'idle' | 'working' | 'blocked' | 'done' | 'failed';
+  status: 'idle' | 'working' | 'blocked' | 'done' | 'failed' | 'interrupted';
   currentTaskId?: string;
   currentTaskText?: string;       // human-readable task description from team_run_teammate
   model?: string;                 // can use different model than lead
@@ -90,6 +90,15 @@ export interface Teammate {
   // Phase 8.39: Git worktree isolation
   worktreePath?: string;          // absolute path to isolated worktree
   worktreeBranch?: string;        // e.g. "wt-backend"
+  // Phase 9.096d: Interrupt support
+  abortController?: AbortController;   // for on-demand abort
+  conversationHistory?: any[];         // accumulated messages for surgical resume
+  partialResponse?: string;            // text accumulated before interrupt
+  _systemPrompt?: string;              // frozen at first invocation for resume
+  _tools?: Record<string, any>;        // frozen at first invocation for resume
+  _model?: any;                        // frozen at first invocation for resume
+  // Phase 9.096d: Pulse
+  lastPulse?: string;                  // latest ~20-token activity snippet
 }
 
 export interface TeammateRunOptions {
@@ -352,11 +361,22 @@ async function runTeammateSession(
 
     addMessage(sessionId, { role: 'user', content: userContent });
 
+    // Phase 9.096d: Freeze invocation config for surgical resume
+    teammate._systemPrompt = systemPrompt;
+    teammate._tools = tools;
+    teammate._model = model;
+
+    // Phase 9.096d: Initialize conversation history for interrupt/resume
+    teammate.conversationHistory = [{ role: 'user', content: userContent }];
+    teammate.partialResponse = '';
+
     // Phase 8.40: Timeout-based execution — no step limit
     const teammateTimeoutMs = llmConfig.teammateTimeoutMs ?? 900_000; // default 15 min
     const tmRunStart = Date.now();
     let tmTimedOut = false;
     const tmAbortController = new AbortController();
+    // Phase 9.096d: Store AbortController on teammate for interrupt support
+    teammate.abortController = tmAbortController;
     const tmTimeoutHandle = setTimeout(() => {
       tmTimedOut = true;
       tmAbortController.abort();
@@ -431,6 +451,26 @@ async function runTeammateSession(
             teamBroadcast('team:mailbox-message', { from: name, to: '@lead', text: startMail });
           }
 
+          // Phase 9.096d: Append step to conversationHistory for interrupt/resume
+          try {
+            const assistantContent: any[] = [];
+            if (event.text) assistantContent.push({ type: 'text', text: event.text });
+            for (const tc of (event.toolCalls || [])) {
+              assistantContent.push({ type: 'tool-call', toolCallId: tc.toolCallId, toolName: tc.toolName, args: tc.args });
+            }
+            if (assistantContent.length > 0) {
+              if (!teammate.conversationHistory) teammate.conversationHistory = [];
+              teammate.conversationHistory.push({ role: 'assistant', content: assistantContent });
+            }
+            for (const tr of toolResults) {
+              if (!teammate.conversationHistory) teammate.conversationHistory = [];
+              teammate.conversationHistory.push({
+                role: 'tool',
+                content: [{ type: 'tool-result', toolCallId: (tr as any).toolCallId, result: tr.result }],
+              });
+            }
+          } catch {}
+
           // Passive top card update — every tool step, not just when teammate explicitly reports
           notifyUpdate(teamId);
         } catch {}
@@ -439,6 +479,21 @@ async function runTeammateSession(
 
     let fullResponse = '';
     let tmChunkCount = 0;
+    // Phase 9.096d: Pulse system — emit activity snippet every 30s
+    let currentActivity = '';
+    let textSincePulse = '';
+    const pulseIntervalMs = 30_000;
+    const pulseInterval = setInterval(() => {
+      const pulseText = (currentActivity || textSincePulse).slice(0, 80);
+      if (pulseText && teammate.status === 'working') {
+        teammate.lastPulse = pulseText;
+        sendMessage(teamId, name, '@lead', '🫀 ' + pulseText);
+        teamBroadcast('team:teammate-pulse', { name, text: pulseText });
+        teamBroadcast('team:mailbox-message', { from: name, to: '@lead', text: '🫀 ' + pulseText });
+      }
+      textSincePulse = '';
+    }, pulseIntervalMs);
+
     console.log(`[team] ${name} starting stream...`);
     try {
       // Use fullStream to capture text-delta chunks for live UI broadcasting
@@ -449,12 +504,30 @@ async function runTeammateSession(
           // AI SDK v6: field is 'text' on text-delta chunks (not 'textDelta' or 'delta')
           const textDelta = (chunk as any).text ?? (chunk as any).delta ?? (chunk as any).textDelta ?? '';
           fullResponse += textDelta;
+          // Phase 9.096d: Track partial response for interrupt support
+          teammate.partialResponse = fullResponse;
           if (textDelta) {
+            textSincePulse += textDelta;
+            if (textDelta.trim()) currentActivity = textDelta.slice(0, 80);
             teamBroadcast('team:teammate-chunk', {
               name,
               text: textDelta,
               done: false,
             });
+          }
+        } else if (chunk.type === 'tool-call') {
+          // Phase 9.096d: Track tool call activity for pulse
+          const toolName = (chunk as any).toolName || 'tool';
+          const args = (chunk as any).args || {};
+          const argsStr = args.path || args.command || args.file_path || '';
+          currentActivity = argsStr ? `${toolName}: ${String(argsStr).slice(0, 60)}` : toolName;
+          textSincePulse += currentActivity;
+        } else if ((chunk as any).type === 'reasoning' || (chunk as any).type === 'reasoning-start' || (chunk as any).type === 'reasoning-end') {
+          // Phase 9.096d: Capture reasoning for pulse + broadcast
+          const reasoningText = (chunk as any).text ?? (chunk as any).textDelta ?? '';
+          if (reasoningText) {
+            textSincePulse += reasoningText;
+            teamBroadcast('team:teammate-reasoning', { name, text: reasoningText });
           }
         }
       }
@@ -503,6 +576,7 @@ async function runTeammateSession(
       }
     } finally {
       clearTimeout(tmTimeoutHandle);
+      clearInterval(pulseInterval);
     }
 
     teammate.result = fullResponse || `Used ${teammate.toolsUsed.length} tools: ${[...new Set(teammate.toolsUsed)].join(', ')}`;
@@ -541,6 +615,250 @@ async function runTeammateSession(
     cleanupSession(sessionId);
     purgeSession(sessionId);
     clearHistory(sessionId);
+  }
+}
+
+// ─── Phase 9.096d: Interrupt & Resume ───
+
+/**
+ * Interrupt a running teammate and redirect them with new instructions.
+ * Preserves conversation history — they resume with full context + redirect message.
+ */
+export async function interruptTeammate(teamId: string, name: string, message: string): Promise<string> {
+  const team = activeTeams.get(teamId);
+  if (!team) return `❌ Team "${teamId}" not found.`;
+
+  const teammate = team.teammates.get(name);
+  if (!teammate) return `❌ Teammate "${name}" not found in team "${teamId}".`;
+  if (teammate.status !== 'working') return `❌ ${name} is not currently working (status: ${teammate.status}). Can only interrupt working teammates.`;
+
+  // Step 1: Abort current stream
+  teammate.abortController?.abort();
+
+  // Step 2: Wait for abort to propagate
+  await new Promise<void>(resolve => setTimeout(resolve, 500));
+
+  // Step 3: Mark as interrupted
+  teammate.status = 'interrupted';
+  notifyUpdate(teamId);
+
+  // Step 4: Build resume message history
+  const existingHistory = teammate.conversationHistory || [];
+  const partialText = teammate.partialResponse;
+  const resumeHistory: any[] = [...existingHistory];
+
+  // Append partial response if any was accumulated
+  if (partialText && partialText.trim()) {
+    resumeHistory.push({
+      role: 'assistant',
+      content: [{ type: 'text', text: partialText + ' (interrupted)' }],
+    });
+  }
+
+  // Inject the lead's redirect instruction
+  resumeHistory.push({
+    role: 'user',
+    content: `[INTERRUPT from @lead]: ${message}`,
+  });
+
+  // Step 5: Notify lead + broadcast
+  const interruptMsg = `⚡ ${name} interrupted and redirected: "${message.slice(0, 80)}"`;
+  sendMessage(teamId, '@lead', '@lead', interruptMsg);
+
+  const ariaWC = team.ariaWebContents;
+  function teamBroadcastInterrupt(channel: string, data: any): void {
+    try {
+      if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send(channel, data);
+    } catch {}
+  }
+  teamBroadcastInterrupt('team:teammate-interrupt', { name, message });
+  teamBroadcastInterrupt('team:mailbox-message', { from: '@lead', to: name, text: interruptMsg });
+
+  // Step 6: Resume with frozen config + new AbortController
+  const newAbortController = new AbortController();
+  teammate.abortController = newAbortController;
+  teammate.status = 'working';
+  teammate.partialResponse = '';
+  notifyUpdate(teamId);
+
+  // Retrieve frozen invocation config
+  const frozenSystemPrompt = teammate._systemPrompt || '';
+  const frozenTools = teammate._tools || {};
+  const frozenModel = teammate._model;
+  const worktreePath = teammate.worktreePath;
+
+  // Run with history in background
+  runTeammateWithHistory({
+    teammate,
+    teamId,
+    resumeHistory,
+    systemPrompt: frozenSystemPrompt,
+    tools: frozenTools,
+    model: frozenModel,
+    abortController: newAbortController,
+    ariaWebContents: ariaWC,
+  }).catch(err => {
+    console.error(`[team] ${name} resume after interrupt error:`, err?.message);
+    teammate.status = 'failed';
+    teammate.error = err?.message || 'Resume failed';
+    teammate.finishedAt = Date.now();
+    notifyUpdate(teamId);
+  });
+
+  return `⚡ ${name} interrupted. Resuming with: "${message.slice(0, 80)}"`;
+}
+
+interface TeammateResumeOptions {
+  teammate: Teammate;
+  teamId: string;
+  resumeHistory: any[];
+  systemPrompt: string;
+  tools: Record<string, any>;
+  model: any;
+  abortController: AbortController;
+  ariaWebContents?: WebContents | null;
+}
+
+/**
+ * Run a teammate from an existing conversation history (surgical resume after interrupt).
+ * Shares core logic with runTeammateSession but skips initial message construction.
+ */
+async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void> {
+  const { teammate, teamId, resumeHistory, systemPrompt, tools, model, abortController, ariaWebContents } = opts;
+  const { sessionId, name } = teammate;
+
+  function teamBroadcast(channel: string, data: any): void {
+    try {
+      if (ariaWebContents && !ariaWebContents.isDestroyed()) {
+        ariaWebContents.send(channel, data);
+      }
+    } catch {}
+  }
+
+  teamBroadcast('team:teammate-start', { id: teammate.id, name, role: teammate.role, task: '(resuming after interrupt)' });
+
+  try {
+    // Update conversation history to resumed state
+    teammate.conversationHistory = resumeHistory;
+    teammate.partialResponse = '';
+
+    // Pulse system
+    let currentActivity = '';
+    let textSincePulse = '';
+    const pulseInterval = setInterval(() => {
+      const pulseText = (currentActivity || textSincePulse).slice(0, 80);
+      if (pulseText && teammate.status === 'working') {
+        teammate.lastPulse = pulseText;
+        sendMessage(teamId, name, '@lead', '🫀 ' + pulseText);
+        teamBroadcast('team:teammate-pulse', { name, text: pulseText });
+        teamBroadcast('team:mailbox-message', { from: name, to: '@lead', text: '🫀 ' + pulseText });
+      }
+      textSincePulse = '';
+    }, 30_000);
+
+    const result = await streamText({
+      model,
+      system: systemPrompt,
+      messages: resumeHistory,
+      tools,
+      stopWhen: stepCountIs(100),
+      abortSignal: abortController.signal,
+      onStepFinish: async (event: any) => {
+        try {
+          const toolResults = event.toolResults || [];
+          for (const tr of toolResults) {
+            const toolName = tr.toolName || 'unknown';
+            teammate.toolsUsed.push(toolName);
+            const resultStr = typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? '');
+            teamBroadcast('team:teammate-tool', { name, toolName, display: `🔧 ${toolName} → ${resultStr.slice(0, 120)}` });
+
+            // Passive file tracking
+            if (toolName === 'file_write' || toolName === 'file_append') {
+              const filePath = (tr as any).args?.path || (tr as any).args?.file_path || '';
+              if (filePath) {
+                if (!teammate.filesWritten) teammate.filesWritten = [];
+                teammate.filesWritten.push(filePath);
+              }
+            }
+          }
+
+          // Append step to conversation history
+          const assistantContent: any[] = [];
+          if (event.text) assistantContent.push({ type: 'text', text: event.text });
+          for (const tc of (event.toolCalls || [])) {
+            assistantContent.push({ type: 'tool-call', toolCallId: tc.toolCallId, toolName: tc.toolName, args: tc.args });
+          }
+          if (assistantContent.length > 0) {
+            if (!teammate.conversationHistory) teammate.conversationHistory = [];
+            teammate.conversationHistory.push({ role: 'assistant', content: assistantContent });
+          }
+          for (const tr of toolResults) {
+            if (!teammate.conversationHistory) teammate.conversationHistory = [];
+            teammate.conversationHistory.push({
+              role: 'tool',
+              content: [{ type: 'tool-result', toolCallId: (tr as any).toolCallId, result: tr.result }],
+            });
+          }
+
+          notifyUpdate(teamId);
+        } catch {}
+      },
+    });
+
+    let fullResponse = '';
+    let chunksReceived = 0;
+    try {
+      for await (const chunk of result.fullStream) {
+        chunksReceived++;
+        if (chunk.type === 'text-delta') {
+          const textDelta = (chunk as any).text ?? (chunk as any).delta ?? (chunk as any).textDelta ?? '';
+          fullResponse += textDelta;
+          teammate.partialResponse = fullResponse;
+          if (textDelta) {
+            textSincePulse += textDelta;
+            if (textDelta.trim()) currentActivity = textDelta.slice(0, 80);
+            teamBroadcast('team:teammate-chunk', { name, text: textDelta, done: false });
+          }
+        } else if (chunk.type === 'tool-call') {
+          const toolName = (chunk as any).toolName || 'tool';
+          const args = (chunk as any).args || {};
+          const argsStr = args.path || args.command || args.file_path || '';
+          currentActivity = argsStr ? `${toolName}: ${String(argsStr).slice(0, 60)}` : toolName;
+          textSincePulse += currentActivity;
+        } else if ((chunk as any).type === 'reasoning' || (chunk as any).type === 'reasoning-start' || (chunk as any).type === 'reasoning-end') {
+          const reasoningText = (chunk as any).text ?? (chunk as any).textDelta ?? '';
+          if (reasoningText) {
+            textSincePulse += reasoningText;
+            teamBroadcast('team:teammate-reasoning', { name, text: reasoningText });
+          }
+        }
+      }
+    } catch (streamErr: any) {
+      if (streamErr?.name !== 'AbortError') throw streamErr;
+    } finally {
+      clearInterval(pulseInterval);
+    }
+
+    teammate.result = fullResponse || `Resumed — ${teammate.toolsUsed.length} tools used`;
+    teammate.status = 'done';
+    teammate.finishedAt = Date.now();
+
+    const completeContent = `Task complete (after redirect): ${(teammate.result || '').slice(0, 300)}`;
+    sendMessage(teamId, name, '@lead', completeContent);
+    teamBroadcast('team:mailbox-message', { from: name, to: '@lead', text: completeContent.slice(0, 200) });
+    teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
+    teamBroadcast('team:teammate-done', { name, status: 'done', summary: (teammate.result || '').slice(0, 300) });
+
+    notifyUpdate(teamId);
+  } catch (err: any) {
+    const errMsg = err?.message || 'Unknown error';
+    console.error(`[team] ${name} resume error:`, errMsg);
+    teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
+    teamBroadcast('team:teammate-done', { name, status: 'failed', summary: errMsg });
+    teammate.status = 'failed';
+    teammate.error = errMsg;
+    teammate.finishedAt = Date.now();
+    notifyUpdate(teamId);
   }
 }
 
@@ -797,7 +1115,10 @@ export function getTeamStatus(teamId: string): string {
 
   lines.push('', '**Teammates:**');
 
+  let hasWorkingTeammates = false;
   for (const [, tm] of team.teammates) {
+    if (tm.status === 'working') hasWorkingTeammates = true;
+
     const emoji = statusEmoji[tm.status] || '❓';
     const dur = tm.finishedAt
       ? `${((tm.finishedAt - tm.startedAt) / 1000).toFixed(0)}s`
@@ -815,6 +1136,13 @@ export function getTeamStatus(teamId: string): string {
       if (t) lines.push(`   → Working on: ${t.title}`);
     }
     if (tm.worktreePath) lines.push(`   📁 Worktree: ${tm.worktreePath}`);
+    // Phase 9.096d: Show pulse activity and interrupt hint for working teammates
+    if (tm.status === 'working') {
+      if (tm.lastPulse) {
+        lines.push(`   🫀 ${tm.lastPulse}`);
+      }
+      lines.push(`   💡 Use team_interrupt to redirect if needed`);
+    }
     if (tm.error) lines.push(`   Error: ${tm.error}`);
   }
 
@@ -829,6 +1157,18 @@ export function getTeamStatus(teamId: string): string {
     for (const c of conflicts) {
       lines.push(`  ${c.file}: ${c.taskTitles.join(' vs ')}`);
     }
+  }
+
+  // Phase 9.096d: Role reminder when teammates are working
+  if (hasWorkingTeammates) {
+    lines.push(
+      '',
+      '📋 **Your role while teammates work:**',
+      '• `team_interrupt @name "instructions"` — redirect a teammate mid-task',
+      '• `team_message @name "text"` — send a message (non-blocking)',
+      '• `team_status` — re-check progress',
+      '⚠️ Do NOT write code in the project directory while teammates are running.',
+    );
   }
 
   return lines.join('\n');

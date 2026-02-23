@@ -48,6 +48,50 @@ export function removeProtectedPath(p: string): void {
   dynamicProtectedPaths.delete(resolved);
 }
 
+// ─── Contract File Soft-Guard ─────────────────────────────────────────────────
+// Contract files should be edited via team_write_contracts, not raw shell commands.
+// We warn (but don't block) when a shell command appears to write to them.
+
+const contractFilePaths = new Set<string>();
+
+/** Register a contract file path so shell writes to it trigger a warning. */
+export function addContractFilePath(p: string): void {
+  contractFilePaths.add(path.resolve(p.replace(/^~/, HOME)));
+}
+
+/** Deregister a contract file path (call when team dissolves). */
+export function removeContractFilePath(p: string): void {
+  contractFilePaths.delete(path.resolve(p.replace(/^~/, HOME)));
+}
+
+/** Clear all registered contract file paths (call on team dissolve). */
+export function clearContractFilePaths(): void {
+  contractFilePaths.clear();
+}
+
+const WRITE_OP_PATTERNS = [
+  /\s>[> ]/, /\btee\b/, /\bcp\b.*\s+\S+\s*$/, /\bmv\b.*\s+\S+\s*$/,
+  /\bsed\s+-i\b/, /\becho\b.*>/, /\bcat\b.*>/, /\bprintf\b.*>/, /\btouch\b/,
+];
+
+/**
+ * Check if command writes to a registered contract file.
+ * Returns a ⚠️ warning string if so, null otherwise.
+ */
+function checkContractFileWrite(command: string): string | null {
+  if (contractFilePaths.size === 0) return null;
+  const normalizedCmd = command.replace(/~/g, HOME);
+  const isWriteOp = WRITE_OP_PATTERNS.some(p => p.test(normalizedCmd));
+  if (!isWriteOp) return null;
+  for (const contractPath of contractFilePaths) {
+    const basename = path.basename(contractPath);
+    if (normalizedCmd.includes(contractPath) || normalizedCmd.includes(basename)) {
+      return `\n\n⚠️ You're modifying a contract file directly (${basename}). Use team_write_contracts instead — it auto-copies to all worktrees and keeps contracts in sync.`;
+    }
+  }
+  return null;
+}
+
 function getProtectedPaths(): string[] {
   return [...STATIC_PROTECTED_PATHS, ...dynamicProtectedPaths];
 }
@@ -225,11 +269,14 @@ export function shellExec(
 
   // Auto-detect tool installations and nudge the LLM
   const installHint = detectInstallCommand(command, exitCode);
-  if (installHint) {
-    return entry.truncatedView + '\n\n' + installHint;
-  }
 
-  return entry.truncatedView;
+  // Contract file soft-guard
+  const contractWarn = checkContractFileWrite(command);
+
+  let result = entry.truncatedView;
+  if (installHint) result += '\n\n' + installHint;
+  if (contractWarn) result += contractWarn;
+  return result;
 }
 
 // ─── exec_bg — Run a command in the background ───
@@ -293,7 +340,9 @@ export function shellExecBg(
     bgProcesses.delete(child.pid!);
   });
 
-  return `⏳ Background process started: PID ${child.pid}\n  Command: ${command}\n  Output: out-${entry.id}\n  Check: exec_status(${child.pid}) | Kill: exec_kill(${child.pid})`;
+  const contractWarnBg = checkContractFileWrite(command);
+  const bgMsg = `⏳ Background process started: PID ${child.pid}\n  Command: ${command}\n  Output: out-${entry.id}\n  Check: exec_status(${child.pid}) | Kill: exec_kill(${child.pid})`;
+  return contractWarnBg ? bgMsg + contractWarnBg : bgMsg;
 }
 
 // ─── exec_status — Check background process status ───

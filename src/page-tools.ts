@@ -49,7 +49,14 @@ export async function pageElements(wc: WebContents, filter?: string, _unused = f
   if (!Array.isArray(elements) || elements.length === 0) {
     if (grep) return `No elements matching "${grep}".${meta.offscreen > 0 ? ` (searched ${meta.offscreen + elements.length} total)` : ''}`;
     if (meta.offscreen > 0) return `No elements in viewport. ${meta.offscreen} offscreen — scroll or use grep to search.`;
-    return 'No interactive elements found.';
+    return [
+      '0 elements found in viewport.',
+      'Possible causes:',
+      '• Page still loading → wait(1000) then elements() again',
+      '• Content below fold → scroll("down") then elements()',
+      '• Canvas-rendered page → use keys for interaction, screenshot for visual state',
+      '• Modal/overlay blocking → elements({ grep: "close" }) to find dismiss button',
+    ].join('\n');
   }
 
   const lines = elements.map((e: any, i: number) => `[${i}] (${e.label}) ${e.desc}`);
@@ -68,14 +75,27 @@ export async function pageElements(wc: WebContents, filter?: string, _unused = f
 }
 
 export async function pageClick(wc: WebContents, index: number): Promise<string> {
+  // Capture pre-click state for enrichment
+  const urlBefore = wc.getURL();
+  const titleBefore = wc.getTitle();
+
   // Use JS click via preload (more reliable for SPAs than sendInputEvent)
   const result = await callPreload(wc, 'clickElement', index);
   if (result.error) return result.error;
 
-  // Brief pause for state changes
-  await sleep(150);
+  // Slightly longer pause to catch navigations
+  await sleep(500);
 
-  // Check post-click state
+  const label = result.label || result.desc || String(index);
+
+  // Enrichment 1 + 6: Check if a full navigation happened
+  let urlAfter = '';
+  try { urlAfter = wc.getURL(); } catch {}
+  if (urlAfter && urlAfter !== urlBefore && !urlAfter.startsWith('about:')) {
+    return `✓ Clicked [${index}] '${label}'. Navigated to ${urlAfter}.\n⚠️ Elements stale — re-index with elements().`;
+  }
+
+  // Check post-click state (toggle, dialog, SPA title change)
   let status = '';
   try {
     const post = await callPreload(wc, 'getPageState');
@@ -85,10 +105,18 @@ export async function pageClick(wc: WebContents, index: number): Promise<string>
       status = ' — dialog opened';
     }
   } catch {
-    status = ' — navigated away';
+    // callPreload threw — page likely navigated away
+    return `✓ Clicked [${index}] '${label}'. Navigated away.\n⚠️ Elements stale — re-index with elements().`;
   }
 
-  return `Clicked: (${result.label}) ${result.desc}${status}`;
+  // SPA detection: title change with same URL = content updated
+  let titleAfter = '';
+  try { titleAfter = wc.getTitle(); } catch {}
+  if (titleAfter && titleAfter !== titleBefore) {
+    return `✓ Clicked [${index}] '${label}'. Page content updated.${status}`;
+  }
+
+  return `✓ Clicked [${index}] '${label}'.${status}`;
 }
 
 export async function pageType(wc: WebContents, index: number, text: string): Promise<string> {
@@ -168,7 +196,14 @@ export async function pageCheck(wc: WebContents, index: number): Promise<string>
 export async function pageText(wc: WebContents, selector?: string, grep?: string): Promise<string> {
   const text = await callPreload(wc, 'extractText', selector || null, grep || null);
   if (typeof text === 'object' && text.error) return text.error;
-  return text || '(empty page)';
+  const result: string = text || '(empty page)';
+
+  // Enrichment 5: Guide agent when very little text was found (and no grep was used)
+  if (!grep && result.length < 100 && result !== '(empty page)') {
+    return result + '\n\n💡 Very little text extracted. The page may use dynamic rendering. Try: elements() for interactive elements, scroll("down") + text() for lazy-loaded content, or screenshot for visual content.';
+  }
+
+  return result;
 }
 
 export async function pageScroll(wc: WebContents, direction: string, amount?: number): Promise<string> {

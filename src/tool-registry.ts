@@ -29,6 +29,8 @@ import { WorktreeManager, createWorktreeManager } from './worktree-manager';
 import * as projectManager from './project-manager';
 import * as codingMemory from './coding-memory';
 import { loadUserProfileTxt, saveUserProfileTxt, getUserProfileTxtPath } from './user-profile';
+import * as path from 'path';
+import * as os from 'os';
 
 // ─── Phase 9.09: Project update callback ─────────────────────────────────────
 // Main process sets this so agent tools can notify the UI when projects change.
@@ -53,6 +55,21 @@ export interface ToolRegistryOptions {
 }
 
 export function createTools(browserCtx: BrowserContext, sessionId = 'default', options?: ToolRegistryOptions) {
+  // ─── Guardrail session state ───────────────────────────────────────────────
+  let _elementsCalledThisSession = false;   // track elements() calls for click/type/paste hints
+  let _profileReadThisSession = false;      // track profile reads for update_user_profile hint
+
+  /** Resolve a file path using the same logic as file-tools (~ expansion + workspace fallback). */
+  function resolveFilePath(filePath: string): string {
+    const HOME_DIR = os.homedir();
+    const WORKSPACE = path.join(HOME_DIR, 'tappi-workspace');
+    let expanded = filePath;
+    if (filePath.startsWith('~/')) expanded = path.join(HOME_DIR, filePath.slice(2));
+    else if (filePath === '~') expanded = HOME_DIR;
+    if (path.isAbsolute(expanded)) return expanded;
+    return path.join(WORKSPACE, expanded);
+  }
+
   function getWC(tabIndex?: number): WebContents {
     // Phase 9: If a tab index is specified, resolve to that tab's webContents directly
     if (tabIndex !== undefined && tabIndex !== null) {
@@ -86,7 +103,16 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         grep: z.string().optional().describe('Search all elements (including offscreen) for this text'),
         tab: z.number().optional().describe('Tab index (0-based) to target — omit for current/agent-targeted tab'),
       }),
-      execute: async ({ filter, grep, tab }: { filter?: string; grep?: string; tab?: number }) => pageTools.pageElements(getWC(tab), filter, false, grep),
+      execute: async ({ filter, grep, tab }: { filter?: string; grep?: string; tab?: number }) => {
+        const result = await pageTools.pageElements(getWC(tab), filter, false, grep);
+        _elementsCalledThisSession = true;
+        // Resource guard: if many elements, suggest grep
+        const elementCount = (result.match(/^\[\d+\]/gm) || []).length;
+        if (elementCount > 100) {
+          return result + `\n\n💡 ${elementCount} elements indexed. Use elements({ grep: 'text' }) to filter to what you need.`;
+        }
+        return result;
+      },
     }),
 
     click: tool({
@@ -95,7 +121,13 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         index: z.number().describe('Element index from elements output'),
         tab: z.number().optional().describe('Tab index (0-based) to target'),
       }),
-      execute: async ({ index, tab }: { index: number; tab?: number }) => pageTools.pageClick(getWC(tab), index),
+      execute: async ({ index, tab }: { index: number; tab?: number }) => {
+        const result = await pageTools.pageClick(getWC(tab), index);
+        if (!_elementsCalledThisSession) {
+          return result + '\n\n⚠️ Call elements() first to see what\'s available before clicking by index — indexes shift on every page change.';
+        }
+        return result;
+      },
     }),
 
     type: tool({
@@ -104,7 +136,13 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         index: z.number().describe('Element index'),
         text: z.string().describe('Text to type'),
       }),
-      execute: async ({ index, text }: { index: number; text: string }) => pageTools.pageType(getWC(), index, text),
+      execute: async ({ index, text }: { index: number; text: string }) => {
+        const result = await pageTools.pageType(getWC(), index, text);
+        if (!_elementsCalledThisSession) {
+          return result + '\n\n⚠️ Call elements() first to see what\'s available before typing by index — indexes shift on every page change.';
+        }
+        return result;
+      },
     }),
 
     paste: tool({
@@ -113,7 +151,18 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         index: z.number().describe('Element index'),
         content: z.string().describe('Text to paste'),
       }),
-      execute: async ({ index, content }: { index: number; content: string }) => pageTools.pagePaste(getWC(), index, content),
+      execute: async ({ index, content }: { index: number; content: string }) => {
+        // Resource guard: paste content > 50KB
+        if (content.length > 51200) {
+          const result = await pageTools.pagePaste(getWC(), index, content);
+          return result + '\n\n⚠️ Content is large (' + Math.round(content.length / 1024) + 'KB). Consider file_write instead or splitting into chunks for reliability.';
+        }
+        const result = await pageTools.pagePaste(getWC(), index, content);
+        if (!_elementsCalledThisSession) {
+          return result + '\n\n⚠️ Call elements() first to see what\'s available before pasting by index — indexes shift on every page change.';
+        }
+        return result;
+      },
     }),
 
     focus: tool({
@@ -139,7 +188,13 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         grep: z.string().optional().describe('Search page text for this string, return matching passages'),
         tab: z.number().optional().describe('Tab index (0-based) to target — omit for current/agent-targeted tab'),
       }),
-      execute: async ({ selector, grep, tab }: { selector?: string; grep?: string; tab?: number }) => pageTools.pageText(getWC(tab), selector, grep),
+      execute: async ({ selector, grep, tab }: { selector?: string; grep?: string; tab?: number }) => {
+        const result = await pageTools.pageText(getWC(tab), selector, grep);
+        if (typeof result === 'string' && result.length > 8192) {
+          return result + '\n\n💡 Large page text (' + Math.round(result.length / 1024) + 'KB). Use text({ grep: \'keyword\' }) to search specific content instead.';
+        }
+        return result;
+      },
     }),
 
     scroll: tool({
@@ -173,7 +228,10 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
       inputSchema: z.object({
         filePath: z.string().optional().describe('File path to save PNG (default: temp dir)'),
       }),
-      execute: async ({ filePath }: { filePath?: string }) => pageTools.pageScreenshot(getWC(), filePath),
+      execute: async ({ filePath }: { filePath?: string }) => {
+        const result = await pageTools.pageScreenshot(getWC(), filePath);
+        return result + '\n\n💡 For finding/clicking elements, elements() returns indexed refs in ~200 tokens. Screenshots need vision (~1K tokens). Best for: visual layout verification, canvas apps, or when the user asks to see the page.';
+      },
     }),
 
     click_xy: tool({
@@ -209,7 +267,23 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
       inputSchema: z.object({
         url: z.string().describe('URL to navigate to'),
       }),
-      execute: async ({ url }: { url: string }) => browserTools.bNavigate(browserCtx, [url]),
+      execute: async ({ url }: { url: string }) => {
+        // Normalize the target URL the same way bNavigate does
+        let finalUrl = url;
+        if (!/^https?:\/\//i.test(url) && !/^file:\/\//i.test(url)) {
+          if (/^[^\s]+\.[^\s]+$/.test(url)) finalUrl = 'https://' + url;
+        }
+        // Check for already-open duplicate tab
+        const tabs = browserCtx.tabManager.getTabList();
+        const normalize = (u: string) => u.replace(/\/$/, '').toLowerCase();
+        const matchingTab = tabs.find(t => normalize(t.url) === normalize(finalUrl) && !t.isAria);
+        if (matchingTab) {
+          // Auto-switch instead of duplicating
+          const result = await browserTools.bTab(browserCtx, ['switch', String(matchingTab.index)]);
+          return `⚠️ "${finalUrl}" already open in tab [${matchingTab.index}]. Switched to existing tab instead.\n${result}`;
+        }
+        return browserTools.bNavigate(browserCtx, [url]);
+      },
     }),
 
     search: tool({
@@ -324,7 +398,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
             browserCtx.tabManager.activeWebTabWebContents,
             { target, saveTo, format, quality },
           );
-          return `✅ Screenshot saved: ${result.path} (${result.width}×${result.height}, ${(result.size / 1024).toFixed(1)} KB)`;
+          return `✅ Screenshot saved: ${result.path} (${result.width}×${result.height}, ${(result.size / 1024).toFixed(1)} KB)\n💡 For finding/clicking elements, elements() returns indexed refs in ~200 tokens. Screenshots need vision (~1K tokens). Best for: visual layout verification, canvas apps, or when the user asks to see the page.`;
         } catch (e: any) {
           return `❌ Screenshot failed: ${e.message}`;
         }
@@ -373,6 +447,18 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         url: string; method?: string; body?: string; jsonBody?: string;
         auth?: string; saveToFile?: string; timeout?: number;
       }) => {
+        // State gate: auth @service must be registered first
+        if (auth?.startsWith('@')) {
+          const serviceName = auth.slice(1);
+          const services = httpTools.loadServices();
+          if (!services[serviceName]) {
+            const registered = Object.keys(services);
+            const hint = registered.length > 0
+              ? `Registered services: ${registered.join(', ')}.`
+              : 'No services registered yet.';
+            return `❌ Service "@${serviceName}" not registered. Use register_api first to define its base URL and auth style. ${hint} Then use api_key_store to save the key.`;
+          }
+        }
         const req: any = { url, method, body, auth, saveToFile, timeout };
         if (jsonBody) {
           try { req.json = JSON.parse(jsonBody); } catch { req.body = jsonBody; }
@@ -480,7 +566,36 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         path: z.string().describe('File path'),
         content: z.string().describe('File content'),
       }),
-      execute: async ({ path, content }: { path: string; content: string }) => fileTools.fileWrite(path, content),
+      execute: async ({ path: filePath, content }: { path: string; content: string }) => {
+        const resolvedPath = resolveFilePath(filePath);
+        const activeTeam = teamManager.getActiveTeam();
+        if (activeTeam) {
+          // Mode gate: block writes directly into a teammate's worktree
+          for (const [, tm] of activeTeam.teammates) {
+            if (tm.worktreePath && resolvedPath.startsWith(tm.worktreePath + path.sep)) {
+              return `❌ That path is inside ${tm.name}'s worktree (${tm.worktreePath}). The lead doesn't write code in teammate worktrees — assign tasks via team_run_teammate and let the teammate write their own files.`;
+            }
+          }
+          // Phase 9.096d: Gate — block writes into team working dir while teammates are running
+          const hasRunningTeammates = Array.from(activeTeam.teammates.values()).some(tm => tm.status === 'working');
+          if (hasRunningTeammates) {
+            const resolvedTeamDir = activeTeam.workingDir.replace(/^~/, os.homedir());
+            if (resolvedPath.startsWith(resolvedTeamDir)) {
+              return `❌ Write blocked: "${filePath}" is inside the team's working directory (${activeTeam.workingDir}). Teammates are currently writing files there. Writing from the lead while teammates are running causes merge conflicts. Wait for teammates to finish, or use team_interrupt to redirect them.`;
+            }
+          }
+          // Sequence warning: writing to a contract file directly
+          const isContractFile = activeTeam.contracts.some(c => {
+            const contractAbs = c.absolutePath || path.join(activeTeam.workingDir, c.path);
+            return resolvedPath === contractAbs || resolvedPath.endsWith(c.path);
+          });
+          if (isContractFile) {
+            const result = fileTools.fileWrite(filePath, content);
+            return result + '\n\n⚠️ This is a contract file. Use team_write_contracts instead — it auto-copies to all teammate worktrees and keeps interfaces in sync.';
+          }
+        }
+        return fileTools.fileWrite(filePath, content);
+      },
     }),
 
     file_read: tool({
@@ -535,7 +650,28 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         path: z.string().describe('File path'),
         content: z.string().describe('Content to append'),
       }),
-      execute: async ({ path, content }: { path: string; content: string }) => fileTools.fileAppend(path, content),
+      execute: async ({ path, content }: { path: string; content: string }) => {
+        // Phase 9.096d: Gate — block appends into team working dir while teammates are running
+        const activeTeam = teamManager.getActiveTeam();
+        if (activeTeam) {
+          const hasRunningTeammates = Array.from(activeTeam.teammates.values()).some(tm => tm.status === 'working');
+          if (hasRunningTeammates) {
+            const nodePath = require('path');
+            const os = require('os');
+            const resolvedTeamDir = activeTeam.workingDir.replace(/^~/, os.homedir());
+            let resolvedWritePath = path;
+            if (!path.startsWith('/') && !path.startsWith('~')) {
+              resolvedWritePath = nodePath.join(os.homedir(), 'tappi-workspace', path);
+            } else if (path.startsWith('~/')) {
+              resolvedWritePath = nodePath.join(os.homedir(), path.slice(2));
+            }
+            if (resolvedWritePath.startsWith(resolvedTeamDir)) {
+              return `❌ Append blocked: "${path}" is inside the team's working directory (${activeTeam.workingDir}). Teammates are currently writing files there. Writing from the lead while teammates are running causes merge conflicts. Wait for teammates to finish, or use team_interrupt to redirect them.`;
+            }
+          }
+        }
+        return fileTools.fileAppend(path, content);
+      },
     }),
 
     file_delete: tool({
@@ -830,6 +966,13 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         }).optional().describe('New schedule'),
       }),
       execute: async ({ id, ...updates }: { id: string; name?: string; task?: string; enabled?: boolean; schedule?: any }) => {
+        // State gate: job must exist
+        const allJobs = cronManager.getJobsList();
+        const jobExists = allJobs.some(j => j.id === id);
+        if (!jobExists) {
+          const jobIds = allJobs.map(j => `${j.id} (${j.name})`).join(', ');
+          return `❌ Job "${id}" not found. Use cron_list to see all jobs.${jobIds ? ' Current jobs: ' + jobIds : ' No jobs scheduled.'}`;
+        }
         return cronManager.updateJob(id, updates);
       },
     }),
@@ -840,6 +983,13 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         id: z.string().describe('Job ID to delete'),
       }),
       execute: async ({ id }: { id: string }) => {
+        // State gate: job must exist
+        const allJobs = cronManager.getJobsList();
+        const jobExists = allJobs.some(j => j.id === id);
+        if (!jobExists) {
+          const jobIds = allJobs.map(j => `${j.id} (${j.name})`).join(', ');
+          return `❌ Job "${id}" not found. Use cron_list to see all jobs.${jobIds ? ' Current jobs: ' + jobIds : ' No jobs scheduled.'}`;
+        }
         return cronManager.deleteJob(id);
       },
     }),
@@ -914,6 +1064,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
       }),
       execute: async ({ action, text }: { action: 'read' | 'update' | 'append'; text?: string }) => {
         if (action === 'read') {
+          _profileReadThisSession = true;
           const profile = loadUserProfileTxt();
           if (!profile) return { profile: '', empty: true, hint: 'No profile yet. The user can write one in Settings → My Profile, or you can create one with append/update.' };
           const wordCount = profile.split(/\s+/).filter(Boolean).length;
@@ -933,9 +1084,14 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         }
 
         if (action === 'update') {
+          // Sequence guard: warn if profile wasn't read first this session
+          const skipReadWarning = _profileReadThisSession;
           const result = saveUserProfileTxt(text);
           if (!result.success) return { error: result.error };
           try { browserCtx.window?.webContents.send('user-profile:updated', text); } catch {}
+          if (!skipReadWarning) {
+            return { success: true, wordCount: result.wordCount, warning: '⚠️ Profile updated without reading first — call with action=read first to see the current profile and avoid accidentally overwriting content.' };
+          }
           return { success: true, wordCount: result.wordCount };
         }
 
@@ -1021,6 +1177,26 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
         timeout: z.number().optional().describe('Timeout in milliseconds (default: 30000)'),
       }),
       execute: async ({ command, cwd, timeout }: { command: string; cwd?: string; timeout?: number }) => {
+        // Phase 9.096d: Soft warn when running file-modifying commands in team working dir
+        const activeTeam = teamManager.getActiveTeam();
+        if (activeTeam && cwd) {
+          const hasRunningTeammates = Array.from(activeTeam.teammates.values()).some(tm => tm.status === 'working');
+          if (hasRunningTeammates) {
+            const nodePath = require('path');
+            const os = require('os');
+            const resolvedTeamDir = activeTeam.workingDir.replace(/^~/, os.homedir());
+            let resolvedCwd = cwd;
+            if (cwd.startsWith('~/')) resolvedCwd = nodePath.join(os.homedir(), cwd.slice(2));
+            if (resolvedCwd.startsWith(resolvedTeamDir)) {
+              const modifyPatterns = /\b(echo\s.*>\s|cat\s.*>\s|sed\s+-i|tee\s|mv\s|cp\s|mkdir\s|touch\s)/;
+              if (modifyPatterns.test(command)) {
+                const warning = `⚠️ WARNING: You are running a file-modifying command in the team's working directory while teammates are active. This may cause merge conflicts.\nCommand: ${command}\nCwd: ${cwd}\n\nProceed anyway? (Command executed — but consider using team_interrupt to redirect teammates instead.)`;
+                const execResult = await shellTools.shellExec(sessionId, command, { cwd, timeout });
+                return `${warning}\n\n${execResult}`;
+              }
+            }
+          }
+        }
         return shellTools.shellExec(sessionId, command, { cwd, timeout });
       },
     }),
@@ -1293,7 +1469,10 @@ function createTeamTools(
         const team = teamManager.getTeam(tid);
         if (!team) return `❌ Team "${tid}" not found.`;
         const teammate = team.teammates.get(teammate_name);
-        if (!teammate) return `❌ Teammate "${teammate_name}" not found in team "${tid}".`;
+        if (!teammate) {
+          const available = Array.from(team.teammates.keys()).join(', ');
+          return `❌ Teammate "${teammate_name}" not found in team "${tid}". Available teammates: ${available || '(none)'}. Use team_status to see the full team composition.`;
+        }
         const aw = (browserCtx.tabManager as any).ariaWebContents ?? null;
         const result = await teamManager.runTeammate({ teammate, teamId: tid, task, browserCtx, llmConfig, ariaWebContents: aw });
         broadcastTeamUpdate();
@@ -1305,14 +1484,29 @@ function createTeamTools(
       description: 'End the team session. Compiles final report, shuts down all teammates. Only the lead can dissolve a team. Run team_validate first to check integration.',
       inputSchema: z.object({
         team_id: z.string().optional().describe('Team ID (default: active team)'),
+        force: z.boolean().optional().describe('Suppress the running-teammates warning (default: false). Pass true when you intentionally want to dissolve while teammates are still working.'),
       }),
-      execute: async ({ team_id }: { team_id?: string }) => {
+      execute: async ({ team_id, force }: { team_id?: string; force?: boolean }) => {
         const tid = resolveTeamId(team_id);
         if (!tid) return '❌ No active team.';
+        // Soft warning: teammates still running
+        let runningSuffix = '';
+        if (!force) {
+          const team = teamManager.getTeam(tid);
+          if (team) {
+            const running = Array.from(team.teammates.values()).filter(t => t.status === 'working');
+            if (running.length > 0) {
+              const names = running.map(t => t.name).join(', ');
+              runningSuffix = `\n\n⚠️ ${names} ${running.length === 1 ? 'was' : 'were'} still running and ${running.length === 1 ? 'has' : 'have'} been killed. Dissolving with active teammates discards their in-progress work. Pass force=true to suppress this warning.`;
+            }
+          }
+        }
+        // Clear contract file registrations on dissolve
+        shellTools.clearContractFilePaths();
         const result = await teamManager.dissolveTeam(tid);
         try { browserCtx.window.webContents.send('team:updated', null); } catch {}
         try { const aw = browserCtx.tabManager.ariaWebContents; if (aw && !aw.isDestroyed()) aw.send('team:updated', null); } catch {}
-        return result;
+        return result + runningSuffix;
       },
     });
 
@@ -1332,6 +1526,14 @@ function createTeamTools(
         const tid = resolveTeamId(team_id);
         if (!tid) return '❌ No active team. Use team_create first.';
         const result = teamManager.writeContract(tid, filePath, content, description);
+        // Register this contract path so shell writes to it trigger a soft warning
+        const team = teamManager.getTeam(tid);
+        if (team) {
+          const absolutePath = path.isAbsolute(filePath)
+            ? filePath
+            : path.join(team.workingDir.replace(/^~/, os.homedir()), filePath);
+          shellTools.addContractFilePath(absolutePath);
+        }
         broadcastTeamUpdate();
         return result;
       },
@@ -1346,6 +1548,15 @@ function createTeamTools(
       execute: async ({ command, team_id }: { command?: string; team_id?: string }) => {
         const tid = resolveTeamId(team_id);
         if (!tid) return '❌ No active team.';
+        // State gate: at least one teammate must have completed
+        const team = teamManager.getTeam(tid);
+        if (team) {
+          const doneTeammates = Array.from(team.teammates.values()).filter(t => t.status === 'done');
+          if (doneTeammates.length === 0) {
+            const states = Array.from(team.teammates.values()).map(t => `${t.name}: ${t.status}`).join(', ');
+            return `❌ No completed work to validate yet. Run team_validate after teammates finish their tasks. Current states: ${states || '(no teammates)'}. Use team_status to monitor progress.`;
+          }
+        }
         return teamManager.validateIntegration(tid, command);
       },
     });
@@ -1358,7 +1569,34 @@ function createTeamTools(
       execute: async ({ team_id }: { team_id?: string }) => {
         const tid = resolveTeamId(team_id);
         if (!tid) return '❌ No active team.';
+        // State gate: check for unmerged worktrees before advancing phase
+        const team = teamManager.getTeam(tid);
+        if (team?.worktreeIsolation && team.worktreeManager) {
+          const activeWorktrees = team.worktreeManager.listWorktrees();
+          if (activeWorktrees.length > 0) {
+            const names = activeWorktrees.map(w => w.name).join(', ');
+            return `❌ Unmerged worktrees detected: ${names}. Run worktree_merge for each before advancing to the next phase — advancing with unmerged branches will lose those changes.`;
+          }
+        }
         return teamManager.advancePhase(tid);
+      },
+    });
+
+    // ─── Phase 9.096d: Interrupt Tool (Lead only) ───
+
+    tools.team_interrupt = tool({
+      description: 'Interrupt a running teammate and redirect them. Preserves their work — they resume with full conversation history plus your new instructions.',
+      inputSchema: z.object({
+        name: z.string().describe('Teammate name (e.g. "@ui", "@backend")'),
+        message: z.string().describe('Redirect instruction — what they should do instead'),
+        team_id: z.string().optional().describe('Team ID (default: active team)'),
+      }),
+      execute: async ({ name, message, team_id }: { name: string; message: string; team_id?: string }) => {
+        const tid = resolveTeamId(team_id);
+        if (!tid) return '❌ No active team.';
+        const result = await teamManager.interruptTeammate(tid, name, message);
+        broadcastTeamUpdate();
+        return result;
       },
     });
   }
@@ -1428,10 +1666,23 @@ function createWorktreeTools(repoPath?: string) {
         repo_path: z.string().optional().describe('Repo root path (default: active team working dir).'),
       }),
       execute: async ({ name, strategy, message, repo_path }: { name: string; strategy?: 'merge' | 'squash' | 'cherry-pick'; message?: string; repo_path?: string }) => {
+        // Soft warning: check if the corresponding teammate is still running
+        let runningWarn = '';
+        const activeTeam = teamManager.getActiveTeam();
+        if (activeTeam) {
+          const normalizedName = name.replace(/^@/, '');
+          for (const [, tm] of activeTeam.teammates) {
+            const tmNorm = tm.name.replace(/^@/, '');
+            if (tmNorm === normalizedName && tm.status === 'working') {
+              runningWarn = `\n\n⚠️ @${normalizedName} is still running — merging now will capture partial (incomplete) work only. Wait for the teammate to finish or use team_interrupt to stop them first.`;
+              break;
+            }
+          }
+        }
         const mgr = getManager(repo_path);
         if (!mgr) return '❌ Not a git repository.';
         const result = await mgr.mergeWorktree(name, { strategy: strategy || 'squash', message });
-        return result.message;
+        return result.message + runningWarn;
       },
     }),
 
