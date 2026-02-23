@@ -339,14 +339,14 @@
           <div class="settings-row" style="margin-top:16px;">
             <label for="agent-timeout-select">Agent Timeout</label>
             <select id="agent-timeout-select" class="settings-select">
-              <option value="120000">2 min</option>
               <option value="300000">5 min</option>
-              <option value="600000">10 min (default)</option>
-              <option value="1800000">30 min</option>
+              <option value="600000">10 min</option>
+              <option value="1800000">30 min (default)</option>
+              <option value="3600000">60 min</option>
               <option value="0">Unlimited</option>
             </select>
           </div>
-          <p class="settings-hint">How long the agent runs before timing out. Applies to main agent and teammates. Subtask timeout is half this value.</p>
+          <p class="settings-hint">How long the agent runs before timing out. Agents run until done or timeout — no premature turn limits.</p>
         </div>
 
         <button id="settings-save" class="primary-btn">Save Settings</button>

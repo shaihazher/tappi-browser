@@ -594,7 +594,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
 
     // ─── Phase 8.40: Timeout-Based Execution ────────────────────────────────
     // Coding mode with teams needs more time — teammates run in parallel, lead waits
-    const defaultTimeout = codingMode ? 1_800_000 : 600_000; // 30 min coding (lead), 10 min normal
+    const defaultTimeout = 1_800_000; // Phase 9.096f: 30 min for all modes — agents must run until done or timeout
     const timeoutMs = llmConfig.agentTimeoutMs ?? defaultTimeout;
     const runStart = Date.now();
     let stopReason: string | null = null;
@@ -672,8 +672,11 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
             };
           }
           // Idle detection: 5 consecutive text-only turns → abort
-          if (idleCount >= 5) {
-            console.log('[agent] Idle detection: 5 text-only turns — stopping');
+          // Phase 9.096f: In coding mode, lead often waits for teammates (text-only turns
+          // are normal). Use a higher threshold to avoid premature stoppage.
+          const idleThreshold = codingMode ? 15 : 5;
+          if (idleCount >= idleThreshold) {
+            console.log(`[agent] Idle detection: ${idleCount} text-only turns — stopping`);
             stopReason = 'idle';
             _lastStopReason = 'idle';
             abortController.abort();

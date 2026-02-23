@@ -106,8 +106,8 @@ interface TappiConfig {
     secondaryModel?: string;     // if unset, secondary == primary (no separate secondary)
     secondaryApiKey?: string;    // encrypted; defaults to same as primary
     // Timeout fields (Phase 8.40)
-    agentTimeoutMs?: number;      // main agent timeout (default: 600000 = 10 min)
-    teammateTimeoutMs?: number;   // per-teammate timeout (default: 600000 = 10 min)
+    agentTimeoutMs?: number;      // main agent timeout (default: 1800000 = 30 min)
+    teammateTimeoutMs?: number;   // per-teammate timeout (default: 1800000 = 30 min)
     subtaskTimeoutMs?: number;    // per deep-mode subtask timeout (default: 300000 = 5 min)
   };
   searchEngine: string;
@@ -124,7 +124,7 @@ interface TappiConfig {
 }
 
 const DEFAULT_CONFIG: TappiConfig = {
-  llm: { provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: '', thinking: true, deepMode: true, codingMode: false, worktreeIsolation: true, agentTimeoutMs: 600000, teammateTimeoutMs: 600000, subtaskTimeoutMs: 300000 },
+  llm: { provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: '', thinking: true, deepMode: true, codingMode: false, worktreeIsolation: true, agentTimeoutMs: 1_800_000, teammateTimeoutMs: 1_800_000, subtaskTimeoutMs: 300_000 },
   searchEngine: 'google',
   features: { adBlocker: false, darkMode: false },
   developerMode: false,

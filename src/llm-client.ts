@@ -37,8 +37,8 @@ export interface LLMConfig {
   secondaryModel?: string;     // if unset, secondary = primary (no-op)
   secondaryApiKey?: string;    // defaults to same as primary
   // Timeout fields (Phase 8.40) — configurable execution timeouts
-  agentTimeoutMs?: number;      // main agent timeout (default: 600000 = 10 min, coding: 1800000 = 30 min)
-  teammateTimeoutMs?: number;   // per-teammate timeout (default: 900000 = 15 min)
+  agentTimeoutMs?: number;      // main agent timeout (default: 1800000 = 30 min)
+  teammateTimeoutMs?: number;   // per-teammate timeout (default: 1800000 = 30 min)
   subtaskTimeoutMs?: number;    // per deep-mode subtask timeout (default: 300000 = 5 min)
 }
 

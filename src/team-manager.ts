@@ -456,7 +456,7 @@ async function runTeammateSession(
     teammate.partialResponse = '';
 
     // Phase 8.40: Timeout-based execution — no step limit
-    const teammateTimeoutMs = llmConfig.teammateTimeoutMs ?? 900_000; // default 15 min
+    const teammateTimeoutMs = llmConfig.teammateTimeoutMs ?? 1_800_000; // Phase 9.096f: 30 min default
     const tmRunStart = Date.now();
     let tmTimedOut = false;
     const tmAbortController = new AbortController();
@@ -475,8 +475,8 @@ async function runTeammateSession(
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent }],
       tools,
-      // Phase 9 fix: AI SDK v6 defaults to stepCountIs(1). Teammates need multi-step.
-      stopWhen: stepCountIs(100),
+      // Phase 9.096f: Match main agent step limit (200). 100 was cutting teammates short.
+      stopWhen: stepCountIs(200),
       abortSignal: tmAbortController.signal,
       onStepFinish: async (event: any) => {
         try {
@@ -877,7 +877,7 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
       system: systemPrompt,
       messages: resumeHistory,
       tools,
-      stopWhen: stepCountIs(100),
+      stopWhen: stepCountIs(200), // Phase 9.096f: match main agent
       abortSignal: abortController.signal,
       onStepFinish: async (event: any) => {
         try {

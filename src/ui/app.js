@@ -1882,7 +1882,7 @@ settingsSave.addEventListener('click', async () => {
       secondaryModel: secondaryModelValue || undefined,
       secondaryProvider: secondaryProviderValue || undefined,
       // Timeout (Phase 8.40)
-      agentTimeoutMs: parseInt(document.getElementById('agent-timeout-select')?.value) || 600000,
+      agentTimeoutMs: parseInt(document.getElementById('agent-timeout-select')?.value) || 1800000,
     },
     searchEngine: settingSearch.value,
     features: {
