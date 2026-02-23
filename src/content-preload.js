@@ -238,6 +238,48 @@ function focusElement(idx) {
   return JSON.stringify({ focused: true, tag: el.tagName.toLowerCase() });
 }
 
+/**
+ * Phase 9.096e: Set value on an input/textarea AND fire proper DOM events
+ * so React/Angular/Vue controlled components pick up the change.
+ * Uses the native setter to bypass React's synthetic value tracking,
+ * then dispatches input + change events.
+ */
+function setValueWithEvents(idx, text) {
+  const el = deepQueryStamp(document, idx);
+  if (!el) return JSON.stringify({ error: 'Element [' + idx + '] not found. Run elements to re-index.' });
+
+  const tag = el.tagName.toLowerCase();
+  if (tag !== 'input' && tag !== 'textarea' && !el.isContentEditable) {
+    return JSON.stringify({ error: 'Element [' + idx + '] is not an input/textarea/contentEditable.' });
+  }
+
+  // ContentEditable elements
+  if (el.isContentEditable) {
+    el.focus();
+    el.textContent = text;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return JSON.stringify({ ok: true, value: el.textContent.slice(0, 200) });
+  }
+
+  // For React: use the native setter to bypass React's internal value tracker.
+  // React overrides el.value's setter — we need to call the original HTMLInputElement
+  // prototype setter so React's onChange actually fires.
+  var nativeSetter = tag === 'textarea'
+    ? Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
+    : Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+
+  el.focus();
+  nativeSetter.call(el, text);
+
+  // Dispatch input event (React listens for this via its event delegation)
+  el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+  // Dispatch change event (for Angular/Vue/vanilla)
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+
+  return JSON.stringify({ ok: true, value: el.value.slice(0, 200) });
+}
+
 function checkElement(idx) {
   const el = deepQueryStamp(document, idx);
   if (!el) return JSON.stringify({ error: 'Element [' + idx + '] not found' });
@@ -713,6 +755,83 @@ window.__tappi_detectVideo = detectVideo;
 window.__tappi_hideVideo = hideVideo;
 window.__tappi_showVideo = showVideo;
 
+// ─── Phase 9.096e: Native DOM event helpers ───
+
+/**
+ * After Electron's wc.paste() sets a value, React won't know.
+ * Re-set via the native HTMLInputElement setter and dispatch input + change events.
+ */
+function fireInputEvents(idx) {
+  var el = deepQueryStamp(document, idx);
+  if (!el) return JSON.stringify({ error: 'Element not found' });
+
+  var tag = el.tagName.toLowerCase();
+
+  // Use native setter for the current value to trigger React's tracker
+  if (tag === 'input' || tag === 'textarea') {
+    var nativeSetter = tag === 'textarea'
+      ? Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
+      : Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    nativeSetter.call(el, el.value); // Re-set to same value via native setter
+  }
+
+  el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+
+  return JSON.stringify({ ok: true, value: (el.value || el.textContent || '').slice(0, 200) });
+}
+
+/**
+ * Dispatch a DOM KeyboardEvent on the currently focused element.
+ * Used in dual-dispatch pattern alongside wc.sendInputEvent.
+ */
+function dispatchKeyEvent(type, key, code, modifiers) {
+  var opts = {
+    key: key,
+    code: code || key,
+    bubbles: true,
+    cancelable: true,
+    ctrlKey: (modifiers || []).includes('control'),
+    metaKey: (modifiers || []).includes('meta'),
+    shiftKey: (modifiers || []).includes('shift'),
+    altKey: (modifiers || []).includes('alt'),
+  };
+  var target = document.activeElement || document.body;
+  target.dispatchEvent(new KeyboardEvent(type, opts));
+  return JSON.stringify({ ok: true });
+}
+
+/**
+ * Dispatch DOM MouseEvents at a given point.
+ * Used in dual-dispatch pattern alongside wc.sendInputEvent for click.
+ */
+function clickAtPoint(x, y) {
+  var el = document.elementFromPoint(x, y);
+  if (!el) return JSON.stringify({ error: 'No element at (' + x + ', ' + y + ')' });
+
+  var opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 };
+  el.dispatchEvent(new MouseEvent('mousedown', opts));
+  el.dispatchEvent(new MouseEvent('mouseup', opts));
+  el.dispatchEvent(new MouseEvent('click', opts));
+
+  return JSON.stringify({ ok: true, tag: el.tagName.toLowerCase() });
+}
+
+/**
+ * Dispatch DOM hover MouseEvents at a given point.
+ * Used in dual-dispatch pattern alongside wc.sendInputEvent for hover.
+ */
+function hoverAtPoint(x, y) {
+  var el = document.elementFromPoint(x, y);
+  if (!el) return JSON.stringify({ error: 'No element at (' + x + ', ' + y + ')' });
+
+  el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: x, clientY: y }));
+  el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: x, clientY: y }));
+  el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y }));
+
+  return JSON.stringify({ ok: true, tag: el.tagName.toLowerCase() });
+}
+
 // ─── Expose to main process ───
 
 contextBridge.exposeInMainWorld('__tappi', {
@@ -720,9 +839,15 @@ contextBridge.exposeInMainWorld('__tappi', {
   getElementPosition: getElementPosition,
   focusElement: focusElement,
   checkElement: checkElement,
+  setValueWithEvents: setValueWithEvents,
   extractText: function(selector, grep) { return extractText(selector, grep); },
   clickElement: clickElement,
   getPageState: getPageState,
+  // Phase 9.096e: Native DOM event helpers
+  fireInputEvents: fireInputEvents,
+  dispatchKeyEvent: dispatchKeyEvent,
+  clickAtPoint: clickAtPoint,
+  hoverAtPoint: hoverAtPoint,
   // Phase 8.4.3: login state for polling
   getLoginState: function() {
     return JSON.stringify({

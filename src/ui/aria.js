@@ -1140,8 +1140,17 @@ async function sendMessage(text) {
 
 ariaSendBtn.addEventListener('click', () => {
   if (isStreaming) {
-    // Stop generation
-    window.aria.stopAgent();
+    // Phase 9.096e: If user typed something, interrupt with redirect; otherwise just stop
+    const redirectText = ariaInput.value.trim();
+    if (redirectText) {
+      ariaInput.value = '';
+      ariaInput.style.height = 'auto';
+      if (window.aria && window.aria.interruptAgent) {
+        window.aria.interruptAgent('main', null, redirectText);
+      }
+    } else {
+      window.aria.stopAgent();
+    }
     setStreamingState(false);
     return;
   }
@@ -1150,7 +1159,17 @@ ariaSendBtn.addEventListener('click', () => {
 
 ariaStopBtn.addEventListener('click', () => {
   if (isStreaming) {
-    window.aria.stopAgent();
+    // Phase 9.096e: If user typed something, interrupt with redirect; otherwise just stop
+    const redirectText = ariaInput.value.trim();
+    if (redirectText) {
+      ariaInput.value = '';
+      ariaInput.style.height = 'auto';
+      if (window.aria && window.aria.interruptAgent) {
+        window.aria.interruptAgent('main', null, redirectText);
+      }
+    } else {
+      window.aria.stopAgent();
+    }
     setStreamingState(false);
   }
 });
@@ -1158,7 +1177,20 @@ ariaStopBtn.addEventListener('click', () => {
 ariaInput.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
-    if (isStreaming) return;
+    if (isStreaming) {
+      // Phase 9.096e: If user typed something, interrupt with redirect; otherwise ignore
+      const redirectText = ariaInput.value.trim();
+      if (redirectText) {
+        ariaInput.value = '';
+        ariaInput.style.height = 'auto';
+        if (window.aria && window.aria.interruptAgent) {
+          window.aria.interruptAgent('main', null, redirectText);
+        }
+        setStreamingState(false);
+      }
+      // If no text, Enter during streaming is a no-op (Escape or stop btn to cancel)
+      return;
+    }
     sendMessage(ariaInput.value);
   }
   if (e.key === 'Escape' && isStreaming) {
@@ -1181,11 +1213,14 @@ function setStreamingState(streaming) {
   if (streaming) {
     ariaSendBtn.classList.add('hidden');
     ariaStopBtn.classList.remove('hidden');
-    ariaInput.disabled = true;
+    // Phase 9.096e: Keep input enabled so user can type a redirect message
+    ariaInput.disabled = false;
+    ariaInput.placeholder = 'Type to redirect, or press Stop…';
   } else {
     ariaStopBtn.classList.add('hidden');
     ariaSendBtn.classList.remove('hidden');
     ariaInput.disabled = false;
+    ariaInput.placeholder = 'Ask Aria anything…';
     streamBuffer = '';
     clearTimeout(_streamRenderTimer);
     ariaInput.focus();

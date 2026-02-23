@@ -309,17 +309,22 @@ Protocol — **Contract-First Parallel Work (Phase 9.096):**
 4. \`team_run_teammate\` — teammates receive contracts in their system prompt and MUST use them
 
 **Phase 4: Monitor & Merge**
-5. \`team_status\` — monitor progress
-6. \`worktree_merge\` — merge completed work (if using worktrees)
-7. \`team_validate\` — run build/test, check contract references
+5. \`team_status\` — monitor progress. Shows real-time worktree file counts (git scan), recent activity log per teammate, and passive file tracking. **Worktree file counts are ground truth** — they reflect actual files on disk regardless of how teammates wrote them (file_write, eval_js, exec, etc.).
+6. \`team_interrupt\` — redirect a teammate mid-task. After interrupting, wait 30-60s and check \`team_status\` before doing anything else.
+7. \`worktree_merge\` — merge completed work (if using worktrees)
+8. \`team_validate\` — run build/test, check contract references
 
 **Phase 5: Iterate (for large projects)**
-8. \`team_advance_phase\` — bump phase counter, write NEW contracts that build on real merged code
-9. Repeat from step 2 with the next batch of work
+9. \`team_advance_phase\` — bump phase counter, write NEW contracts that build on real merged code
+10. Repeat from step 2 with the next batch of work
+
+**Team lifecycle:** Teams auto-dissolve when all teammates finish (done or failed). You do NOT manually dissolve teams. Your job is to orchestrate, merge, and validate — cleanup is automatic.
 
 **Do NOT start writing code yourself or spawning teammates before writing contracts.** Contracts are the shared truth that prevents teammates from producing incompatible code.
 
 **CRITICAL: Once you start a team flow, FINISH IT.** Do NOT abandon a team mid-flow to use \`spawn_agent\` sub-agents instead. Teams have worktree isolation, contract enforcement, and merge validation — sub-agents don't. If you created a team, use it. \`spawn_agent\` is for non-coding tasks (research, file processing) — never use it as a substitute for team orchestration.
+
+**CRITICAL: Trust your teammates.** If \`team_status\` shows teammates are working with many tool calls, they ARE working. Do NOT conclude they are stuck based on low passive file counts alone — check the worktree file counts and recent activity log. Teammates often write files via eval_js or exec, which shows up in worktree scans but not passive counters.
 
 Simple single-file fixes or one-liner changes are fine to do directly without a team.
 
@@ -1014,6 +1019,8 @@ export function stopAgent() {
     activeRun.abort();
     activeRun = null;
   }
+  // Phase 9.096e: Cascade stop to all teammates
+  teamManager.freezeAllTeammates();
   agentProgressData = { running: false, elapsed: 0, toolCalls: 0, timeoutMs: 0 };
 }
 
@@ -1048,10 +1055,26 @@ export async function interruptMainSession(message: string): Promise<string> {
     addMessage(sessionId, { role: 'assistant' as const, content: savedPartial + '\n\n*(interrupted)*' });
   }
 
+  // Phase 9.096e: Cascade — freeze all teammates and collect their state
+  const teamState = teamManager.freezeAllTeammates();
+
+  // Build team context summary for the main agent's redirect
+  let teamContext = '';
+  if (teamState && teamState.teammates.length > 0) {
+    teamContext = '\n\n[TEAM STATE at time of interrupt]\n';
+    for (const tm of teamState.teammates) {
+      teamContext += `${tm.name} (${tm.status}): ${tm.filesWritten.length} files written, `;
+      teamContext += `${tm.worktreeFileCount} worktree files. `;
+      if (tm.lastActivity) teamContext += `Last: ${tm.lastActivity}. `;
+      teamContext += '\n';
+    }
+    teamContext += 'Teammates are frozen. You can re-invoke them with team_run_teammate or interrupt them with team_interrupt.\n';
+  }
+
   // Re-invoke with the redirect message (conversation history is preserved in the rolling window)
   const resumeOpts: AgentRunOptions = {
     ...savedOpts,
-    userMessage: message,
+    userMessage: message + teamContext,
   };
 
   // Fire-and-forget — the resumed run manages its own lifecycle

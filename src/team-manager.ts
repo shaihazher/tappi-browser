@@ -12,7 +12,7 @@ import { createTools } from './tool-registry';
 import type { BrowserContext } from './browser-tools';
 import { addMessage, clearHistory } from './conversation';
 import { purgeSession } from './output-buffer';
-import { cleanupSession, addProtectedPath, removeProtectedPath } from './shell-tools';
+import { cleanupSession, addProtectedPath, removeProtectedPath, clearContractFilePaths } from './shell-tools';
 import {
   initMailbox,
   sendMessage,
@@ -70,6 +70,7 @@ export interface TeamSession {
   contracts: ContractFile[];      // shared contract/interface files written by lead
   currentPhase: number;           // current spawn round (1-based)
   validationResults?: string;     // post-merge validation output
+  _autoDissolveScheduled?: boolean; // Phase 9.096e: prevents double auto-dissolve
 }
 
 export interface Teammate {
@@ -198,6 +199,25 @@ export function setTeamUpdateCallback(cb: TeamUpdateCallback): void {
 function notifyUpdate(teamId: string): void {
   const team = activeTeams.get(teamId);
   if (team && onTeamUpdate) onTeamUpdate(teamId, team);
+
+  // Phase 9.096e: Auto-dissolve when all teammates reach terminal state.
+  // Dissolve is housekeeping, not a lead decision. Fire it automatically.
+  if (team && team.status === 'active') {
+    const allTerminal = team.teammates.size > 0 &&
+      Array.from(team.teammates.values()).every(t => t.status === 'done' || t.status === 'failed');
+    if (allTerminal && !team._autoDissolveScheduled) {
+      team._autoDissolveScheduled = true;
+      // Small delay to let final UI updates land before cleanup
+      setTimeout(async () => {
+        try {
+          console.log(`[team] Auto-dissolving ${teamId} — all teammates finished.`);
+          await dissolveTeam(teamId);
+        } catch (e: any) {
+          console.error(`[team] Auto-dissolve failed for ${teamId}:`, e?.message);
+        }
+      }, 2000);
+    }
+  }
 }
 
 // ─── Create Team ───
@@ -409,7 +429,7 @@ async function runTeammateSession(
       : baseConfig;
 
     const model = createModel(tmConfig);
-    const tools = createTools(browserCtx, sessionId, { developerMode: teamDevMode, llmConfig: tmConfig });
+    const tools = createTools(browserCtx, sessionId, { developerMode: teamDevMode, llmConfig: tmConfig, agentName: name });
 
     // Get unread messages for this teammate
     const unread = getUnreadMessages(teamId, name);
@@ -496,6 +516,24 @@ async function runTeammateSession(
                   teamBroadcast('team:mailbox-message', { from: name, to: '@lead', text: mailText });
                   pendingFileCount = 0;
                 }
+              }
+            }
+
+            // Phase 9.096e: Broaden passive file detection for eval_js and exec
+            if (toolName === 'eval_js') {
+              const js = (tr as any).args?.js || (tr as any).args?.code || '';
+              const writeMatch = js.match(/writeFileSync?\s*\(\s*['"`]([^'"`]+)['"`]/);
+              if (writeMatch) {
+                if (!teammate.filesWritten) teammate.filesWritten = [];
+                teammate.filesWritten.push(writeMatch[1]);
+              }
+            }
+            if (toolName === 'exec') {
+              const cmd = (tr as any).args?.command || '';
+              const redirectMatch = cmd.match(/(?:>>?|tee\s+)([^\s;|&>]+)/);
+              if (redirectMatch && redirectMatch[1] && !redirectMatch[1].startsWith('-')) {
+                if (!teammate.filesWritten) teammate.filesWritten = [];
+                teammate.filesWritten.push(redirectMatch[1]);
               }
             }
 
@@ -782,7 +820,7 @@ export async function interruptTeammate(teamId: string, name: string, message: s
     notifyUpdate(teamId);
   });
 
-  return `⚡ ${name} interrupted. Resuming with: "${message.slice(0, 80)}"`;
+  return `⚡ ${name} interrupted. Resuming with: "${message.slice(0, 80)}"\n⏳ Wait 30-60s, then call team_status to check progress.`;
 }
 
 interface TeammateResumeOptions {
@@ -856,6 +894,24 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
               if (filePath) {
                 if (!teammate.filesWritten) teammate.filesWritten = [];
                 teammate.filesWritten.push(filePath);
+              }
+            }
+
+            // Phase 9.096e: Broaden passive file detection for eval_js and exec
+            if (toolName === 'eval_js') {
+              const js = (tr as any).args?.js || (tr as any).args?.code || '';
+              const writeMatch = js.match(/writeFileSync?\s*\(\s*['"`]([^'"`]+)['"`]/);
+              if (writeMatch) {
+                if (!teammate.filesWritten) teammate.filesWritten = [];
+                teammate.filesWritten.push(writeMatch[1]);
+              }
+            }
+            if (toolName === 'exec') {
+              const cmd = (tr as any).args?.command || '';
+              const redirectMatch = cmd.match(/(?:>>?|tee\s+)([^\s;|&>]+)/);
+              if (redirectMatch && redirectMatch[1] && !redirectMatch[1].startsWith('-')) {
+                if (!teammate.filesWritten) teammate.filesWritten = [];
+                teammate.filesWritten.push(redirectMatch[1]);
               }
             }
           }
@@ -1166,6 +1222,29 @@ export async function validateIntegration(
   return lines.join('\n');
 }
 
+// ─── Worktree File Scanner (Phase 9.096e) ───
+
+/**
+ * Scan a worktree for new/modified files using `git status --porcelain`.
+ * Returns an array of file paths relative to the worktree root.
+ */
+function scanWorktreeFiles(worktreePath: string): { count: number; files: string[] } {
+  try {
+    const { execSync } = require('child_process');
+    const result = execSync('git status --porcelain', {
+      cwd: worktreePath,
+      encoding: 'utf-8',
+      timeout: 5000,
+    }).trim();
+    const files = result
+      ? result.split('\n').map((l: string) => l.slice(3).trim()).filter(Boolean)
+      : [];
+    return { count: files.length, files };
+  } catch {
+    return { count: 0, files: [] };
+  }
+}
+
 // ─── Team Status ───
 
 export function getTeamStatus(teamId: string): string {
@@ -1203,9 +1282,21 @@ export function getTeamStatus(teamId: string): string {
       : `${((Date.now() - tm.startedAt) / 1000).toFixed(0)}s`;
     const wtLabel = tm.worktreeBranch ? ` [${tm.worktreeBranch}]` : '';
     const toolCount = tm.toolsUsed.length;
-    const filesCount = tm.filesWritten?.length || 0;
+    const passiveFilesCount = tm.filesWritten?.length || 0;
     const lastTool = toolCount > 0 ? tm.toolsUsed[toolCount - 1] : '';
-    const activityStr = toolCount > 0 ? ` | ${toolCount} tools, ${filesCount} files${lastTool ? `, last: ${lastTool}` : ''}` : '';
+
+    // Phase 9.096e: Real worktree file scan
+    let worktreeScan: { count: number; files: string[] } = { count: 0, files: [] };
+    if (tm.worktreePath) {
+      worktreeScan = scanWorktreeFiles(tm.worktreePath);
+    }
+    const filesDisplay = tm.worktreePath
+      ? `${worktreeScan.count} worktree files, ${passiveFilesCount} passive`
+      : `${passiveFilesCount} files`;
+
+    const activityStr = toolCount > 0
+      ? ` | ${toolCount} tools, ${filesDisplay}${lastTool ? `, last: ${lastTool}` : ''}`
+      : '';
     lines.push(`${emoji} ${tm.name}${wtLabel} (${tm.status}, ${dur}${activityStr}): ${tm.role}`);
     if (tm.currentTaskText) {
       lines.push(`   → Task: ${tm.currentTaskText.slice(0, 80)}`);
@@ -1213,13 +1304,25 @@ export function getTeamStatus(teamId: string): string {
       const t = getTask(teamId, tm.currentTaskId);
       if (t) lines.push(`   → Working on: ${t.title}`);
     }
-    if (tm.worktreePath) lines.push(`   📁 Worktree: ${tm.worktreePath}`);
+    if (tm.worktreePath) {
+      lines.push(`   📁 Worktree: ${tm.worktreePath}`);
+      if (worktreeScan.count > 0) {
+        const shown = worktreeScan.files.slice(0, 5).map(f => f.split('/').pop() || f).join(', ');
+        const extra = worktreeScan.count > 5 ? ` (+${worktreeScan.count - 5} more)` : '';
+        lines.push(`   📄 Changed files: ${shown}${extra}`);
+      }
+    }
     // Phase 9.096d: Show pulse activity and interrupt hint for working teammates
     if (tm.status === 'working') {
       if (tm.lastPulse) {
         lines.push(`   🫀 ${tm.lastPulse}`);
       }
       lines.push(`   💡 Use team_interrupt to redirect if needed`);
+    }
+    // Phase 9.096e: Show recent activity log entries (last 3)
+    if (tm._activityLog && tm._activityLog.length > 0) {
+      const recent = tm._activityLog.slice(-3);
+      lines.push(`   📋 Recent: ${recent.map(e => e.slice(0, 60)).join(' | ')}`);
     }
     if (tm.error) lines.push(`   Error: ${tm.error}`);
   }
@@ -1257,6 +1360,9 @@ export function getTeamStatus(teamId: string): string {
 export async function dissolveTeam(teamId: string): Promise<string> {
   const team = activeTeams.get(teamId);
   if (!team) return `❌ Team "${teamId}" not found.`;
+
+  // Phase 9.096e: Clear contract file path registrations
+  clearContractFilePaths();
 
   // Collect summary
   const taskSummary = getTeamSummary(teamId);
@@ -1424,6 +1530,9 @@ export interface TeamStatusUI {
     lastTool?: string;          // passive: last tool called
     elapsed?: number;           // seconds since start
     filesWritten?: number;      // passive: files created/modified
+    // Phase 9.096e: real worktree scan + recent activity
+    worktreeFiles?: number;     // real count from git status --porcelain
+    recentActivity?: string[];  // last 3 activity log entries
   }>;
   taskCount: number;
   doneCount: number;
@@ -1452,6 +1561,8 @@ export function getTeamStatusUI(): TeamStatusUI | null {
         ? Math.floor((tm.finishedAt - tm.startedAt) / 1000)
         : Math.floor((Date.now() - tm.startedAt) / 1000);
       const lastTool = tm.toolsUsed.length > 0 ? tm.toolsUsed[tm.toolsUsed.length - 1] : undefined;
+      // Phase 9.096e: Scan worktree for real file counts
+      const wtScan = tm.worktreePath ? scanWorktreeFiles(tm.worktreePath) : { count: 0, files: [] };
       return {
         name: tm.name,
         role: tm.role,
@@ -1463,6 +1574,8 @@ export function getTeamStatusUI(): TeamStatusUI | null {
         lastTool,
         elapsed,
         filesWritten: tm.filesWritten?.length || 0,
+        worktreeFiles: wtScan.count,
+        recentActivity: tm._activityLog ? tm._activityLog.slice(-3) : [],
       };
     }),
     taskCount: tasks.length,
@@ -1473,6 +1586,61 @@ export function getTeamStatusUI(): TeamStatusUI | null {
     contractCount: team.contracts.length,
     currentPhase: team.currentPhase,
   };
+}
+
+// ─── Phase 9.096e: Cascading Human Interrupt ───
+
+export interface FrozenTeamState {
+  teamId: string;
+  teammates: Array<{
+    name: string;
+    status: string;
+    filesWritten: string[];
+    worktreeFileCount: number;
+    lastActivity: string;
+    toolsUsed: number;
+  }>;
+}
+
+/**
+ * Freeze all active teammates — abort their streams, mark as 'interrupted',
+ * and preserve all state (history, files, logs) for potential resume.
+ * Called by stopAgent() and interruptMainSession() to cascade human interrupt.
+ */
+export function freezeAllTeammates(): FrozenTeamState | null {
+  const team = getActiveTeam();
+  if (!team) return null;
+
+  const frozenTeammates: FrozenTeamState['teammates'] = [];
+
+  for (const [, tm] of team.teammates) {
+    if (tm.status === 'working') {
+      // Abort the stream but preserve all state
+      tm.abortController?.abort();
+      tm.status = 'interrupted';
+      // Don't clear _activityLog, filesWritten, partialResponse, conversationHistory
+    }
+
+    // Scan worktree for real file count
+    const wtFiles = tm.worktreePath ? scanWorktreeFiles(tm.worktreePath) : { count: 0, files: [] };
+    const lastLog = tm._activityLog?.slice(-1)[0] || '';
+
+    frozenTeammates.push({
+      name: tm.name,
+      status: tm.status,
+      filesWritten: tm.filesWritten || [],
+      worktreeFileCount: wtFiles.count,
+      lastActivity: lastLog,
+      toolsUsed: tm.toolsUsed.length,
+    });
+  }
+
+  // Cancel auto-dissolve if scheduled
+  team._autoDissolveScheduled = false;
+
+  notifyUpdate(team.id);
+
+  return { teamId: team.id, teammates: frozenTeammates };
 }
 
 // ─── Cleanup ───

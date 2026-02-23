@@ -120,11 +120,30 @@ export async function pageClick(wc: WebContents, index: number): Promise<string>
 }
 
 export async function pageType(wc: WebContents, index: number, text: string): Promise<string> {
-  // 1. Focus the element
+  // Phase 9.096e: Use setValueWithEvents for React/Angular/Vue compatibility.
+  // This uses the native HTMLInputElement.prototype.value setter to bypass
+  // React's internal value tracker, then dispatches InputEvent + change Event.
+  const setResult = await callPreload(wc, 'setValueWithEvents', index, text);
+  if (setResult.error) {
+    // Fallback to legacy char-by-char for non-standard elements
+    return await pageTypeLegacy(wc, index, text);
+  }
+
+  const newValue = setResult.value || '';
+  if (newValue.includes(text.slice(0, 20))) {
+    return `Typed "${text}" into [${index}]`;
+  } else {
+    // setValueWithEvents set it but verify shows different — React might have reformatted (e.g. credit card auto-format)
+    return `Typed "${text}" into [${index}] — value is now: "${newValue}"`;
+  }
+}
+
+/** Legacy char-by-char typing via Chromium input events. Fallback for contentEditable/non-standard. */
+async function pageTypeLegacy(wc: WebContents, index: number, text: string): Promise<string> {
   const focusResult = await callPreload(wc, 'focusElement', index);
   if (focusResult.error) return focusResult.error;
 
-  // 2. Clear existing content (select all + delete)
+  // Clear existing content
   wc.sendInputEvent({ type: 'keyDown', keyCode: 'a', modifiers: ['meta'] } as any);
   wc.sendInputEvent({ type: 'keyUp', keyCode: 'a', modifiers: ['meta'] } as any);
   await sleep(30);
@@ -132,15 +151,16 @@ export async function pageType(wc: WebContents, index: number, text: string): Pr
   wc.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' } as any);
   await sleep(30);
 
-  // 3. Type each character via real input events
   for (const char of text) {
     wc.sendInputEvent({ type: 'char', keyCode: char } as any);
-    // Small delay between chars for React/Angular controlled inputs
     await sleep(5);
   }
 
-  // 4. Verify
   await sleep(50);
+  // Dual dispatch: fire InputEvent + change so React picks up the final value
+  // even if Chromium's char events didn't trigger React's synthetic listener.
+  await callPreload(wc, 'fireInputEvents', index);
+
   const check = await callPreload(wc, 'checkElement', index);
   if (check.error) return check.error;
 
@@ -161,8 +181,11 @@ export async function pagePaste(wc: WebContents, index: number, content: string)
   clipboard.writeText(content);
   wc.paste();
 
-  // 3. Verify
+  // 3. Fire DOM input/change events so React/Angular/Vue pick up the pasted value
   await sleep(100);
+  await callPreload(wc, 'fireInputEvents', index);
+
+  // 4. Verify
   const check = await callPreload(wc, 'checkElement', index);
   if (check.error) return check.error;
 
@@ -259,6 +282,31 @@ export async function pageKeys(wc: WebContents, sequence: string | string[]): Pr
     f7: 'F7', f8: 'F8', f9: 'F9', f10: 'F10', f11: 'F11', f12: 'F12',
   };
 
+  // Dual dispatch: map Electron keyCode names → DOM KeyboardEvent key/code values
+  // (DOM spec uses different names from Electron/Chromium internal names)
+  const domKeyMap: Record<string, { key: string; code: string }> = {
+    Return:   { key: 'Enter',      code: 'Enter' },
+    Tab:      { key: 'Tab',        code: 'Tab' },
+    Escape:   { key: 'Escape',     code: 'Escape' },
+    Backspace:{ key: 'Backspace',  code: 'Backspace' },
+    Delete:   { key: 'Delete',     code: 'Delete' },
+    Up:       { key: 'ArrowUp',    code: 'ArrowUp' },
+    Down:     { key: 'ArrowDown',  code: 'ArrowDown' },
+    Left:     { key: 'ArrowLeft',  code: 'ArrowLeft' },
+    Right:    { key: 'ArrowRight', code: 'ArrowRight' },
+    Home:     { key: 'Home',       code: 'Home' },
+    End:      { key: 'End',        code: 'End' },
+    PageUp:   { key: 'PageUp',     code: 'PageUp' },
+    PageDown: { key: 'PageDown',   code: 'PageDown' },
+    ' ':      { key: ' ',          code: 'Space' },
+    F1: { key: 'F1', code: 'F1' }, F2: { key: 'F2', code: 'F2' },
+    F3: { key: 'F3', code: 'F3' }, F4: { key: 'F4', code: 'F4' },
+    F5: { key: 'F5', code: 'F5' }, F6: { key: 'F6', code: 'F6' },
+    F7: { key: 'F7', code: 'F7' }, F8: { key: 'F8', code: 'F8' },
+    F9: { key: 'F9', code: 'F9' }, F10: { key: 'F10', code: 'F10' },
+    F11: { key: 'F11', code: 'F11' }, F12: { key: 'F12', code: 'F12' },
+  };
+
   const modMap: Record<string, string> = {
     ctrl: 'control', control: 'control',
     cmd: 'meta', meta: 'meta', command: 'meta',
@@ -273,10 +321,15 @@ export async function pageKeys(wc: WebContents, sequence: string | string[]): Pr
 
     // Check if it's a special key name (enter, tab, etc.)
     if (keyMap[lower]) {
-      wc.sendInputEvent({ type: 'keyDown', keyCode: keyMap[lower] } as any);
-      wc.sendInputEvent({ type: 'keyUp', keyCode: keyMap[lower] } as any);
+      const electronKey = keyMap[lower];
+      wc.sendInputEvent({ type: 'keyDown', keyCode: electronKey } as any);
+      wc.sendInputEvent({ type: 'keyUp', keyCode: electronKey } as any);
       pressed++;
       await sleep(20);
+      // Dual dispatch: also fire DOM KeyboardEvent for React/Angular/Vue
+      const domKey = domKeyMap[electronKey] || { key: electronKey, code: electronKey };
+      await callPreload(wc, 'dispatchKeyEvent', 'keydown', domKey.key, domKey.code, []);
+      await callPreload(wc, 'dispatchKeyEvent', 'keyup', domKey.key, domKey.code, []);
       continue;
     }
 
@@ -300,6 +353,10 @@ export async function pageKeys(wc: WebContents, sequence: string | string[]): Pr
         wc.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers } as any);
         pressed++;
         await sleep(20);
+        // Dual dispatch: also fire DOM KeyboardEvent with modifier flags
+        const domComboKey = domKeyMap[key] || { key: key, code: key };
+        await callPreload(wc, 'dispatchKeyEvent', 'keydown', domComboKey.key, domComboKey.code, modifiers);
+        await callPreload(wc, 'dispatchKeyEvent', 'keyup', domComboKey.key, domComboKey.code, modifiers);
       }
       continue;
     }
@@ -362,14 +419,20 @@ export async function pageScreenshot(wc: WebContents, filePath?: string): Promis
 }
 
 export async function pageClickXY(wc: WebContents, x: number, y: number): Promise<string> {
+  // Chromium-native: works for canvas apps, games, native Chromium widgets
   wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 } as any);
   await sleep(30);
   wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 } as any);
+  // DOM-native: works for React, Angular, Vue, vanilla JS event listeners
+  await callPreload(wc, 'clickAtPoint', x, y);
   return `Clicked at (${x}, ${y})`;
 }
 
 export async function pageHoverXY(wc: WebContents, x: number, y: number): Promise<string> {
+  // Chromium-native: moves the OS-level cursor, triggers Chromium hover states
   wc.sendInputEvent({ type: 'mouseMove', x, y } as any);
+  // DOM-native: fires mouseover/mouseenter/mousemove for JS framework listeners
+  await callPreload(wc, 'hoverAtPoint', x, y);
   return `Hovered at (${x}, ${y})`;
 }
 

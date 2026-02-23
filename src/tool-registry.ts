@@ -1310,7 +1310,7 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
 
 /**
  * Team tools — only created when Coding Mode + Developer Mode are both ON.
- * Lead gets all 6 tools. Teammates get 4 (no create/dissolve).
+ * Lead gets team tools (no dissolve — auto-handled). Teammates get 4 (no create).
  */
 function createTeamTools(
   sessionId: string,
@@ -1491,35 +1491,10 @@ function createTeamTools(
       },
     });
 
-    tools.team_dissolve = tool({
-      description: 'End the team session. Compiles final report, shuts down all teammates. Only the lead can dissolve a team. Run team_validate first to check integration.',
-      inputSchema: z.object({
-        team_id: z.string().optional().describe('Team ID (default: active team)'),
-        force: z.boolean().optional().describe('Suppress the running-teammates warning (default: false). Pass true when you intentionally want to dissolve while teammates are still working.'),
-      }),
-      execute: async ({ team_id, force }: { team_id?: string; force?: boolean }) => {
-        const tid = resolveTeamId(team_id);
-        if (!tid) return '❌ No active team.';
-        // Soft warning: teammates still running
-        let runningSuffix = '';
-        if (!force) {
-          const team = teamManager.getTeam(tid);
-          if (team) {
-            const running = Array.from(team.teammates.values()).filter(t => t.status === 'working');
-            if (running.length > 0) {
-              const names = running.map(t => t.name).join(', ');
-              runningSuffix = `\n\n⚠️ ${names} ${running.length === 1 ? 'was' : 'were'} still running and ${running.length === 1 ? 'has' : 'have'} been killed. Dissolving with active teammates discards their in-progress work. Pass force=true to suppress this warning.`;
-            }
-          }
-        }
-        // Clear contract file registrations on dissolve
-        shellTools.clearContractFilePaths();
-        const result = await teamManager.dissolveTeam(tid);
-        try { browserCtx.window.webContents.send('team:updated', null); } catch {}
-        try { const aw = browserCtx.tabManager.ariaWebContents; if (aw && !aw.isDestroyed()) aw.send('team:updated', null); } catch {}
-        return result + runningSuffix;
-      },
-    });
+    // Phase 9.096e: team_dissolve removed from lead tools. Dissolve is internal
+    // housekeeping — fires automatically when all teammates reach terminal state.
+    // User can hard-abort via UI button (IPC: team:abort) which calls dissolveTeam directly.
+    // The lead should NEVER decide to destroy its own team.
 
     // ─── Phase 9.096: Contract-First Tools (Lead only) ───
 
@@ -1551,7 +1526,7 @@ function createTeamTools(
     });
 
     tools.team_validate = tool({
-      description: 'Run post-merge integration validation. Checks: (1) all contracts are referenced by teammate code, (2) no file conflicts between teammates, (3) optionally runs a build/test command. Call this AFTER teammates finish and worktrees are merged, BEFORE team_dissolve.',
+      description: 'Run post-merge integration validation. Checks: (1) all contracts are referenced by teammate code, (2) no file conflicts between teammates, (3) optionally runs a build/test command. Call this AFTER teammates finish and worktrees are merged.',
       inputSchema: z.object({
         command: z.string().optional().describe('Build/test command to run (e.g. "npm run build", "python -m pytest", "go build ./..."). Runs in the working directory with 60s timeout.'),
         team_id: z.string().optional().describe('Team ID (default: active team)'),
