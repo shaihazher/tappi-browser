@@ -122,8 +122,8 @@ export function fileRead(filePath: string, options?: FileReadOptions): string {
 
 // ─── Internal helpers for smart reading ───
 
-const GREP_TOKEN_CAP = 2_000; // max tokens for grep results — same budget as file_read
-const GREP_CHAR_CAP = GREP_TOKEN_CAP * CHARS_PER_TOKEN; // ~8KB
+const GREP_TOKEN_CAP = 500; // max tokens for grep results — tight; refine query if capped
+const GREP_CHAR_CAP = GREP_TOKEN_CAP * CHARS_PER_TOKEN; // ~2KB
 
 function countLines(filePath: string): number {
   const buf = fs.readFileSync(filePath);
