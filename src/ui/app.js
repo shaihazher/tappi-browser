@@ -1237,7 +1237,7 @@ window._toggleToolDetailApp = function(idx, toolIdx) {
 };
 
 // Subtask start
-window.tappi?.onDeepSubtaskStart((data) => {
+window.tappi?.onDeepSubtaskStart?.((data) => {
   const { index } = data;
   const el = document.getElementById('deep-step-' + index);
   const status = document.getElementById('deep-status-' + index);
@@ -1270,7 +1270,7 @@ window.tappi?.onDeepSubtaskStart((data) => {
 });
 
 // Subtask done
-window.tappi?.onDeepSubtaskDone((data) => {
+window.tappi?.onDeepSubtaskDone?.((data) => {
   const { index, status, duration, error } = data;
   const el = document.getElementById('deep-step-' + index);
   const statusEl = document.getElementById('deep-status-' + index);
@@ -1307,7 +1307,7 @@ window.tappi?.onDeepSubtaskDone((data) => {
 
 // Subtask stream chunk — render with markdown
 let _deepStreamTimers = {};
-window.tappi?.onDeepStreamChunk((data) => {
+window.tappi?.onDeepStreamChunk?.((data) => {
   const { index, chunk } = data;
   const stream = document.getElementById('deep-stream-' + index);
   if (!stream) return;
@@ -1329,7 +1329,7 @@ window.tappi?.onDeepStreamChunk((data) => {
 // Deep mode reasoning / thinking chips (per-subtask)
 let _deepThinkingChipsSidebar = {};
 if (window.tappi?.onDeepReasoningChunk) {
-  window.tappi?.onDeepReasoningChunk(({ index, text, done }) => {
+  window.tappi?.onDeepReasoningChunk?.(({ index, text, done }) => {
     if (index == null) return;
     const stream = document.getElementById('deep-stream-' + index);
     if (!stream) return;
@@ -1367,7 +1367,7 @@ if (window.tappi?.onDeepReasoningChunk) {
 }
 
 // Tool results as compact chips (Claude.ai-inspired)
-window.tappi?.onDeepToolResult((data) => {
+window.tappi?.onDeepToolResult?.((data) => {
   const { index, toolName, display } = data;
   const toolsDiv = document.getElementById('deep-tools-' + index);
   if (!toolsDiv) return;
@@ -1402,7 +1402,7 @@ window.tappi?.onDeepToolResult((data) => {
 });
 
 // Deep mode complete — append summary + download button to the existing plan card
-window.tappi?.onDeepComplete((data) => {
+window.tappi?.onDeepComplete?.((data) => {
   const { mode, durationSeconds, outputDir, outputDirAbsolute, aborted, completedSteps, totalSteps, finalOutput } = data;
   const statusStr = aborted ? '⚠️ Aborted' : '✅ Complete';
 
