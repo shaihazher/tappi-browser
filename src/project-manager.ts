@@ -68,6 +68,27 @@ export function getProjectByWorkingDir(workingDir: string): Project | null {
   return row ?? null;
 }
 
+export function getProjectByName(name: string): Project | null {
+  const row = getDb().prepare(
+    `SELECT * FROM projects WHERE name = ? AND archived = 0 ORDER BY updated_at DESC LIMIT 1`
+  ).get(name) as Project | undefined;
+  return row ?? null;
+}
+
+/**
+ * Find an existing project by name or working_dir, or return null.
+ * Used to prevent duplicate project creation.
+ */
+export function findExistingProject(name: string, workingDir?: string): Project | null {
+  // Try working_dir first (more specific match)
+  if (workingDir) {
+    const byDir = getProjectByWorkingDir(workingDir);
+    if (byDir) return byDir;
+  }
+  // Then try name
+  return getProjectByName(name);
+}
+
 export function listProjects(includeArchived = false): Project[] {
   const db = getDb();
   if (includeArchived) {
@@ -210,10 +231,13 @@ export function buildProjectContext(projectId: string): string {
   if (!project) return '';
 
   const lines: string[] = [
-    `[Project: ${project.name}]`,
+    `[Active Project: ${project.name}]`,
   ];
 
-  if (project.working_dir) lines.push(`Dir: ${project.working_dir}`);
+  if (project.working_dir) {
+    lines.push(`Dir: ${project.working_dir}`);
+    lines.push(`⚠️ SCOPE: All file operations and shell commands for this conversation are scoped to ${project.working_dir}. Do not access or modify files in other project directories.`);
+  }
   if (project.description) lines.push(`Description: ${project.description}`);
 
   // Recent artifacts (last 10)

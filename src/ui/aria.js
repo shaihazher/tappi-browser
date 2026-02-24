@@ -693,8 +693,22 @@ function showNewProjectInput() {
     if (!name) { input.focus(); return; }
     row.remove();
     try {
-      await window.aria.createProject(name, '', '');
-      // projects:updated event will refresh the sidebar, but reload now for instant feedback
+      const project = await window.aria.createProject(name, '', '');
+      if (project && project.id) {
+        // Auto-create a conversation under the new project and switch to it
+        expandedProjects[project.id] = true;
+        const convId = await window.aria.newProjectConversation(project.id);
+        if (convId) {
+          currentConversationId = convId;
+          await loadConversations();
+          setActiveConvInSidebar(convId);
+          showWelcome();
+          updateTokenBar(0, 0);
+          ariaInput.focus();
+          return;
+        }
+      }
+      // Fallback: just refresh sidebar
       await loadConversations();
     } catch (e) {
       console.error('[aria] createProject error:', e);
@@ -1471,10 +1485,17 @@ window.aria.onConversationUpdated(async data => {
 });
 
 // Phase 9.09: Real-time project updates pushed from main process
+// Debounce projects:updated to avoid redundant sidebar reloads
+// (multiple IPC calls fire this in quick succession during project creation)
+let _projectsUpdateTimer = null;
 if (window.aria.onProjectsUpdated) {
-  window.aria.onProjectsUpdated(async () => {
-    await loadConversations();
-    setActiveConvInSidebar(currentConversationId);
+  window.aria.onProjectsUpdated(() => {
+    if (_projectsUpdateTimer) clearTimeout(_projectsUpdateTimer);
+    _projectsUpdateTimer = setTimeout(async () => {
+      _projectsUpdateTimer = null;
+      await loadConversations();
+      setActiveConvInSidebar(currentConversationId);
+    }, 150);
   });
 }
 

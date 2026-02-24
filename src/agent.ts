@@ -9,6 +9,9 @@
 import { streamText, generateText, stepCountIs } from 'ai';
 import type { BrowserWindow, WebContents } from 'electron';
 import { EventEmitter } from 'events';
+import * as path from 'path';
+import * as os from 'os';
+import * as fs from 'fs';
 import { createModel, buildProviderOptions, getModelConfig, type LLMConfig } from './llm-client';
 import { createTools, TOOL_USAGE_GUIDE } from './tool-registry';
 import * as browserTools from './browser-tools';
@@ -419,13 +422,13 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
 
   try {
     const model = createModel(llmConfig);
-    const tools = createTools(browserCtx, sessionId, { developerMode, llmConfig, codingMode, worktreeIsolation, agentBrowsingDataAccess, conversationId });
     const browserContext = assembleContext(browserCtx, llmConfig);
 
-    // ─── Project context injection (Phase 9.07) ────────────────────────────
+    // ─── Project context injection (Phase 9.07 / 9.099) ────────────────────
     // If the current conversation has a project_id, inject a compact project
-    // context block (~200-300 tokens) so the agent knows about project state.
+    // context block so the agent knows about project state AND scope CWD.
     let projectContextBlock = '';
+    let projectWorkingDir = '';
     if (conversationId) {
       try {
         const row = getDb().prepare(
@@ -433,12 +436,25 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
         ).get(conversationId) as { project_id: string | null } | undefined;
         if (row?.project_id) {
           projectContextBlock = buildProjectContext(row.project_id);
+          // Resolve the project's working_dir for CWD scoping
+          const { getProject: getProj } = require('./project-manager');
+          const proj = getProj(row.project_id);
+          if (proj?.working_dir) {
+            const expandedDir = proj.working_dir.startsWith('~/')
+              ? path.join(os.homedir(), proj.working_dir.slice(2))
+              : proj.working_dir === '~' ? os.homedir() : proj.working_dir;
+            if (fs.existsSync(expandedDir)) {
+              projectWorkingDir = expandedDir;
+            }
+          }
         }
       } catch (e: any) {
         // Non-fatal — project context is optional
         console.error('[agent] Failed to inject project context:', e?.message);
       }
     }
+
+    const tools = createTools(browserCtx, sessionId, { developerMode, llmConfig, codingMode, worktreeIsolation, agentBrowsingDataAccess, conversationId, projectWorkingDir });
 
     // ─── Coding Memory Bootstrap (Phase coding-memory) ────────────────────
     // When in coding mode, check if the active team's project dir (or cwd) has
@@ -447,7 +463,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
     if (codingMode) {
       try {
         const activeTeam = teamManager.getActiveTeam();
-        const projectDir = activeTeam?.workingDir || process.cwd();
+        const projectDir = activeTeam?.workingDir || projectWorkingDir || process.cwd();
         const memCtx = bootstrapContext(projectDir);
         if (memCtx) {
           codingMemoryContext = '\n\n' + memCtx;

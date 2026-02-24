@@ -56,6 +56,8 @@ import {
   getArtifacts,
   linkConversation as linkConvToProject,
   getProjectConversations,
+  findExistingProject,
+  updateProject as updateProjectRecord,
 } from './project-manager';
 // Phase 8.6: Self-Capture
 import { captureCleanupOnQuit, getRecordingStatus, handleRecord } from './capture-tools';
@@ -948,6 +950,17 @@ function createWindow() {
   });
 
   ipcMain.handle('projects:create', (_e, name: string, workingDir: string, description?: string) => {
+    // Dedup: check for existing project with same name or working_dir
+    const existing = findExistingProject(name, workingDir || undefined);
+    if (existing) {
+      // Update working_dir/description if they were missing on the existing project
+      const updates: any = {};
+      if (workingDir && !existing.working_dir) updates.working_dir = workingDir;
+      if (description && !existing.description) updates.description = description;
+      if (Object.keys(updates).length > 0) updateProjectRecord(existing.id, updates);
+      try { tabManager?.ariaWebContents?.send('projects:updated'); } catch {}
+      return getProject(existing.id) || existing;
+    }
     const project = createProject(name, workingDir || '', description);
     // Notify Aria tab that projects changed (Phase 9.09)
     try { tabManager?.ariaWebContents?.send('projects:updated'); } catch {}

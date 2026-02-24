@@ -52,6 +52,7 @@ export interface ToolRegistryOptions {
   worktreeIsolation?: boolean; // Phase 8.39: git worktree isolation enabled
   repoPath?: string;           // Phase 8.39: current repo path for worktree tools
   conversationId?: string;     // Bug 4 fix: current conversation ID for project auto-linking
+  projectWorkingDir?: string;  // Phase 9.099: project-scoped CWD for exec/file tools
 }
 
 export function createTools(browserCtx: BrowserContext, sessionId = 'default', options?: ToolRegistryOptions) {
@@ -59,15 +60,21 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
   let _elementsCalledThisSession = false;   // track elements() calls for click/type/paste hints
   let _profileReadThisSession = false;      // track profile reads for update_user_profile hint
 
+  // Phase 9.099: Project-scoped default CWD. When a conversation belongs to a
+  // project with a working_dir, all exec/file tools use that as their default
+  // instead of ~/tappi-workspace/. This prevents cross-project bleed.
+  const projectCwd = options?.projectWorkingDir || '';
+
   /** Resolve a file path using the same logic as file-tools (~ expansion + workspace fallback). */
   function resolveFilePath(filePath: string): string {
     const HOME_DIR = os.homedir();
-    const WORKSPACE = path.join(HOME_DIR, 'tappi-workspace');
+    const FALLBACK_WORKSPACE = path.join(HOME_DIR, 'tappi-workspace');
     let expanded = filePath;
     if (filePath.startsWith('~/')) expanded = path.join(HOME_DIR, filePath.slice(2));
     else if (filePath === '~') expanded = HOME_DIR;
     if (path.isAbsolute(expanded)) return expanded;
-    return path.join(WORKSPACE, expanded);
+    // If a project working dir is set, resolve relative paths against it
+    return path.join(projectCwd || FALLBACK_WORKSPACE, expanded);
   }
 
   function getWC(tabIndex?: number): WebContents {
@@ -693,11 +700,11 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     file_list: tool({
-      description: 'List files and directories. Defaults to ~/tappi-workspace/.',
+      description: `List files and directories.${projectCwd ? ` Defaults to ${projectCwd}` : ' Defaults to ~/tappi-workspace/'}`,
       inputSchema: z.object({
         path: z.string().optional().describe('Directory path'),
       }),
-      execute: async ({ path }: { path?: string }) => fileTools.fileList(path || undefined),
+      execute: async ({ path: userPath }: { path?: string }) => fileTools.fileList(userPath || projectCwd || undefined),
     }),
 
     file_copy: tool({
@@ -1183,15 +1190,20 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
  * When OFF, these tool schemas are not sent to the LLM at all.
  */
 function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConfig?: LLMConfig, toolOptions?: ToolRegistryOptions) {
+  // Phase 9.099: Project-scoped CWD for shell commands
+  const shellProjectCwd = toolOptions?.projectWorkingDir || '';
+
   return {
     exec: tool({
-      description: 'Run a shell command. Output is captured — you see first 20 + last 20 lines. Use exec_grep to search full output. Default timeout: 30s. Default cwd: ~/tappi-workspace/.',
+      description: `Run a shell command. Output is captured — you see first 20 + last 20 lines. Use exec_grep to search full output. Default timeout: 30s.${shellProjectCwd ? ` Default cwd: ${shellProjectCwd}` : ' Default cwd: ~/tappi-workspace/'}`,
       inputSchema: z.object({
         command: z.string().describe('Shell command to run'),
-        cwd: z.string().optional().describe('Working directory (default: ~/tappi-workspace/)'),
+        cwd: z.string().optional().describe(`Working directory${shellProjectCwd ? ` (default: ${shellProjectCwd})` : ' (default: ~/tappi-workspace/)'}`),
         timeout: z.number().optional().describe('Timeout in milliseconds (default: 30000)'),
       }),
-      execute: async ({ command, cwd, timeout }: { command: string; cwd?: string; timeout?: number }) => {
+      execute: async ({ command, cwd: userCwd, timeout }: { command: string; cwd?: string; timeout?: number }) => {
+        // Phase 9.099: Use project CWD as default when available
+        const cwd = userCwd || shellProjectCwd || undefined;
         // Phase 9.096d: Soft warn when running file-modifying commands in team working dir (lead only)
         const activeTeam = teamManager.getActiveTeam();
         const execCallerName = toolOptions?.agentName;
@@ -1223,7 +1235,8 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
         command: z.string().describe('Shell command to run in background'),
         cwd: z.string().optional().describe('Working directory'),
       }),
-      execute: async ({ command, cwd }: { command: string; cwd?: string }) => {
+      execute: async ({ command, cwd: userCwd }: { command: string; cwd?: string }) => {
+        const cwd = userCwd || shellProjectCwd || undefined;
         return shellTools.shellExecBg(sessionId, command, { cwd });
       },
     }),
@@ -1884,7 +1897,7 @@ function createBrowsingDataTools() {
 function createProjectTools(conversationId?: string) {
   return {
     project_create: tool({
-      description: 'Create a new project to group related coding conversations. Detects project name from package.json, Cargo.toml, go.mod, or pyproject.toml if not provided.',
+      description: 'Create a new project to group related coding conversations. Detects project name from package.json, Cargo.toml, go.mod, or pyproject.toml if not provided. If a project with the same name or working_dir already exists, returns the existing one (updates working_dir/description if provided).',
       inputSchema: z.object({
         working_dir: z.string().describe('Absolute path to the project root directory'),
         name: z.string().optional().describe('Project name (auto-detected from manifests if omitted)'),
@@ -1893,20 +1906,52 @@ function createProjectTools(conversationId?: string) {
       execute: async ({ working_dir, name, description }: { working_dir: string; name?: string; description?: string }) => {
         try {
           const resolvedName = name || projectManager.detectProjectName(working_dir);
-          const project = projectManager.createProject(resolvedName, working_dir, description);
-          // Bug 4a fix: auto-link current conversation to the newly created project
+
+          // ── Dedup: reuse existing project with same name or working_dir ──
+          const existing = projectManager.findExistingProject(resolvedName, working_dir);
+          let project: ReturnType<typeof projectManager.createProject>;
+          let reused = false;
+
+          if (existing) {
+            project = existing;
+            reused = true;
+            // Update working_dir/description if the existing project was created without them (e.g. from UI)
+            const updates: any = {};
+            if (working_dir && !existing.working_dir) updates.working_dir = working_dir;
+            if (description && !existing.description) updates.description = description;
+            if (Object.keys(updates).length > 0) {
+              projectManager.updateProject(existing.id, updates);
+              project = projectManager.getProject(existing.id) || existing;
+            }
+          } else {
+            project = projectManager.createProject(resolvedName, working_dir, description);
+          }
+
+          // ── Link current conversation to project (only if not already linked to another project) ──
           let linkNote = '';
           if (conversationId) {
             try {
-              projectManager.linkConversation(conversationId, project.id);
-              linkNote = '\n  ✓ Current conversation linked to project';
+              const db = require('./database').getDb();
+              const row = db.prepare('SELECT project_id FROM conversations WHERE id = ?').get(conversationId) as { project_id: string | null } | undefined;
+              const currentProjectId = row?.project_id;
+
+              if (currentProjectId && currentProjectId !== project.id) {
+                // Conversation belongs to a different project — don't silently re-link
+                linkNote = `\n  ℹ Current conversation belongs to another project. Use project_link_conversation to move it, or create a new conversation under this project.`;
+              } else if (!currentProjectId) {
+                projectManager.linkConversation(conversationId, project.id);
+                linkNote = '\n  ✓ Current conversation linked to project';
+              } else {
+                linkNote = '\n  ✓ Current conversation already linked to this project';
+              }
             } catch (linkErr: any) {
               linkNote = `\n  ⚠ Auto-link failed: ${linkErr?.message || linkErr}`;
             }
           }
           // Phase 9.09: notify sidebar
           emitProjectsUpdated();
-          return `✓ Project created: "${project.name}" (ID: ${project.id})\n  Dir: ${project.working_dir || '(none)'}${linkNote}`;
+          const verb = reused ? 'Found existing' : 'Created';
+          return `✓ ${verb} project: "${project.name}" (ID: ${project.id})\n  Dir: ${project.working_dir || '(none)'}${linkNote}`;
         } catch (e: any) {
           return `❌ Failed to create project: ${e?.message || e}`;
         }
