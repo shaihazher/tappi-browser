@@ -258,7 +258,7 @@ export async function createTeam(
 
   // Initialize mailbox and task list
   initMailbox(teamId, '@lead');
-  initTaskList(teamId, true);
+  initTaskList(teamId);
 
   // Phase 8.39: Set up worktree manager if isolation enabled and in a git repo
   const resolvedDir = workingDir.replace(/^~/, process.env.HOME || process.env.USERPROFILE || '.');

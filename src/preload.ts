@@ -62,30 +62,6 @@ contextBridge.exposeInMainWorld('tappi', {
   },
   getAgentProgress: () => ipcRenderer.invoke('agent:get-progress'),
 
-  // Deep mode events
-  onDeepPlan: (callback: (data: any) => void) => {
-    ipcRenderer.on('agent:deep-plan', (_e, data) => callback(data));
-  },
-  onDeepSubtaskStart: (callback: (data: any) => void) => {
-    ipcRenderer.on('agent:deep-subtask-start', (_e, data) => callback(data));
-  },
-  onDeepSubtaskDone: (callback: (data: any) => void) => {
-    ipcRenderer.on('agent:deep-subtask-done', (_e, data) => callback(data));
-  },
-  onDeepStreamChunk: (callback: (data: any) => void) => {
-    ipcRenderer.on('agent:deep-stream-chunk', (_e, data) => callback(data));
-  },
-  onDeepToolResult: (callback: (data: any) => void) => {
-    ipcRenderer.on('agent:deep-tool-result', (_e, data) => callback(data));
-  },
-  onDeepReasoningChunk: (callback: (data: { index: number; text: string; done: boolean }) => void) => {
-    ipcRenderer.on('agent:deep-reasoning-chunk', (_e, data) => callback(data));
-  },
-  onDeepComplete: (callback: (data: any) => void) => {
-    ipcRenderer.on('agent:deep-complete', (_e, data) => callback(data));
-  },
-  saveDeepReport: (outputDirAbsolute: string, format?: string) => ipcRenderer.invoke('deep:save-report', outputDirAbsolute, format || 'md'),
-
   // Overlay management (hide/show BrowserViews for modals)
   showOverlay: () => ipcRenderer.send('overlay:show'),
   hideOverlay: () => ipcRenderer.send('overlay:hide'),

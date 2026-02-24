@@ -891,7 +891,7 @@ function renderMessages() {
     el.className = `agent-msg ${msg.role}`;
 
     if (msg._raw) {
-      // Raw HTML content (deep mode plan cards, etc.) — sanitize for safety
+      // Raw HTML content — sanitize for safety
       el.innerHTML = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(msg.content) : msg.content;
     } else if (msg.role === 'tool') {
       // Tool result — compact, dimmed
@@ -1179,35 +1179,11 @@ window.tappi.onAgentResponse((msg) => {
 });
 
 // ═══════════════════════════════════════════
-//  DEEP MODE
+//  (Deep mode removed — direct agent loop handles all tasks)
 // ═══════════════════════════════════════════
 
-// Toggle button in agent header
-const toggleDeepBtn = document.getElementById('toggle-deep');
-if (toggleDeepBtn) {
-  toggleDeepBtn.addEventListener('click', async () => {
-    const isOn = toggleDeepBtn.classList.contains('on');
-    const newVal = !isOn;
-    toggleDeepBtn.classList.toggle('on', newVal);
-    toggleDeepBtn.textContent = newVal ? '🧠 Deep' : '🧠 Off';
-    // Also sync with settings toggle
-    const settingsToggle = document.getElementById('toggle-deep-settings');
-    if (settingsToggle) updateToggle('toggle-deep-settings', newVal);
-    // Save to config
-    await window.tappi.saveConfig({ llm: { deepMode: newVal } });
-  });
-}
-
-// Track deep mode subtask text for rendering
-let deepSubtaskText = {};
-let _deepToolDataApp = {};
-let _deepTotalStepsApp = 0;
-let _deepDoneStepsApp = 0;
-let _deepOutputDirApp = null;
-let _deepParallelMode = false;
-
-// Deep mode plan — show subtask cards with progress bar
-window.tappi.onDeepPlan((data) => {
+// Deep mode plan — (dead code: preload no longer exposes deep mode events)
+window.tappi?.onDeepPlan?.((data) => {
   const { mode, subtasks, parallel } = data;
   deepSubtaskText = {};
   _deepToolDataApp = {};
@@ -1261,7 +1237,7 @@ window._toggleToolDetailApp = function(idx, toolIdx) {
 };
 
 // Subtask start
-window.tappi.onDeepSubtaskStart((data) => {
+window.tappi?.onDeepSubtaskStart((data) => {
   const { index } = data;
   const el = document.getElementById('deep-step-' + index);
   const status = document.getElementById('deep-status-' + index);
@@ -1294,7 +1270,7 @@ window.tappi.onDeepSubtaskStart((data) => {
 });
 
 // Subtask done
-window.tappi.onDeepSubtaskDone((data) => {
+window.tappi?.onDeepSubtaskDone((data) => {
   const { index, status, duration, error } = data;
   const el = document.getElementById('deep-step-' + index);
   const statusEl = document.getElementById('deep-status-' + index);
@@ -1331,7 +1307,7 @@ window.tappi.onDeepSubtaskDone((data) => {
 
 // Subtask stream chunk — render with markdown
 let _deepStreamTimers = {};
-window.tappi.onDeepStreamChunk((data) => {
+window.tappi?.onDeepStreamChunk((data) => {
   const { index, chunk } = data;
   const stream = document.getElementById('deep-stream-' + index);
   if (!stream) return;
@@ -1352,8 +1328,8 @@ window.tappi.onDeepStreamChunk((data) => {
 
 // Deep mode reasoning / thinking chips (per-subtask)
 let _deepThinkingChipsSidebar = {};
-if (window.tappi.onDeepReasoningChunk) {
-  window.tappi.onDeepReasoningChunk(({ index, text, done }) => {
+if (window.tappi?.onDeepReasoningChunk) {
+  window.tappi?.onDeepReasoningChunk(({ index, text, done }) => {
     if (index == null) return;
     const stream = document.getElementById('deep-stream-' + index);
     if (!stream) return;
@@ -1391,7 +1367,7 @@ if (window.tappi.onDeepReasoningChunk) {
 }
 
 // Tool results as compact chips (Claude.ai-inspired)
-window.tappi.onDeepToolResult((data) => {
+window.tappi?.onDeepToolResult((data) => {
   const { index, toolName, display } = data;
   const toolsDiv = document.getElementById('deep-tools-' + index);
   if (!toolsDiv) return;
@@ -1426,7 +1402,7 @@ window.tappi.onDeepToolResult((data) => {
 });
 
 // Deep mode complete — append summary + download button to the existing plan card
-window.tappi.onDeepComplete((data) => {
+window.tappi?.onDeepComplete((data) => {
   const { mode, durationSeconds, outputDir, outputDirAbsolute, aborted, completedSteps, totalSteps, finalOutput } = data;
   const statusStr = aborted ? '⚠️ Aborted' : '✅ Complete';
 
@@ -1498,7 +1474,7 @@ window._downloadReportApp = async function(format) {
   if (!_deepOutputDirApp) return;
   const fmt = format || 'md';
   try {
-    const result = await window.tappi.saveDeepReport(_deepOutputDirApp, fmt);
+    const result = await window.tappi?.saveDeepReport(_deepOutputDirApp, fmt);
     if (result && result.success) {
       chatMessages.push({ role: 'system', content: `📥 Report saved to ${result.path}`, timestamp: Date.now() });
       renderMessages();
@@ -1748,15 +1724,6 @@ function openSettings() {
       if (settingLocation) settingLocation.value = config.llm.location || '';
       // Thinking toggle
       updateToggle('toggle-thinking', config.llm.thinking !== false); // default ON
-      // Deep mode toggle (settings)
-      updateToggle('toggle-deep-settings', config.llm.deepMode !== false); // default ON
-      // Sync agent header deep toggle
-      const deepBtn = document.getElementById('toggle-deep');
-      if (deepBtn) {
-        const deepOn = config.llm.deepMode !== false;
-        deepBtn.classList.toggle('on', deepOn);
-        deepBtn.textContent = deepOn ? '🧠 Deep' : '🧠 Off';
-      }
       // Update provider-specific field visibility
       updateProviderFields(config.llm.provider || 'anthropic');
 
@@ -1891,7 +1858,6 @@ settingsSave.addEventListener('click', async () => {
       provider,
       model: settingModel.value,
       thinking: document.getElementById('toggle-thinking').classList.contains('on'),
-      deepMode: document.getElementById('toggle-deep-settings').classList.contains('on'),
       // Fix 4: codingMode is no longer in Settings — it's toggled via </> button in Aria tab.
       // Don't include it here so settings save doesn't accidentally overwrite it.
       // Cloud provider fields — always send so they get cleared if empty

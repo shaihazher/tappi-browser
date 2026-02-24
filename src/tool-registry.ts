@@ -189,7 +189,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     text: tool({
-      description: 'Extract text from the page. Default: ~1.5KB of page text. Use selector for targeted sections (up to 4KB). Use grep to search for specific passages across the entire page — returns matching lines with context. Use tab param to target a specific tab by index.',
+      description: 'Extract text from the page. Default: ~1.5KB of page text. Use selector for targeted sections (up to 4KB). Use grep to search passages across the entire page (literal or regex like "Wednesday|Thursday" or "/Wed|Thu/i") — returns matching lines with context. Use tab param to target a specific tab by index.',
       inputSchema: z.object({
         selector: z.string().optional().describe('CSS selector to scope extraction'),
         grep: z.string().optional().describe('Search page text for this string, return matching passages'),

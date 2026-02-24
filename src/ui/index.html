@@ -56,7 +56,6 @@
       <!-- Phase 8.40: elapsed timer + tool call counter (hidden when idle) -->
       <span id="agent-run-status" class="agent-run-status hidden" title="Elapsed time and tool calls"></span>
       <div id="agent-header-controls">
-        <button id="toggle-deep" class="agent-toggle-btn on" title="Deep Mode: decomposes complex tasks into focused subtasks">🧠 Deep</button>
         <button id="toggle-coding" class="agent-toggle-btn hidden" title="Coding Mode: enables agent team orchestration">&lt;/&gt;</button>
         <button id="agent-stop-btn" class="agent-header-btn hidden" title="Stop">⏹</button>
         <button id="agent-close" class="agent-header-btn" title="Close (Esc)">✕</button>
@@ -178,12 +177,6 @@
           <div class="settings-row toggle-row">
             <label title="Extended thinking / reasoning. ON = medium thinking budget (better for complex tasks, slower). OFF = no thinking (faster, cheaper).">Thinking</label>
             <button class="toggle-btn" id="toggle-thinking">ON</button>
-          </div>
-
-          <!-- Deep Mode toggle -->
-          <div class="settings-row toggle-row">
-            <label title="Deep Mode: auto-decomposes complex tasks into focused subtasks. Action mode for multi-step tasks, Research mode for gathering + compiling info.">Deep Mode</label>
-            <button class="toggle-btn" id="toggle-deep-settings">ON</button>
           </div>
 
           <!-- API Key row (shown for: anthropic, openai, google, openrouter, azure) -->

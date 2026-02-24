@@ -358,12 +358,35 @@ function extractText(selector, grep) {
   // Clean up: collapse empty lines
   const allLines = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim().split('\n');
 
-  // Grep mode: return lines containing the search term + surrounding context
+  // Grep mode: return lines containing the search term + surrounding context.
+  // Supports either:
+  // - literal substring (default)
+  // - regex patterns (e.g. "Wednesday|Thursday" or "/Wed|Thu/i")
   if (grep) {
-    const grepLower = grep.toLowerCase();
+    const raw = String(grep).trim();
     const matchLines = [];
+
+    let regex = null;
+    try {
+      // /pattern/flags form
+      const slashForm = raw.match(/^\/(.*)\/([a-z]*)$/i);
+      if (slashForm) {
+        const pattern = slashForm[1];
+        const flags = (slashForm[2] || '').replace(/[gy]/g, ''); // avoid stateful/global matching
+        regex = new RegExp(pattern, flags || 'i');
+      } else if (/[|.^$*+?()[\]{}]/.test(raw)) {
+        // Heuristic: treat regex-y strings as regex (helps weaker models)
+        regex = new RegExp(raw, 'i');
+      }
+    } catch {
+      regex = null;
+    }
+
+    const grepLower = raw.toLowerCase();
     for (let i = 0; i < allLines.length; i++) {
-      if (allLines[i].toLowerCase().includes(grepLower)) {
+      const line = allLines[i] || '';
+      const isMatch = regex ? regex.test(line) : line.toLowerCase().includes(grepLower);
+      if (isMatch) {
         // Include 1 line before and after for context
         const start = Math.max(0, i - 1);
         const end = Math.min(allLines.length - 1, i + 1);
@@ -372,7 +395,10 @@ function extractText(selector, grep) {
         }
       }
     }
-    if (matchLines.length === 0) return 'No text matching "' + grep + '" found on page.';
+
+    if (matchLines.length === 0) {
+      return 'No text matching "' + raw + '" found on page.';
+    }
     return matchLines.join('\n').slice(0, 4000);
   }
 

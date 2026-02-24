@@ -1,9 +1,8 @@
 /**
- * agent.ts — The agent loop (Phase 8.1: Deep Mode).
+ * agent.ts — The agent loop.
  *
  * Wires the agent panel to tools through an LLM via Vercel AI SDK v6.
- * Deep Mode: decomposes complex tasks into focused subtasks.
- * Two deep modes: Action (multi-step DO) and Research (gather + compile).
+ * Single direct agent loop — uses spawn_agent for parallel tasks when needed.
  */
 
 import { streamText, generateText, stepCountIs } from 'ai';
@@ -49,10 +48,8 @@ import {
 import { buildProjectContext } from './project-manager';
 import { getDb } from './database';
 
-import { decomposeTask } from './decompose';
 import { bootstrapContext } from './coding-memory';
 import * as teamManager from './team-manager';
-import { runDeepMode } from './subtask-runner';
 import { getLoginHint } from './login-state';
 import { profileManager } from './profile-manager';
 import { sessionManager } from './session-manager';
@@ -188,7 +185,7 @@ You NEVER see page content in your context. The page is opaque until you query i
 
 grep > scroll > read-all. Always.
 - \`elements({ grep: "checkout" })\` — searches ALL elements including offscreen
-- \`text({ grep: "refund policy" })\` — searches entire page text
+- \`text({ grep: "refund policy" })\` — searches entire page text (supports regex: \`"Wed|Thu"\` or \`"/Wed|Thu/i"\`)
 - \`history({ grep: "what I said" })\` — searches full conversation history
 - Never screenshot to understand a page. \`text\` and \`elements\` are faster and cheaper.
 - For canvas apps (Sheets, Docs, Figma), use \`keys\` instead of click/type.
@@ -211,7 +208,6 @@ interface AgentRunOptions {
   window: BrowserWindow;
   sessionId?: string;
   developerMode?: boolean;
-  deepMode?: boolean;  // true = decompose complex tasks, false = always direct
   codingMode?: boolean; // true = team tools + coding system prompt (Phase 8.38)
   worktreeIsolation?: boolean; // Phase 8.39: git worktree isolation enabled
   agentBrowsingDataAccess?: boolean; // Phase 8.4.1: grant agent access to history/bookmarks/downloads
@@ -263,7 +259,7 @@ function sendError(mainWindow: BrowserWindow, msg: string, extraWC?: WebContents
 }
 
 export async function runAgent(opts: AgentRunOptions): Promise<void> {
-  const { userMessage, browserCtx, llmConfig, window: mainWindow, sessionId = 'default', developerMode = false, deepMode = true, codingMode = false, worktreeIsolation = true, agentBrowsingDataAccess = false, conversationId, ariaWebContents } = opts;
+  const { userMessage, browserCtx, llmConfig, window: mainWindow, sessionId = 'default', developerMode = false, codingMode = false, worktreeIsolation = true, agentBrowsingDataAccess = false, conversationId, ariaWebContents } = opts;
 
   // Helper: broadcast to both chrome UI and Aria tab
   function broadcast(channel: string, data?: any) {
@@ -280,143 +276,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
   _activePartialResponse = '';
   _activeSessionId = sessionId;
 
-  // ─── Deep Mode Gate ───────────────────────────────────────────────────────
-  // If deep mode is ON, try to decompose the task. The LLM decides if it's
-  // simple (direct loop) or complex (action/research deep mode).
-  // Phase 9: Skip deep mode when codingMode is on — team orchestration IS
-  // the decomposition. The direct agent loop has team tools and will use them.
-  if (deepMode !== false && !codingMode) {
-    try {
-      console.log('[agent] Deep mode ON — attempting decomposition...');
-      broadcast('agent:stream-start', {});
-      sendChunk(mainWindow, '🧠 Analyzing task complexity...', false, ariaWebContents);
-
-      const decomposition = await decomposeTask(userMessage, llmConfig);
-
-      if (decomposition) {
-        console.log('[agent] Decomposed into', decomposition.subtasks.length, 'subtasks, mode:', decomposition.mode);
-        // BUG-T13: Do NOT send done=true here — that would make the API resolve with an empty string
-        // before deep mode has even run. The API stays open until we emit the final output below.
-
-        // Add user message to history
-        addMessage(sessionId, { role: 'user', content: userMessage });
-
-        // BUG-T13: Pass codingMode so subtask runner can load team tools
-        const result = await runDeepMode({
-          decomposition,
-          originalTask: userMessage,
-          browserCtx,
-          llmConfig,
-          window: mainWindow,
-          sessionId,
-          developerMode,
-          codingMode,
-          agentBrowsingDataAccess,
-          abortSignal: abortController.signal,
-          ariaWebContents,
-          // Phase 9.07: Forward subtask token usage to the UI token bar
-          onTokenUsage: (usage) => {
-            try {
-              broadcast('agent:token-usage', {
-                inputTokens: usage.inputTokens || 0,
-                outputTokens: usage.outputTokens || 0,
-                totalTokens: (usage.inputTokens || 0) + (usage.outputTokens || 0),
-              });
-            } catch (e) {
-              // Non-fatal — token bar update is best-effort
-            }
-          },
-        });
-
-        // Add summary to conversation history
-        const summary = result.aborted
-          ? `[Deep mode aborted — ${result.subtasks.filter(s => s.status === 'done').length}/${result.subtasks.length} steps completed]`
-          : `[Deep mode ${result.mode}: ${result.subtasks.length} steps completed in ${result.durationSeconds.toFixed(1)}s]\n\n${result.finalOutput.slice(0, 2000)}`;
-        addMessage(sessionId, { role: 'assistant' as const, content: summary });
-
-        // ─── Persist deep mode to SQLite conversation store ─────────────
-        if (conversationId) {
-          try {
-            addConversationMessage(conversationId, 'user', userMessage);
-
-            // Persist each subtask step as a tool message for rich history
-            for (const subtask of result.subtasks) {
-              const status = subtask.status === 'done' ? '✅' : subtask.status === 'failed' ? '❌' : '⏭️';
-              const stepSummary = `${status} Step ${(subtask.index ?? 0) + 1}: ${subtask.task || 'Untitled'}`;
-              addConversationMessage(conversationId, 'tool', stepSummary);
-            }
-
-            const assistantContent = result.aborted
-              ? `[Deep mode aborted — ${result.subtasks.filter(s => s.status === 'done').length}/${result.subtasks.length} steps completed]`
-              : result.finalOutput || '[Deep mode complete — no final output]';
-            addConversationMessage(conversationId, 'assistant', assistantContent);
-            const msgCount = getConversationMessageCount(conversationId);
-            if (msgCount <= 4) {
-              generateAutoTitle(conversationId, assistantContent);
-            }
-            // Persist download card for deep mode research output
-            if (result.mode === 'research' && !result.aborted && result.outputDirAbsolute) {
-              const path = require('path');
-              const reportPath = path.join(result.outputDirAbsolute, 'final_report.md');
-              const fs = require('fs');
-              if (fs.existsSync(reportPath)) {
-                const size = fs.statSync(reportPath).size;
-                addConversationMessage(conversationId, 'download', JSON.stringify({
-                  path: reportPath, name: 'final_report.md', size,
-                  formats: ['md', 'html', 'pdf', 'txt'],
-                  description: `Deep mode research report (${result.subtasks.length} steps)`,
-                }));
-              }
-            }
-
-            try { if (ariaWebContents && !ariaWebContents.isDestroyed()) ariaWebContents.send('aria:conversation-updated', { conversationId }); } catch {}
-          } catch (persistErr: any) {
-            console.error('[agent] Deep mode SQLite persist error (non-fatal):', persistErr?.message);
-          }
-        }
-
-        // Send completion to UI
-        broadcast('agent:deep-complete', {
-          mode: result.mode,
-          durationSeconds: result.durationSeconds,
-          outputDir: result.outputDir,
-          outputDirAbsolute: result.outputDirAbsolute,
-          aborted: result.aborted,
-          completedSteps: result.subtasks.filter(s => s.status === 'done').length,
-          totalSteps: result.subtasks.length,
-          finalOutput: result.mode === 'research' ? result.finalOutput : undefined,
-        });
-
-        // Emit done signal for API listeners. The compile step already streamed
-        // its output via deep-stream-chunk events — don't duplicate the full report
-        // as a regular chat chunk (that causes a raw unrendered duplicate).
-        const deepFinalText = result.aborted
-          ? `[Task aborted — ${result.subtasks.filter(s => s.status === 'done').length}/${result.subtasks.length} steps completed]`
-          : result.finalOutput || '[Deep mode complete]';
-        // For API SSE listeners, emit the final text so they get the response
-        try { agentEvents.emit('chunk', { text: deepFinalText, done: true }); } catch {}
-        // For UI, just signal done (no text) — content is already in the plan card
-        sendChunk(mainWindow, '', true, ariaWebContents);
-
-        activeRun = null;
-        return;
-      }
-
-      // Task is simple — fall through to direct loop
-      console.log('[agent] Task is simple — using direct agent loop');
-      // Clear the "analyzing" message WITHOUT closing the stream (done=false)
-      // The direct loop below will send its own done=true when complete.
-      // Sending done=true here would close SSE connections before the actual response.
-      sendChunk(mainWindow, '\n', false, ariaWebContents);
-
-    } catch (decomposeErr: any) {
-      console.error('[agent] Decomposition failed, falling back to direct:', decomposeErr?.message);
-      // Clear analyzing message WITHOUT closing the stream
-      sendChunk(mainWindow, '\n', false, ariaWebContents);
-    }
-  }
-
-  // ─── Direct Agent Loop (existing) ─────────────────────────────────────────
+  // ─── Agent Loop ────────────────────────────────────────────────────────────
 
   let errorSent = false;
   let streamStarted = false;  // hoisted — needed by codingMode early broadcast + lazy guards below
@@ -479,7 +339,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
     const activeSystemPrompt = codingMode
       ? SYSTEM_PROMPT + CODING_MODE_SYSTEM_PROMPT_ADDENDUM + codingMemoryContext
       : SYSTEM_PROMPT;
-    console.log('[agent] Run starting:', Object.keys(tools).length, 'tools,', browserContext.length, 'chars context (ZERO page elements), devMode:', developerMode, 'deepMode:', deepMode, 'codingMode:', codingMode);
+    console.log('[agent] Run starting:', Object.keys(tools).length, 'tools,', browserContext.length, 'chars context (ZERO page elements), devMode:', developerMode, 'codingMode:', codingMode);
 
     // Add user message to history
     addMessage(sessionId, { role: 'user', content: userMessage });
@@ -538,9 +398,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
     // Collect ordered conversation events for persistence (Phase 9.1: rich conversation history)
     const conversationEvents: Array<{ role: string; content: string }> = [];
     try {
-      // In coding mode, deep mode is skipped so no stream-start was sent yet — fire it now
-      // so the UI shows a visible indicator while the LLM thinks (can take 30s+ with thinking ON)
-      // Set streamStarted here so the lazy !streamStarted guards below don't fire a second start.
+      // In coding mode, fire stream-start early so the UI shows a visible indicator
+      // while the LLM thinks (can take 30s+ with thinking ON).
       if (codingMode && !streamStarted) {
         broadcast('agent:stream-start', {});
         streamStarted = true;

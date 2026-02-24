@@ -1073,7 +1073,7 @@ function appendMessageEl(msg) {
   bubble.className = 'aria-bubble';
 
   if (msg._raw) {
-    // Raw HTML (deep mode plan cards) — sanitize for safety
+    // Raw HTML — sanitize for safety
     bubble.innerHTML = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(msg.content || '') : (msg.content || '');
     wrapper.style.maxWidth = '640px';
     wrapper.style.alignSelf = 'flex-start';
@@ -1610,7 +1610,7 @@ function getOrCreateTeammateCard(name, role, task) {
   return _teammateCards[name];
 }
 
-window.aria.onDeepPlan(data => {
+window.aria?.onDeepPlan(data => {
   const { mode, subtasks, parallel } = data || {};
   if (!subtasks) return;
   _deepSubtaskText = {};
@@ -1674,7 +1674,7 @@ window._ariaToggleToolDetail = function(idx, toolIdx) {
   if (detail) detail.classList.toggle('visible');
 };
 
-window.aria.onDeepSubtaskStart(data => {
+window.aria?.onDeepSubtaskStart(data => {
   const { index } = data || {};
   if (index == null) return;
   const el        = document.getElementById('aria-deep-step-' + index);
@@ -1710,7 +1710,7 @@ window.aria.onDeepSubtaskStart(data => {
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 });
 
-window.aria.onDeepSubtaskDone(data => {
+window.aria?.onDeepSubtaskDone(data => {
   const { index, status, duration, error } = data || {};
   if (index == null) return;
   const el          = document.getElementById('aria-deep-step-' + index);
@@ -1753,7 +1753,7 @@ window.aria.onDeepSubtaskDone(data => {
 });
 
 let _deepStreamTimers = {};
-window.aria.onDeepStreamChunk(data => {
+window.aria?.onDeepStreamChunk(data => {
   const { index, chunk } = data || {};
   if (index == null) return;
   const stream = document.getElementById('aria-deep-stream-' + index);
@@ -1775,8 +1775,8 @@ window.aria.onDeepStreamChunk(data => {
 
 // Deep mode reasoning / thinking chips (per-subtask)
 let _deepThinkingChips = {};
-if (window.aria.onDeepReasoningChunk) {
-  window.aria.onDeepReasoningChunk(({ index, text, done }) => {
+if (window.aria?.onDeepReasoningChunk) {
+  window.aria?.onDeepReasoningChunk(({ index, text, done }) => {
     if (index == null) return;
     const stream = document.getElementById('aria-deep-stream-' + index);
     if (!stream) return;
@@ -1815,8 +1815,8 @@ if (window.aria.onDeepReasoningChunk) {
 }
 
 // Tool results as compact collapsible chips (Claude.ai-inspired)
-if (window.aria.onDeepToolResult) {
-  window.aria.onDeepToolResult(data => {
+if (window.aria?.onDeepToolResult) {
+  window.aria?.onDeepToolResult(data => {
     const { index, toolName, display } = data || {};
     if (index == null) return;
     const toolsDiv = document.getElementById('aria-deep-tools-' + index);
@@ -1857,7 +1857,7 @@ if (window.aria.onDeepToolResult) {
   });
 }
 
-window.aria.onDeepComplete(data => {
+window.aria?.onDeepComplete(data => {
   const { mode, durationSeconds, aborted, completedSteps, totalSteps, outputDirAbsolute, finalOutput } = data || {};
   const statusStr = aborted ? '⚠️ Aborted' : '✅ Complete';
 
@@ -1927,7 +1927,7 @@ window._ariaDownloadReport = async function(format) {
   if (!_deepOutputDir) return;
   const fmt = format || 'md';
   try {
-    const result = await window.aria.saveDeepReport(_deepOutputDir, fmt);
+    const result = await window.aria?.saveDeepReport(_deepOutputDir, fmt);
     if (result && result.success) {
       // Brief feedback
       appendMessage('system', `📥 Report saved to ${result.path}`);

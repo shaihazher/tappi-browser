@@ -22,7 +22,6 @@ import { TabManager } from './tab-manager';
 import { executeCommand, getMenu, type ExecutorContext } from './command-executor';
 import type { BrowserContext } from './browser-tools';
 import { runAgent, stopAgent, clearHistory, agentProgressData, interruptMainSession } from './agent';
-import { interruptSubtask } from './subtask-runner';
 import { loadServices, registerService, removeService, storeApiKey, getApiKey, listApiKeys, deleteApiKey } from './http-tools';
 import { initDatabase, getDb, closeDatabase, reinitDatabase, addHistory, searchHistory, getRecentHistory, clearHistory as clearDbHistory, migrateBookmarksFromJson, getPermission, setPermission, getAllBookmarks, searchBookmarks, removeBookmark } from './database';
 import { profileManager } from './profile-manager';
@@ -95,7 +94,6 @@ interface TappiConfig {
     apiKey: string; // encrypted — active provider's key (kept for backward compat)
     providerApiKeys?: Record<string, string>; // encrypted keys per provider (Phase 9.1)
     thinking?: boolean;      // true = medium thinking (default), false = off
-    deepMode?: boolean;      // true = deep mode (default), false = always direct
     codingMode?: boolean;    // true = team tools + coding system prompt (Phase 8.38)
     worktreeIsolation?: boolean; // Phase 8.39: git worktree per teammate (default: true when codingMode + git repo)
     // Cloud provider fields
@@ -111,7 +109,7 @@ interface TappiConfig {
     // Timeout fields (Phase 8.40)
     agentTimeoutMs?: number;      // main agent timeout (default: 1800000 = 30 min)
     teammateTimeoutMs?: number;   // per-teammate timeout (default: 1800000 = 30 min)
-    subtaskTimeoutMs?: number;    // per deep-mode subtask timeout (default: 300000 = 5 min)
+    subtaskTimeoutMs?: number;    // per subtask timeout (default: 300000 = 5 min)
   };
   searchEngine: string;
   features: {
@@ -127,7 +125,7 @@ interface TappiConfig {
 }
 
 const DEFAULT_CONFIG: TappiConfig = {
-  llm: { provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: '', thinking: true, deepMode: true, codingMode: false, worktreeIsolation: true, agentTimeoutMs: 1_800_000, teammateTimeoutMs: 1_800_000, subtaskTimeoutMs: 300_000 },
+  llm: { provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: '', thinking: true, codingMode: false, worktreeIsolation: true, agentTimeoutMs: 1_800_000, teammateTimeoutMs: 1_800_000, subtaskTimeoutMs: 300_000 },
   searchEngine: 'google',
   features: { adBlocker: false, darkMode: false },
   developerMode: false,
@@ -790,7 +788,6 @@ function createWindow() {
         model: currentConfig.llm.model,
         apiKey,
         thinking: currentConfig.llm.thinking,
-        deepMode: currentConfig.llm.deepMode,
         region: currentConfig.llm.region,
         projectId: currentConfig.llm.projectId,
         location: currentConfig.llm.location,
@@ -807,7 +804,6 @@ function createWindow() {
       },
       window: mainWindow,
       developerMode: currentConfig.developerMode,
-      deepMode: currentConfig.llm.deepMode !== false,
       conversationId: activeConversationId,
       ariaWebContents: tabManager?.ariaWebContents,
     });
@@ -860,7 +856,6 @@ function createWindow() {
         model: currentConfig.llm.model,
         apiKey,
         thinking: currentConfig.llm.thinking,
-        deepMode: currentConfig.llm.deepMode,
         region: currentConfig.llm.region,
         projectId: currentConfig.llm.projectId,
         location: currentConfig.llm.location,
@@ -877,7 +872,6 @@ function createWindow() {
       },
       window: mainWindow,
       developerMode: currentConfig.developerMode,
-      deepMode: currentConfig.llm.deepMode !== false,
       codingMode: codingMode ?? false,
       conversationId: convId || activeConversationId || undefined,
       ariaWebContents: tabManager?.ariaWebContents,
@@ -1161,7 +1155,6 @@ function createWindow() {
       if (updates.llm.endpoint !== undefined) currentConfig.llm.endpoint = updates.llm.endpoint || undefined;
       if (updates.llm.baseUrl !== undefined) currentConfig.llm.baseUrl = updates.llm.baseUrl || undefined;
       if (updates.llm.thinking !== undefined) currentConfig.llm.thinking = updates.llm.thinking;
-      if (updates.llm.deepMode !== undefined) currentConfig.llm.deepMode = updates.llm.deepMode;
       if ((updates.llm as any).codingMode !== undefined) currentConfig.llm.codingMode = (updates.llm as any).codingMode;
       if ((updates.llm as any).worktreeIsolation !== undefined) currentConfig.llm.worktreeIsolation = (updates.llm as any).worktreeIsolation;
       // Secondary model fields (Phase 8.85)
@@ -1543,7 +1536,7 @@ function createWindow() {
 
   // ─── Phase 9.096d: Unified Interrupt IPC ────────────────────────────────
   // Routes interrupt/redirect requests from the renderer to the correct backend handler.
-  // target: 'main' = main agent session, 'teammate' = team member, 'subtask' = deep mode step
+  // target: 'main' = main agent session, 'teammate' = team member
   ipcMain.handle('agent:interrupt', async (_event, { target, targetName, message }: { target: string; targetName?: string; message: string }) => {
     try {
       switch (target) {
@@ -1554,8 +1547,6 @@ function createWindow() {
           if (!teamId) return '❌ No active team';
           return await interruptTeammate(teamId, targetName || '', message);
         }
-        case 'subtask':
-          return interruptSubtask(targetName ?? 0, message);
         default:
           return `❌ Unknown interrupt target: ${target}`;
       }
@@ -1926,7 +1917,7 @@ function createWindow() {
     }
   });
 
-  // ─── Deep Mode Report Save ───
+  // ─── Deep Mode Report Save (legacy — handler kept for backward compat) ───
   const _deepSaveReportHandler = async (_e: Electron.IpcMainInvokeEvent, outputDirAbsolute: string, format: string = 'md') => {
     const fsSync = require('fs') as typeof import('fs');
     const pathMod = require('path') as typeof import('path');
@@ -2630,7 +2621,6 @@ function startDevServer() {
           llmConfig: {
             provider: currentConfig.llm.provider, model: currentConfig.llm.model, apiKey,
             thinking: currentConfig.llm.thinking,
-            deepMode: currentConfig.llm.deepMode,
             region: currentConfig.llm.region, projectId: currentConfig.llm.projectId,
             location: currentConfig.llm.location, endpoint: currentConfig.llm.endpoint,
             baseUrl: currentConfig.llm.baseUrl,
@@ -2641,7 +2631,6 @@ function startDevServer() {
           },
           window: mainWindow,
           developerMode: currentConfig.developerMode,
-          deepMode: currentConfig.llm.deepMode !== false,
           codingMode: currentConfig.developerMode && (currentConfig.llm.codingMode === true),
           agentBrowsingDataAccess: currentConfig.privacy?.agentBrowsingDataAccess === true,
         });

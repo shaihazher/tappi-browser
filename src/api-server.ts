@@ -500,7 +500,6 @@ async function handleRequest(
         model: cfg.llm.model,
         apiKey,
         thinking: cfg.llm.thinking,
-        deepMode: cfg.llm.deepMode,
         region: cfg.llm.region,
         projectId: cfg.llm.projectId,
         location: cfg.llm.location,
@@ -509,7 +508,6 @@ async function handleRequest(
       },
       window: mainWindow,
       developerMode: cfg.developerMode,
-      deepMode: cfg.llm.deepMode !== false,
       codingMode: cfg.developerMode && cfg.llm?.codingMode === true,
       agentBrowsingDataAccess: cfg.privacy?.agentBrowsingDataAccess === true,
     }).catch(e => {
@@ -587,7 +585,6 @@ async function handleRequest(
           model: cfg.llm.model,
           apiKey,
           thinking: cfg.llm.thinking,
-          deepMode: cfg.llm.deepMode,
           region: cfg.llm.region,
           projectId: cfg.llm.projectId,
           location: cfg.llm.location,
@@ -600,7 +597,6 @@ async function handleRequest(
         },
         window: mainWindow,
         developerMode: cfg.developerMode,
-        deepMode: cfg.llm.deepMode !== false,
         codingMode: cfg.developerMode && cfg.llm?.codingMode === true,
         agentBrowsingDataAccess: cfg.privacy?.agentBrowsingDataAccess === true,
       }).catch(e => {

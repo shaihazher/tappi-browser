@@ -62,30 +62,6 @@ contextBridge.exposeInMainWorld('aria', {
     ipcRenderer.on('aria:conversation-switched', (_e, data) => cb(data));
   },
 
-  // ─── Deep mode events (forwarded from agent) ───
-  onDeepPlan: (cb: (data: any) => void) => {
-    ipcRenderer.on('agent:deep-plan', (_e, data) => cb(data));
-  },
-  onDeepSubtaskStart: (cb: (data: any) => void) => {
-    ipcRenderer.on('agent:deep-subtask-start', (_e, data) => cb(data));
-  },
-  onDeepSubtaskDone: (cb: (data: any) => void) => {
-    ipcRenderer.on('agent:deep-subtask-done', (_e, data) => cb(data));
-  },
-  onDeepStreamChunk: (cb: (data: any) => void) => {
-    ipcRenderer.on('agent:deep-stream-chunk', (_e, data) => cb(data));
-  },
-  onDeepComplete: (cb: (data: any) => void) => {
-    ipcRenderer.on('agent:deep-complete', (_e, data) => cb(data));
-  },
-  onDeepToolResult: (cb: (data: any) => void) => {
-    ipcRenderer.on('agent:deep-tool-result', (_e, data) => cb(data));
-  },
-  onDeepReasoningChunk: (cb: (data: { index: number; text: string; done: boolean }) => void) => {
-    ipcRenderer.on('agent:deep-reasoning-chunk', (_e, data) => cb(data));
-  },
-  saveDeepReport: (outputDirAbsolute: string, format?: string) => ipcRenderer.invoke('deep:save-report', outputDirAbsolute, format || 'md'),
-
   // ─── Config ───
   getActiveConversationId: () => ipcRenderer.invoke('aria:get-active-conversation'),
 

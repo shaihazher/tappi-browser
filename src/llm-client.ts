@@ -25,7 +25,6 @@ export interface LLMConfig {
   model: string;
   apiKey: string; // decrypted — may be empty for Bedrock/Vertex/Ollama
   thinking?: boolean;      // true = adaptive thinking (medium effort), false = no thinking
-  deepMode?: boolean;      // true = decompose complex tasks (default), false = always direct
   // Cloud provider fields
   region?: string;         // Bedrock: AWS region
   projectId?: string;      // Vertex: GCP project ID
@@ -39,7 +38,7 @@ export interface LLMConfig {
   // Timeout fields (Phase 8.40) — configurable execution timeouts
   agentTimeoutMs?: number;      // main agent timeout (default: 1800000 = 30 min)
   teammateTimeoutMs?: number;   // per-teammate timeout (default: 1800000 = 30 min)
-  subtaskTimeoutMs?: number;    // per deep-mode subtask timeout (default: 300000 = 5 min)
+  subtaskTimeoutMs?: number;    // per subtask timeout (default: 300000 = 5 min)
 }
 
 /**
@@ -202,14 +201,24 @@ export function createModel(config: LLMConfig): LanguageModel {
     case 'openrouter': {
       if (!apiKey) throw new Error('OpenRouter API key required. Open Settings (⌘,) and add your API key.');
       const baseUrl = config.baseUrl || 'https://openrouter.ai/api/v1';
-      return createOpenAI({
+
+      // OpenRouter behaves more reliably with OpenAI Chat Completions than
+      // OpenAI Responses API for large tool sets.
+      // Also normalize common dotted Claude aliases to canonical dashed IDs.
+      const normalizedModel = model
+        .replace('anthropic/claude-sonnet-4.6', 'anthropic/claude-sonnet-4-6')
+        .replace('anthropic/claude-opus-4.6', 'anthropic/claude-opus-4-6');
+
+      const openrouter = createOpenAI({
         apiKey,
         baseURL: baseUrl,
         headers: {
           'HTTP-Referer': 'https://tappi.synthworx.com',
           'X-Title': 'Tappi Browser',
         },
-      })(model);
+      });
+
+      return openrouter.chat(normalizedModel as any);
     }
 
     case 'ollama': {
