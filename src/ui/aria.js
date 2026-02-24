@@ -799,6 +799,7 @@ newChatBtn.addEventListener('click', async () => {
       currentProjectName = null;
       updateActiveProjectIndicator();
       _resetTeamPanel();
+      _refreshTeamCard();
       showWelcome();
       updateTokenBar(0, 0);
       ariaInput.focus();
@@ -824,6 +825,8 @@ async function switchToConversation(convId) {
     // Phase 9.09: Update active project indicator
     _detectCurrentProject();
     await loadMessagesForConversation(convId);
+    // Reset team card — re-check if a team is still active for this context
+    _refreshTeamCard();
   } catch (e) {
     console.error('[aria] switchConversation error:', e);
   }
@@ -2040,6 +2043,17 @@ if (window.aria.onDevModeChanged) {
 //  FIX 4: TEAM STATUS CARD (shown in Aria tab when team is active)
 // ═══════════════════════════════════════════
 
+// Re-fetch team status from backend and update card (hide if no active team)
+async function _refreshTeamCard() {
+  try {
+    const status = await window.aria.getTeamStatus().catch(() => null);
+    updateTeamCard(status);
+  } catch {
+    // No active team — hide
+    if (ariaTeamCard) ariaTeamCard.classList.add('hidden');
+  }
+}
+
 function updateTeamCard(data) {
   if (!ariaTeamCard) return;
 
@@ -2097,10 +2111,23 @@ function updateTeamCard(data) {
     }).join('');
   }
 
-  // Progress
-  if (ariaTeamProgress && data.taskCount > 0) {
-    const pct = Math.round(((data.doneCount || 0) / data.taskCount) * 100);
-    ariaTeamProgress.textContent = `Progress: ${pct}% (${data.doneCount}/${data.taskCount})`;
+  // Progress — use teammate completion as primary indicator (task list may be empty)
+  if (ariaTeamProgress) {
+    const teammates = data.teammates || [];
+    const totalTm = teammates.length;
+    const doneTm = teammates.filter(t => t.status === 'done' || t.status === 'failed').length;
+    const taskTotal = data.taskCount || 0;
+    const taskDone = data.doneCount || 0;
+    if (totalTm > 0) {
+      const pct = Math.round((doneTm / totalTm) * 100);
+      const extra = taskTotal > 0 ? ` · ${taskDone}/${taskTotal} tasks` : '';
+      ariaTeamProgress.textContent = `${pct}% — ${doneTm}/${totalTm} teammates done${extra}`;
+    } else if (taskTotal > 0) {
+      const pct = Math.round((taskDone / taskTotal) * 100);
+      ariaTeamProgress.textContent = `${pct}% — ${taskDone}/${taskTotal} tasks`;
+    } else {
+      ariaTeamProgress.textContent = '';
+    }
   }
 }
 

@@ -349,6 +349,21 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
             if (msgCount <= 4) {
               generateAutoTitle(conversationId, assistantContent);
             }
+            // Persist download card for deep mode research output
+            if (result.mode === 'research' && !result.aborted && result.outputDirAbsolute) {
+              const path = require('path');
+              const reportPath = path.join(result.outputDirAbsolute, 'final_report.md');
+              const fs = require('fs');
+              if (fs.existsSync(reportPath)) {
+                const size = fs.statSync(reportPath).size;
+                addConversationMessage(conversationId, 'download', JSON.stringify({
+                  path: reportPath, name: 'final_report.md', size,
+                  formats: ['md', 'html', 'pdf', 'txt'],
+                  description: `Deep mode research report (${result.subtasks.length} steps)`,
+                }));
+              }
+            }
+
             try { if (ariaWebContents && !ariaWebContents.isDestroyed()) ariaWebContents.send('aria:conversation-updated', { conversationId }); } catch {}
           } catch (persistErr: any) {
             console.error('[agent] Deep mode SQLite persist error (non-fatal):', persistErr?.message);

@@ -1486,7 +1486,8 @@ export async function dissolveTeam(teamId: string): Promise<string> {
 
   team.status = 'done';
   activeTeams.delete(teamId);
-  notifyUpdate(teamId);
+  // notifyUpdate won't fire after delete (team gone). Notify directly with null to hide UI.
+  if (onTeamUpdate) onTeamUpdate(teamId, null as any);
 
   return lines.join('\n');
 }
