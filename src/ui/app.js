@@ -1719,13 +1719,12 @@ settingProvider.addEventListener('change', async () => {
     settingModel.value = defaultModel;
   }
   // Check if the new provider has a saved API key
-  const config = await window.tappi.getConfig();
-  const savedProvider = config.llm?.provider;
-  const hasKeyForProvider = config.hasApiKey && savedProvider === provider;
-  settingApikey.value = hasKeyForProvider ? '••••••••' : '';
+  const { hasKey } = await window.tappi.hasProviderKey(provider);
+  settingApikey.value = hasKey ? '••••••••' : '';
+  settingApikey.type = 'password';
   settingApikey.placeholder = 'Enter API key';
-  apikeyStatus.textContent = hasKeyForProvider ? '✓ API key saved' : 'No API key set';
-  apikeyStatus.className = hasKeyForProvider ? 'settings-hint success' : 'settings-hint';
+  apikeyStatus.textContent = hasKey ? '✓ API key saved' : 'No API key set';
+  apikeyStatus.className = hasKey ? 'settings-hint success' : 'settings-hint';
 });
 
 function openSettings() {

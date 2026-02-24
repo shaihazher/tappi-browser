@@ -90,7 +90,8 @@ interface TappiConfig {
   llm: {
     provider: string;
     model: string;
-    apiKey: string; // encrypted
+    apiKey: string; // encrypted — active provider's key (kept for backward compat)
+    providerApiKeys?: Record<string, string>; // encrypted keys per provider (Phase 9.1)
     thinking?: boolean;      // true = medium thinking (default), false = off
     deepMode?: boolean;      // true = deep mode (default), false = always direct
     codingMode?: boolean;    // true = team tools + coding system prompt (Phase 8.38)
@@ -1119,8 +1120,24 @@ function createWindow() {
     return { key: decryptApiKey(currentConfig.llm.apiKey) };
   });
 
+  // Check if a specific provider has a stored API key (for settings UI provider switching)
+  ipcMain.handle('config:has-provider-key', (_e, provider: string) => {
+    if (provider === currentConfig.llm.provider) return { hasKey: !!currentConfig.llm.apiKey };
+    return { hasKey: !!(currentConfig.llm.providerApiKeys?.[provider]) };
+  });
+
   // Shared config update logic — used by both IPC handler and REST API
   function applyConfigUpdates(updates: Partial<TappiConfig & { rawApiKey?: string; rawSecondaryApiKey?: string }>): { success: boolean } {
+    // Per-provider API key swap — must run BEFORE provider is updated
+    if (updates.llm?.provider && updates.llm.provider !== currentConfig.llm.provider) {
+      // Save current key to the old provider slot before switching
+      if (currentConfig.llm.apiKey && currentConfig.llm.provider) {
+        if (!currentConfig.llm.providerApiKeys) currentConfig.llm.providerApiKeys = {};
+        currentConfig.llm.providerApiKeys[currentConfig.llm.provider] = currentConfig.llm.apiKey;
+      }
+      // Restore the new provider's stored key (or empty if none)
+      currentConfig.llm.apiKey = currentConfig.llm.providerApiKeys?.[updates.llm.provider] || '';
+    }
     if (updates.llm) {
       if (updates.llm.provider) currentConfig.llm.provider = updates.llm.provider;
       if (updates.llm.model !== undefined) currentConfig.llm.model = updates.llm.model;
@@ -1140,7 +1157,13 @@ function createWindow() {
     }
     if ((updates as any).rawApiKey !== undefined) {
       const rawKey = (updates as any).rawApiKey;
-      currentConfig.llm.apiKey = rawKey ? encryptApiKey(rawKey) : '';
+      const encrypted = rawKey ? encryptApiKey(rawKey) : '';
+      currentConfig.llm.apiKey = encrypted;
+      // Store per-provider so switching back restores it
+      if (encrypted && currentConfig.llm.provider) {
+        if (!currentConfig.llm.providerApiKeys) currentConfig.llm.providerApiKeys = {};
+        currentConfig.llm.providerApiKeys[currentConfig.llm.provider] = encrypted;
+      }
     }
     // Secondary API key (Phase 8.85)
     if ((updates as any).rawSecondaryApiKey !== undefined) {

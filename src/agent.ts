@@ -333,6 +333,14 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
         if (conversationId) {
           try {
             addConversationMessage(conversationId, 'user', userMessage);
+
+            // Persist each subtask step as a tool message for rich history
+            for (const subtask of result.subtasks) {
+              const status = subtask.status === 'done' ? '✅' : subtask.status === 'failed' ? '❌' : '⏭️';
+              const stepSummary = `${status} Step ${(subtask.index ?? 0) + 1}: ${subtask.task || 'Untitled'}`;
+              addConversationMessage(conversationId, 'tool', stepSummary);
+            }
+
             const assistantContent = result.aborted
               ? `[Deep mode aborted — ${result.subtasks.filter(s => s.status === 'done').length}/${result.subtasks.length} steps completed]`
               : result.finalOutput || '[Deep mode complete — no final output]';
