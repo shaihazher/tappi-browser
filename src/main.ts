@@ -1567,10 +1567,25 @@ function createWindow() {
 
   // ─── Dark Mode IPC (direct toggle) ───
   ipcMain.on('darkmode:toggle', async (_e, enable: boolean) => {
+    // Save dark mode preference to config
+    currentConfig.features.darkMode = enable;
+    saveConfig(currentConfig);
+
+    // Notify Aria tab about theme change
+    const ariaWc = tabManager?.ariaWebContents;
+    if (ariaWc) {
+      ariaWc.send('theme:changed', enable);
+    }
+
+    // Apply dark mode CSS to the active web page content
     const wc = tabManager?.activeWebContents;
     if (!wc) return;
     const { bDarkMode } = require('./browser-tools');
     await bDarkMode({ window: mainWindow, tabManager, config: currentConfig }, [enable ? 'on' : 'off']);
+  });
+
+  ipcMain.handle('theme:get', () => {
+    return currentConfig.features.darkMode || false;
   });
 
   // ─── History IPC ───

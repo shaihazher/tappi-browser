@@ -494,6 +494,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
     agentProgressData = { running: true, elapsed: 0, toolCalls: 0, timeoutMs };
 
     let result;
+    // Collect ordered conversation events for persistence (Phase 9.1: rich conversation history)
+    const conversationEvents: Array<{ role: string; content: string }> = [];
     try {
       // In coding mode, deep mode is skipped so no stream-start was sent yet — fire it now
       // so the UI shows a visible indicator while the LLM thinks (can take 30s+ with thinking ON)
@@ -512,6 +514,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
         system: activeSystemPrompt,
         messages: messages as any, // AI SDK accepts ModelMessage[]
         tools,
+        maxOutputTokens: 2048,
         ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
         // Phase 8.40 + Phase 9 fix: AI SDK v6 defaults to stepCountIs(1) which
         // limits the agent to a single LLM call. Override with 200 steps so the
@@ -586,6 +589,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
               const maxDisplay = isInfoTool ? 1500 : 200;
               const display = `🔧 ${toolName}${resultStr.length > maxDisplay ? '\n' + resultStr.slice(0, maxDisplay) + '...' : resultStr.length > 50 ? '\n' + resultStr : ' → ' + resultStr}`;
               broadcast('agent:tool-result', { toolName, result: resultStr, display });
+              // Persist tool result for conversation history
+              conversationEvents.push({ role: 'tool', content: display });
             }
           } catch (stepErr: any) {
             console.error('[agent] onStepFinish error:', stepErr?.message || stepErr);
@@ -635,6 +640,10 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
           console.log(`[agent] Thinking done — ${reasoningBuffer.length} chars`);
           // Collapse chip with full text
           broadcast('agent:reasoning-chunk', { text: reasoningBuffer, done: true });
+          // Persist thinking for conversation history
+          if (reasoningBuffer.length > 0) {
+            conversationEvents.push({ role: 'thinking', content: reasoningBuffer });
+          }
           reasoningBuffer = '';
 
         } else if (chunk.type === 'text-delta') {
@@ -647,6 +656,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
           // Collapse any still-open reasoning chip before text starts
           if (reasoningBuffer) {
             broadcast('agent:reasoning-chunk', { text: reasoningBuffer, done: true });
+            if (reasoningBuffer.length > 0) {
+              conversationEvents.push({ role: 'thinking', content: reasoningBuffer });
+            }
             reasoningBuffer = '';
           }
           const textDelta = (chunk as any).delta ?? (chunk as any).text ?? '';
@@ -658,6 +670,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
         } else if (chunk.type === 'finish') {
           if (reasoningBuffer) {
             broadcast('agent:reasoning-chunk', { text: reasoningBuffer, done: true });
+            if (reasoningBuffer.length > 0) {
+              conversationEvents.push({ role: 'thinking', content: reasoningBuffer });
+            }
             reasoningBuffer = '';
           }
         }
@@ -777,13 +792,18 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
 
     // ─── Finalize the stream to the UI ──────────────────────────────────────
 
-    // ─── Persist to SQLite conversation store (Phase 8.35) ──────────────────
+    // ─── Persist to SQLite conversation store (Phase 9.1: rich history) ─────
     if (conversationId && !errorSent) {
       try {
         // Persist user message
         addConversationMessage(conversationId, 'user', userMessage);
 
-        // Persist assistant response
+        // Persist intermediate events (thinking, tool results) in order
+        for (const evt of conversationEvents) {
+          addConversationMessage(conversationId, evt.role, evt.content);
+        }
+
+        // Persist final assistant response
         if (fullResponse) {
           addConversationMessage(conversationId, 'assistant', fullResponse);
 

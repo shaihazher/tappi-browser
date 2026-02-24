@@ -1718,6 +1718,14 @@ settingProvider.addEventListener('change', async () => {
   if (defaultModel && !settingModel.value.trim()) {
     settingModel.value = defaultModel;
   }
+  // Check if the new provider has a saved API key
+  const config = await window.tappi.getConfig();
+  const savedProvider = config.llm?.provider;
+  const hasKeyForProvider = config.hasApiKey && savedProvider === provider;
+  settingApikey.value = hasKeyForProvider ? '••••••••' : '';
+  settingApikey.placeholder = 'Enter API key';
+  apikeyStatus.textContent = hasKeyForProvider ? '✓ API key saved' : 'No API key set';
+  apikeyStatus.className = hasKeyForProvider ? 'settings-hint success' : 'settings-hint';
 });
 
 function openSettings() {
@@ -1729,8 +1737,8 @@ function openSettings() {
     if (config.llm) {
       settingProvider.value = config.llm.provider || 'anthropic';
       settingModel.value = config.llm.model || '';
-      settingApikey.value = '';
-      settingApikey.placeholder = config.hasApiKey ? '••••••••' : 'Enter API key';
+      settingApikey.value = config.hasApiKey ? '••••••••' : '';
+      settingApikey.placeholder = 'Enter API key';
       apikeyStatus.textContent = config.hasApiKey ? '✓ API key saved' : 'No API key set';
       apikeyStatus.className = config.hasApiKey ? 'settings-hint success' : 'settings-hint';
       // Cloud provider fields
@@ -1929,8 +1937,10 @@ settingsSave.addEventListener('click', async () => {
 
 statusDarkmode.addEventListener('click', () => {
   const isActive = statusDarkmode.classList.contains('active');
+  const enable = !isActive;
   statusDarkmode.classList.toggle('active');
-  window.tappi.toggleDarkMode(!isActive);
+  document.body.classList.toggle('dark-mode', enable);
+  window.tappi.toggleDarkMode(enable);
 });
 
 // ═══════════════════════════════════════════
@@ -2143,7 +2153,8 @@ window.tappi.onSettingsSwitchTab((tab) => {
 window.tappi.onConfigLoaded((config) => {
   // Apply initial feature states to status bar
   if (config.features) {
-    if (config.features.darkMode) statusDarkmode.classList.add('active');
+    statusDarkmode.classList.toggle('active', !!config.features.darkMode);
+    document.body.classList.toggle('dark-mode', !!config.features.darkMode);
     if (config.features.adBlocker) {
       document.getElementById('status-adblock').classList.add('active');
     }

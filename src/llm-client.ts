@@ -81,14 +81,14 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
       if (thinkingEnabled) {
         return {
           anthropic: {
-            maxTokens: 16000,
-            thinking: { type: 'adaptive' },
+            maxTokens: 2048,
+            thinking: { type: 'adaptive', effort: 'medium' },
           },
         };
       }
       return {
         anthropic: {
-          maxTokens: 16000,
+          maxTokens: 2048,
         },
       };
     }
@@ -128,12 +128,12 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
         if (thinkingEnabled) {
           return {
             anthropic: {
-              maxTokens: 16000,
-              thinking: { type: 'enabled', budgetTokens: 10000 },
+              maxTokens: 2048,
+              thinking: { type: 'adaptive', effort: 'medium' },
             },
           };
         }
-        return { anthropic: { maxTokens: 16000 } };
+        return { anthropic: { maxTokens: 2048 } };
       }
       if (model.startsWith('openai/') && /^openai\/(o1|o3|o4)/.test(model)) {
         if (thinkingEnabled) {

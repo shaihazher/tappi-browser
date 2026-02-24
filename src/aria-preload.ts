@@ -187,4 +187,11 @@ contextBridge.exposeInMainWorld('aria', {
 
   downloadFile: (sourcePath: string, format: string, defaultName?: string) =>
     ipcRenderer.invoke('file:download', sourcePath, format, defaultName),
+
+  // ─── Theme ───
+  onThemeChanged: (cb: (darkMode: boolean) => void) => {
+    ipcRenderer.on('theme:changed', (_e, darkMode: boolean) => cb(darkMode));
+  },
+
+  getTheme: () => ipcRenderer.invoke('theme:get'),
 });

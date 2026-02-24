@@ -17,7 +17,7 @@ import * as toolManager from './tool-manager';
 import * as subAgent from './sub-agent';
 import * as cronManager from './cron-manager';
 import { searchHistory } from './conversation';
-import { agentListConversations, agentSearchConversations, agentReadConversation } from './conversation-store';
+import { agentListConversations, agentSearchConversations, agentReadConversation, addConversationMessage } from './conversation-store';
 import { queryHistory, queryBookmarks, queryDownloads } from './database';
 import type { BrowserContext } from './browser-tools';
 import type { LLMConfig } from './llm-client';
@@ -1166,6 +1166,11 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
           const ariaWC = (browserCtx.tabManager as any).ariaWebContents;
           if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:present-download', payload);
         } catch {}
+
+        // Persist download card for conversation history (Phase 9.1)
+        if (options?.conversationId) {
+          try { addConversationMessage(options.conversationId, 'download', JSON.stringify(payload)); } catch {}
+        }
 
         return `📎 File offered for download: ${name}`;
       },

@@ -1065,6 +1065,43 @@ function appendMessageEl(msg) {
     mdDiv.className = 'md-content';
     mdDiv.innerHTML = renderMarkdown(msg.content || '');
     bubble.appendChild(mdDiv);
+  } else if (role === 'thinking') {
+    // Persisted thinking/reasoning — render as collapsible chip
+    const content = msg.content || '';
+    wrapper.className = 'aria-msg thinking';
+    const chip = document.createElement('div');
+    chip.className = 'aria-thinking-chip';
+    const charCount = content.length;
+    chip.innerHTML = `
+      <div class="thinking-chip-header">
+        <span class="thinking-chip-icon">🧠</span>
+        <span class="thinking-chip-label">Thought (${charCount} chars) — click to expand</span>
+        <span class="thinking-chip-toggle">▸</span>
+      </div>
+      <div class="thinking-chip-body"></div>`;
+    // Set body text content (not innerHTML) to avoid XSS
+    const body = chip.querySelector('.thinking-chip-body');
+    if (body) body.textContent = content;
+    const header = chip.querySelector('.thinking-chip-header');
+    if (header) header.addEventListener('click', () => {
+      chip.classList.toggle('expanded');
+      const toggle = chip.querySelector('.thinking-chip-toggle');
+      if (toggle) toggle.textContent = chip.classList.contains('expanded') ? '▾' : '▸';
+    });
+    bubble.innerHTML = '';
+    bubble.appendChild(chip);
+  } else if (role === 'download') {
+    // Persisted download card — reconstruct from JSON payload
+    try {
+      const data = JSON.parse(msg.content || '{}');
+      wrapper.className = 'aria-msg assistant';
+      bubble.innerHTML = '';
+      // Reuse renderDownloadCard logic but return the card element
+      const card = _buildDownloadCard(data);
+      if (card) bubble.appendChild(card);
+    } catch {
+      bubble.textContent = msg.content || '';
+    }
   } else if (role === 'tool') {
     // Render tool results with markdown for multi-line outputs (team_status etc.)
     const content = msg.content || '';
@@ -1237,9 +1274,12 @@ function setStreamingState(streaming) {
 // ═══════════════════════════════════════════
 
 window.aria.onStreamStart(() => {
-  // Prepare an empty assistant bubble for streaming
+  // Reset stream state — don't create bubble yet; it's created on first text chunk
+  // so that thinking chips and tool results appear ABOVE the response
   streamBuffer = '';
-  _prepareStreamBubble();
+  _streamBubbleEl = null;
+  _streamMdDiv = null;
+  _streamTextSavedUpTo = 0;
 });
 
 let _streamBubbleEl = null;
@@ -2223,6 +2263,21 @@ async function init() {
   // Focus input on load
   ariaInput.focus();
 
+  // Apply dark mode from main process config
+  try {
+    const darkMode = await window.aria.getTheme();
+    document.body.classList.toggle('dark-mode', !!darkMode);
+  } catch (e) {
+    // ignore — theme API may not be available
+  }
+
+  // Listen for theme changes from main process
+  if (window.aria.onThemeChanged) {
+    window.aria.onThemeChanged((darkMode) => {
+      document.body.classList.toggle('dark-mode', !!darkMode);
+    });
+  }
+
   // Bind suggestion chips from the static HTML
   bindSuggestionChips();
 
@@ -2286,9 +2341,9 @@ function formatFileSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
-function renderDownloadCard(data) {
+function _buildDownloadCard(data) {
   const { path: filePath, name, size, formats, description } = data || {};
-  if (!filePath || !formats || formats.length === 0) return;
+  if (!filePath || !formats || formats.length === 0) return null;
 
   const ext = (name || '').split('.').pop()?.toLowerCase() || '';
   const iconMap = {
@@ -2355,6 +2410,12 @@ function renderDownloadCard(data) {
   card.appendChild(iconEl);
   card.appendChild(infoEl);
   card.appendChild(actionsEl);
+  return card;
+}
+
+function renderDownloadCard(data) {
+  const card = _buildDownloadCard(data);
+  if (!card) return;
 
   // Wrap in a message bubble like other assistant messages
   const wrapper = document.createElement('div');

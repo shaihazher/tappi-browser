@@ -169,7 +169,7 @@ Use markdown. Be thorough but readable.
 
 // ── LLM Helpers ──
 
-async function callLLM(prompt: string, llmConfig: LLMConfig, maxTokens: number = 4096): Promise<string> {
+async function callLLM(prompt: string, llmConfig: LLMConfig, maxTokens: number = 2048): Promise<string> {
   const model = createModel(llmConfig);
   const { text } = await generateText({
     model,
