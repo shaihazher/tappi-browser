@@ -10,17 +10,19 @@
   display: inline-block;
   vertical-align: middle;
   flex-shrink: 0;
-  filter: drop-shadow(0 0 3px rgba(232, 160, 191, 0.4));
-  transition: filter 0.2s ease;
+  color: var(--lotus, #e8a0bf);
+  filter: drop-shadow(0 0 2px currentColor);
+  transition: filter 0.2s ease, transform 0.2s ease;
 }
 .aria-icon:hover {
-  filter: drop-shadow(0 0 6px rgba(232, 160, 191, 0.7));
+  filter: drop-shadow(0 0 6px currentColor);
+  transform: scale(1.1);
 }
 .aria-icon-lg {
   display: block;
   margin: 0 auto;
-  filter: drop-shadow(0 0 8px rgba(232, 160, 191, 0.5));
-  animation: float 3s ease-in-out infinite;
+  color: var(--lotus, #e8a0bf);
+  filter: drop-shadow(0 0 6px currentColor);
 }
 
 /* ─── Reset + variables ─── */
@@ -31,14 +33,14 @@
 }
 
 :root {
-  /* Light theme (default) — Apple/Arc browser aesthetics */
-  --bg-primary:    #f8f9fa;
-  --bg-secondary:  #ffffff;
-  --bg-tab:        #e8eaed;
-  --bg-tab-hover:  #f0f1f3;
-  --bg-input:      #ffffff;
-  --bg-panel:      #f5f5f7;
-  --bg-agent:      #ffffff;
+  /* Light theme (default) — warm, easy on the eyes */
+  --bg-primary:    #f0eeeb;
+  --bg-secondary:  #f7f6f3;
+  --bg-tab:        #e4e2df;
+  --bg-tab-hover:  #eae8e5;
+  --bg-input:      #f7f6f3;
+  --bg-panel:      #ebe9e6;
+  --bg-agent:      #f4f2ef;
   --text-primary:  #1d1d1f;
   --text-secondary:#6e6e73;
   --text-dim:      #aeaeb2;
@@ -290,7 +292,6 @@ body {
   font-size: 13px;
 }
 
-[data-theme="dark"] .conv-context-menu,
 body.dark-mode .conv-context-menu {
   box-shadow: 0 8px 24px rgba(0,0,0,0.5);
 }
@@ -565,7 +566,6 @@ body.coding-mode #aria-project-indicator-text {
   -webkit-backdrop-filter: blur(4px);
 }
 
-[data-theme="dark"] .proj-delete-overlay,
 body.dark-mode .proj-delete-overlay {
   background: rgba(0, 0, 0, 0.65);
 }
@@ -583,7 +583,6 @@ body.dark-mode .proj-delete-overlay {
   gap: 10px;
 }
 
-[data-theme="dark"] .proj-delete-card,
 body.dark-mode .proj-delete-card {
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
 }
@@ -762,7 +761,6 @@ body.coding-mode .proj-delete-btn-unlink:hover {
   overflow-y: auto;
 }
 
-[data-theme="dark"] .project-picker-menu,
 body.dark-mode .project-picker-menu {
   box-shadow: 0 8px 24px rgba(0,0,0,0.5);
 }
@@ -1081,7 +1079,6 @@ body.dark-mode .project-picker-menu {
   color: #8b5cf6;
 }
 
-[data-theme="dark"] .aria-msg.assistant .md-content code,
 body.dark-mode .aria-msg.assistant .md-content code {
   background: rgba(255, 255, 255, 0.07);
   color: #e2b3ff;
@@ -1101,7 +1098,6 @@ body.dark-mode .aria-msg.assistant .md-content code {
   position: relative;
 }
 
-[data-theme="dark"] .aria-msg.assistant .md-content pre,
 body.dark-mode .aria-msg.assistant .md-content pre {
   background: rgba(0, 0, 0, 0.35);
   border-color: var(--border-light);
@@ -1134,7 +1130,6 @@ body.dark-mode .aria-msg.assistant .md-content pre {
   text-decoration: underline;
 }
 
-[data-theme="dark"] .aria-msg.assistant .md-content a,
 body.dark-mode .aria-msg.assistant .md-content a {
   color: #a78bfa;
 }

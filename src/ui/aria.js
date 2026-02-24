@@ -8,6 +8,11 @@
 // @ts-check
 'use strict';
 
+/** Reusable Aria sparkle icon SVG. */
+function ariaIcon(size = 16) {
+  return `<svg class="aria-icon${size >= 32 ? '-lg' : ''}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none"><path d="M12 2C12.3 7.5 16.5 11.7 22 12 16.5 12.3 12.3 16.5 12 22 11.7 16.5 7.5 12.3 2 12 7.5 11.7 11.7 7.5 12 2Z" fill="currentColor" opacity="0.85"/></svg>`;
+}
+
 // ═══════════════════════════════════════════
 //  STATE
 // ═══════════════════════════════════════════
@@ -161,7 +166,7 @@ function showWelcome() {
   messages = [];
   ariaMessages.innerHTML = ariaMessages.querySelector('.aria-welcome')?.outerHTML || `
     <div class="aria-welcome">
-      <div class="welcome-icon"><svg class="aria-icon-lg" width="48" height="48" viewBox="0 0 24 24" fill="none"><path d="M12 2C12 2 8.5 7 8.5 10.5C8.5 12.4 9.3 13.8 10.5 14.6C9 15.2 7 15 5 14C5 14 5.5 17 8 19C9.2 20 10.5 20.5 12 20.5C13.5 20.5 14.8 20 16 19C18.5 17 19 14 19 14C17 15 15 15.2 13.5 14.6C14.7 13.8 15.5 12.4 15.5 10.5C15.5 7 12 2 12 2Z" fill="url(#lotus-grad-aw)" stroke-linejoin="round"/><defs><linearGradient id="lotus-grad-aw" x1="12" y1="2" x2="12" y2="20.5" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#f0b4d4"/><stop offset="100%" stop-color="#c57ba8"/></linearGradient></defs></svg></div>
+      <div class="welcome-icon">${ariaIcon(48)}</div>
       <div class="welcome-title">Hello, I'm Aria</div>
       <div class="welcome-subtitle">Your AI assistant built into the browser.<br>Ask me anything — I can browse the web, run code, and more.</div>
       <div class="welcome-suggestions">

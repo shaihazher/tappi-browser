@@ -8,6 +8,11 @@ const btnReload = document.getElementById('btn-reload');
 const bookmarkBtn = document.getElementById('bookmark-btn');
 const btnOverflow = document.getElementById('btn-overflow');
 
+/** Reusable Aria sparkle icon SVG. */
+function ariaIcon(size = 16) {
+  return `<svg class="aria-icon${size >= 32 ? '-lg' : ''}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none"><path d="M12 2C12.3 7.5 16.5 11.7 22 12 16.5 12.3 12.3 16.5 12 22 11.7 16.5 7.5 12.3 2 12 7.5 11.7 11.7 7.5 12 2Z" fill="currentColor" opacity="0.85"/></svg>`;
+}
+
 // Agent elements
 const agentStrip = document.getElementById('agent-strip');
 const agentPanel = document.getElementById('agent-panel');
@@ -240,7 +245,7 @@ function updateAddressBar(tab) {
     urlInput.readOnly = true;
     urlInput.style.color = 'var(--lotus, #e8a0bf)';
     urlInput.style.cursor = 'default';
-    if (ssl) { ssl.innerHTML = '<svg class="aria-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 2C12 2 8.5 7 8.5 10.5C8.5 12.4 9.3 13.8 10.5 14.6C9 15.2 7 15 5 14C5 14 5.5 17 8 19C9.2 20 10.5 20.5 12 20.5C13.5 20.5 14.8 20 16 19C18.5 17 19 14 19 14C17 15 15 15.2 13.5 14.6C14.7 13.8 15.5 12.4 15.5 10.5C15.5 7 12 2 12 2Z" fill="url(#lotus-grad-ssl)" stroke-linejoin="round"/><defs><linearGradient id="lotus-grad-ssl" x1="12" y1="2" x2="12" y2="20.5" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#f0b4d4"/><stop offset="100%" stop-color="#c57ba8"/></linearGradient></defs></svg>'; ssl.style.opacity = '1'; }
+    if (ssl) { ssl.innerHTML = ariaIcon(14); ssl.style.opacity = '1'; }
     if (bookmarkBtn) bookmarkBtn.style.display = 'none';
     return;
   }
@@ -866,8 +871,8 @@ agentClose.addEventListener('click', () => window.tappi.toggleAgent());
 function renderWelcome() {
   agentMessages.innerHTML = `
     <div class="agent-welcome">
-      <div class="lotus-big"><svg class="aria-icon-lg" width="48" height="48" viewBox="0 0 24 24" fill="none"><path d="M12 2C12 2 8.5 7 8.5 10.5C8.5 12.4 9.3 13.8 10.5 14.6C9 15.2 7 15 5 14C5 14 5.5 17 8 19C9.2 20 10.5 20.5 12 20.5C13.5 20.5 14.8 20 16 19C18.5 17 19 14 19 14C17 15 15 15.2 13.5 14.6C14.7 13.8 15.5 12.4 15.5 10.5C15.5 7 12 2 12 2Z" fill="url(#lotus-grad-ab)" stroke-linejoin="round"/><defs><linearGradient id="lotus-grad-ab" x1="12" y1="2" x2="12" y2="20.5" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#f0b4d4"/><stop offset="100%" stop-color="#c57ba8"/></linearGradient></defs></svg></div>
-      <h3>Hi, I'm Tappi</h3>
+      <div class="lotus-big">${ariaIcon(48)}</div>
+      <h3>Hi, I'm Aria</h3>
       <p>Your AI browser companion.<br>
       Ask me to navigate, summarize, fill forms, compare products — anything you see on the web.</p>
       <p style="margin-top: 12px"><kbd>⌘J</kbd> to toggle this panel</p>
@@ -1954,7 +1959,7 @@ function renderApiServices(data) {
       <div class="api-empty-state">
         <span class="api-empty-icon">🔗</span>
         <p>No API services configured yet.</p>
-        <p class="api-empty-hint">Ask Tappi to set up an API, or add one manually above.</p>
+        <p class="api-empty-hint">Ask Aria to set up an API, or add one manually above.</p>
       </div>`;
     return;
   }
@@ -2329,7 +2334,7 @@ async function loadToolsTab() {
         <div class="api-empty-state">
           <span class="api-empty-icon">🔧</span>
           <p>No CLI tools registered yet.</p>
-          <p class="api-empty-hint">Enable Developer Mode and ask Tappi to install tools.</p>
+          <p class="api-empty-hint">Enable Developer Mode and ask Aria to install tools.</p>
         </div>
       `;
     }
@@ -2499,7 +2504,7 @@ async function loadCronJobs() {
         <div class="api-empty-state">
           <span class="api-empty-icon">⏰</span>
           <p>No cron jobs configured yet.</p>
-          <p class="api-empty-hint">Ask Tappi to schedule a task, or add one manually above.</p>
+          <p class="api-empty-hint">Ask Aria to schedule a task, or add one manually above.</p>
         </div>
       `;
       return;
