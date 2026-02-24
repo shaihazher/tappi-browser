@@ -78,14 +78,15 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
   switch (provider) {
     case 'anthropic':
     case 'bedrock': {
-      // With extended thinking, maxTokens is the TOTAL budget (thinking + response).
-      // 2048 is far too low — thinking alone can consume 1000+ tokens, leaving
-      // nothing for the actual response or tool calls. Use 16384 when thinking is ON.
+      // Use the `effort` parameter (output_config.effort) — same approach as OpenClaw.
+      // This controls thinking, text responses, and tool calls without needing explicit
+      // thinking config. The model decides when/how much to think based on effort level.
+      // maxTokens here is for the response only — thinking budget is managed by effort.
       if (thinkingEnabled) {
         return {
           anthropic: {
             maxTokens: 16384,
-            thinking: { type: 'adaptive', effort: 'medium' },
+            effort: 'medium',
           },
         };
       }
@@ -132,7 +133,7 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
           return {
             anthropic: {
               maxTokens: 16384,
-              thinking: { type: 'adaptive', effort: 'medium' },
+              effort: 'medium',
             },
           };
         }
