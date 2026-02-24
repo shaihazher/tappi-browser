@@ -5,6 +5,24 @@
  * Uses design language from styles.css (CSS variables, dark theme).
  */
 
+/* ─── Aria SVG icon ─── */
+.aria-icon {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+  filter: drop-shadow(0 0 3px rgba(232, 160, 191, 0.4));
+  transition: filter 0.2s ease;
+}
+.aria-icon:hover {
+  filter: drop-shadow(0 0 6px rgba(232, 160, 191, 0.7));
+}
+.aria-icon-lg {
+  display: block;
+  margin: 0 auto;
+  filter: drop-shadow(0 0 8px rgba(232, 160, 191, 0.5));
+  animation: float 3s ease-in-out infinite;
+}
+
 /* ─── Reset + variables ─── */
 *, *::before, *::after {
   box-sizing: border-box;
@@ -13,6 +31,35 @@
 }
 
 :root {
+  /* Light theme (default) — Apple/Arc browser aesthetics */
+  --bg-primary:    #f8f9fa;
+  --bg-secondary:  #ffffff;
+  --bg-tab:        #e8eaed;
+  --bg-tab-hover:  #f0f1f3;
+  --bg-input:      #ffffff;
+  --bg-panel:      #f5f5f7;
+  --bg-agent:      #ffffff;
+  --text-primary:  #1d1d1f;
+  --text-secondary:#6e6e73;
+  --text-dim:      #aeaeb2;
+  --accent:        #e94560;
+  --accent-soft:   rgba(233, 69, 96, 0.12);
+  --accent-glow:   rgba(233, 69, 96, 0.20);
+  --lotus:         #d4628a;
+  --lotus-soft:    rgba(212, 98, 138, 0.12);
+  --border:        #e5e5ea;
+  --border-light:  #f0f0f2;
+  --radius:        8px;
+  --radius-sm:     4px;
+  --radius-lg:     12px;
+  --shadow-sm:     0 1px 2px rgba(0,0,0,0.05);
+  --shadow-md:     0 2px 8px rgba(0,0,0,0.08);
+  --shadow-lg:     0 4px 16px rgba(0,0,0,0.12);
+  --sidebar-width: 220px;
+}
+
+/* Dark theme — original navy/purple palette */
+body.dark-mode {
   --bg-primary:    #1a1a2e;
   --bg-secondary:  #16213e;
   --bg-tab:        #0f3460;
@@ -30,8 +77,6 @@
   --lotus-soft:    rgba(232, 160, 191, 0.15);
   --border:        #2a2a4a;
   --border-light:  #1f2844;
-  --radius:        8px;
-  --sidebar-width: 220px;
 }
 
 html, body {
@@ -241,8 +286,13 @@ body {
   border-radius: var(--radius);
   padding: 4px 0;
   min-width: 150px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  box-shadow: var(--shadow-lg);
   font-size: 13px;
+}
+
+[data-theme="dark"] .conv-context-menu,
+body.dark-mode .conv-context-menu {
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
 }
 
 .conv-ctx-item {
@@ -344,11 +394,11 @@ body {
 }
 
 body.coding-mode .project-name {
-  color: var(--matrix-bright, #00ff41);
+  color: #89b4fa;
 }
 
 body.coding-mode .project-item:hover {
-  background: rgba(0,255,65,0.05);
+  background: rgba(137, 180, 250, 0.06);
 }
 
 /* ─── Phase 9.09: Active project indicator ─── */
@@ -370,11 +420,11 @@ body.coding-mode .project-item:hover {
 }
 
 body.coding-mode #aria-project-indicator {
-  background: rgba(0, 255, 65, 0.05);
-  border-color: rgba(0, 255, 65, 0.12);
+  background: rgba(137, 180, 250, 0.05);
+  border-color: rgba(137, 180, 250, 0.12);
 }
 body.coding-mode #aria-project-indicator-text {
-  color: #0d660d;
+  color: #6c7086;
 }
 
 /* ─── Phase 9.09: Projects section header with [+ New Project] ─── */
@@ -507,12 +557,17 @@ body.coding-mode #aria-project-indicator-text {
   position: fixed;
   inset: 0;
   z-index: 2000;
-  background: rgba(0, 0, 0, 0.65);
+  background: rgba(0, 0, 0, 0.25);
   display: flex;
   align-items: center;
   justify-content: center;
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+[data-theme="dark"] .proj-delete-overlay,
+body.dark-mode .proj-delete-overlay {
+  background: rgba(0, 0, 0, 0.65);
 }
 
 .proj-delete-card {
@@ -522,10 +577,15 @@ body.coding-mode #aria-project-indicator-text {
   padding: 24px 28px 20px;
   min-width: 340px;
   max-width: 440px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+  box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+[data-theme="dark"] .proj-delete-card,
+body.dark-mode .proj-delete-card {
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
 }
 
 .proj-delete-title {
@@ -623,10 +683,10 @@ body.coding-mode #aria-project-indicator-text {
   color: var(--text-primary);
 }
 
-/* Coding mode variant — accent green for unlink button */
+/* Coding mode variant — accent blue for unlink button */
 body.coding-mode .proj-delete-btn-unlink:hover {
-  border-color: #00ff41;
-  background: rgba(0, 255, 65, 0.08);
+  border-color: #89b4fa;
+  background: rgba(137, 180, 250, 0.08);
 }
 
 /* ─── Phase 9.09: Inline new project input ─── */
@@ -696,10 +756,15 @@ body.coding-mode .proj-delete-btn-unlink:hover {
   padding: 4px 0;
   min-width: 180px;
   max-width: 260px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  box-shadow: var(--shadow-lg);
   font-size: 13px;
   max-height: 240px;
   overflow-y: auto;
+}
+
+[data-theme="dark"] .project-picker-menu,
+body.dark-mode .project-picker-menu {
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
 }
 
 .project-picker-header {
@@ -791,8 +856,9 @@ body.coding-mode .proj-delete-btn-unlink:hover {
 .welcome-icon {
   font-size: 56px;
   line-height: 1;
-  animation: float 3s ease-in-out infinite;
   opacity: 0.9;
+  display: flex;
+  justify-content: center;
 }
 
 @keyframes float {
@@ -1009,15 +1075,21 @@ body.coding-mode .proj-delete-btn-unlink:hover {
 .aria-msg.assistant .md-content code {
   font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
   font-size: 12.5px;
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(0, 0, 0, 0.05);
   padding: 2px 5px;
   border-radius: 4px;
+  color: #8b5cf6;
+}
+
+[data-theme="dark"] .aria-msg.assistant .md-content code,
+body.dark-mode .aria-msg.assistant .md-content code {
+  background: rgba(255, 255, 255, 0.07);
   color: #e2b3ff;
 }
 
 .aria-msg.assistant .md-content pre {
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid var(--border-light);
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 12px 14px;
   margin: 10px 0;
@@ -1027,6 +1099,12 @@ body.coding-mode .proj-delete-btn-unlink:hover {
   font-size: 12.5px;
   line-height: 1.45;
   position: relative;
+}
+
+[data-theme="dark"] .aria-msg.assistant .md-content pre,
+body.dark-mode .aria-msg.assistant .md-content pre {
+  background: rgba(0, 0, 0, 0.35);
+  border-color: var(--border-light);
 }
 
 .aria-msg.assistant .md-content pre code {
@@ -1049,11 +1127,16 @@ body.coding-mode .proj-delete-btn-unlink:hover {
 }
 
 .aria-msg.assistant .md-content a {
-  color: #a78bfa;
+  color: #7c3aed;
   text-decoration: none;
 }
 .aria-msg.assistant .md-content a:hover {
   text-decoration: underline;
+}
+
+[data-theme="dark"] .aria-msg.assistant .md-content a,
+body.dark-mode .aria-msg.assistant .md-content a {
+  color: #a78bfa;
 }
 
 .aria-msg.assistant .md-content blockquote {
@@ -1685,11 +1768,11 @@ body.coding-mode .proj-delete-btn-unlink:hover {
 }
 
 body.coding-mode .aria-team-activity {
-  color: rgba(0, 255, 65, 0.5);
+  color: rgba(137, 180, 250, 0.5);
 }
 
 body.coding-mode .aria-team-activity.done {
-  color: rgba(0, 255, 65, 0.7);
+  color: rgba(137, 180, 250, 0.7);
 }
 
 .aria-team-name {
@@ -1715,27 +1798,27 @@ body.coding-mode .aria-team-activity.done {
 /* ═══════════════════════════════════════════
    CODING MODE — MATRIX THEME
    Overrides CSS variables when body.coding-mode is set.
-   Green phosphor terminal aesthetic.
+   Sophisticated dark IDE aesthetic (Catppuccin Mocha inspired).
 ═══════════════════════════════════════════ */
 
 body.coding-mode {
-  --bg-primary:    #0a0a0a;
-  --bg-secondary:  #0d1a0d;
-  --bg-tab:        #0a1f0a;
-  --bg-tab-hover:  #122812;
-  --bg-input:      #0d1a0d;
-  --bg-panel:      #060806;
-  --bg-agent:      #050705;
-  --text-primary:  #33ff33;
-  --text-secondary:#1a9e1a;
-  --text-dim:      #0d660d;
-  --accent:        #00ff41;
-  --accent-soft:   rgba(0, 255, 65, 0.1);
-  --accent-glow:   rgba(0, 255, 65, 0.25);
-  --lotus:         #00ff41;
-  --lotus-soft:    rgba(0, 255, 65, 0.1);
-  --border:        #1a3a1a;
-  --border-light:  #0f2a0f;
+  --bg-primary:    #1e1e2e;
+  --bg-secondary:  #232336;
+  --bg-tab:        #2a2a40;
+  --bg-tab-hover:  #313148;
+  --bg-input:      #232336;
+  --bg-panel:      #191928;
+  --bg-agent:      #16162a;
+  --text-primary:  #cdd6f4;
+  --text-secondary:#a6adc8;
+  --text-dim:      #6c7086;
+  --accent:        #89b4fa;
+  --accent-soft:   rgba(137, 180, 250, 0.12);
+  --accent-glow:   rgba(137, 180, 250, 0.25);
+  --lotus:         #cba6f7;
+  --lotus-soft:    rgba(203, 166, 247, 0.12);
+  --border:        #313244;
+  --border-light:  #2a2a3c;
 }
 
 /* Coding mode: monospace everything */
@@ -1747,118 +1830,102 @@ body.coding-mode .suggestion-chip {
   font-family: 'SF Mono', 'Menlo', 'Consolas', 'Fira Code', monospace;
 }
 
-/* Coding mode: green scanline overlay */
-body.coding-mode::after {
-  content: '';
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(0, 255, 65, 0.015) 2px,
-    rgba(0, 255, 65, 0.015) 4px
-  );
-  pointer-events: none;
-  z-index: 9999;
-}
-
-/* Coding mode: glow on assistant bubbles */
+/* Coding mode: subtle glow on assistant bubbles */
 body.coding-mode .aria-msg.assistant .aria-bubble {
-  background: rgba(0, 255, 65, 0.04);
-  border-color: rgba(0, 255, 65, 0.15);
-  box-shadow: 0 0 8px rgba(0, 255, 65, 0.08);
+  background: rgba(137, 180, 250, 0.04);
+  border-color: rgba(137, 180, 250, 0.12);
+  box-shadow: 0 0 8px rgba(137, 180, 250, 0.06);
 }
 
 /* Coding mode: user bubbles */
 body.coding-mode .aria-msg.user .aria-bubble {
-  background: rgba(0, 255, 65, 0.1);
-  border-color: rgba(0, 255, 65, 0.2);
+  background: rgba(203, 166, 247, 0.08);
+  border-color: rgba(203, 166, 247, 0.15);
 }
 
 /* Coding mode: links */
-body.coding-mode a { color: #00ff41; }
-body.coding-mode a:hover { color: #66ff66; text-shadow: 0 0 6px rgba(0, 255, 65, 0.4); }
+body.coding-mode a { color: #89b4fa; }
+body.coding-mode a:hover { color: #b4d0fc; text-shadow: 0 0 6px rgba(137, 180, 250, 0.3); }
 
-/* Coding mode: code blocks — brighter green on darker bg */
+/* Coding mode: code blocks */
 body.coding-mode pre,
 body.coding-mode code {
-  background: #050f05 !important;
-  color: #44ff44 !important;
-  border-color: #1a3a1a !important;
+  background: #191928 !important;
+  color: #cdd6f4 !important;
+  border-color: #313244 !important;
 }
 
-/* Coding mode: input area glow */
+/* Coding mode: input area */
 body.coding-mode #aria-input {
-  border-color: rgba(0, 255, 65, 0.25);
-  color: #33ff33;
-  caret-color: #00ff41;
+  border-color: rgba(137, 180, 250, 0.2);
+  color: #cdd6f4;
+  caret-color: #89b4fa;
 }
 body.coding-mode #aria-input:focus {
-  border-color: rgba(0, 255, 65, 0.5);
-  box-shadow: 0 0 10px rgba(0, 255, 65, 0.15);
+  border-color: rgba(137, 180, 250, 0.45);
+  box-shadow: 0 0 10px rgba(137, 180, 250, 0.12);
 }
 body.coding-mode #aria-input::placeholder {
-  color: #0d660d;
+  color: #6c7086;
 }
 
 /* Coding mode: sidebar */
 body.coding-mode #aria-sidebar {
-  background: #060806;
-  border-color: #1a3a1a;
+  background: #191928;
+  border-color: #313244;
 }
 body.coding-mode .conv-item:hover {
-  background: rgba(0, 255, 65, 0.06);
+  background: rgba(137, 180, 250, 0.06);
 }
 body.coding-mode .conv-item.active {
-  background: rgba(0, 255, 65, 0.1);
-  border-color: rgba(0, 255, 65, 0.3);
+  background: rgba(137, 180, 250, 0.1);
+  border-color: rgba(137, 180, 250, 0.25);
 }
 
 /* Coding mode: scrollbar */
-body.coding-mode ::-webkit-scrollbar { background: #0a0a0a; }
-body.coding-mode ::-webkit-scrollbar-thumb { background: #1a3a1a; }
-body.coding-mode ::-webkit-scrollbar-thumb:hover { background: #2a4a2a; }
+body.coding-mode ::-webkit-scrollbar { background: #1e1e2e; }
+body.coding-mode ::-webkit-scrollbar-thumb { background: #313244; }
+body.coding-mode ::-webkit-scrollbar-thumb:hover { background: #3d3d55; }
 
-/* Coding mode: team card — green tint */
+/* Coding mode: team card */
 body.coding-mode #aria-team-card {
-  background: rgba(0, 255, 65, 0.05);
-  border-color: rgba(0, 255, 65, 0.15);
+  background: rgba(137, 180, 250, 0.05);
+  border-color: rgba(137, 180, 250, 0.12);
 }
-body.coding-mode #aria-team-title { color: #00ff41; }
-body.coding-mode #aria-team-progress { color: #00ff41; }
+body.coding-mode #aria-team-title { color: #89b4fa; }
+body.coding-mode #aria-team-progress { color: #89b4fa; }
 
-/* Coding mode: mode button — bright green */
+/* Coding mode: mode button */
 body.coding-mode .aria-mode-btn.on {
-  background: rgba(0, 255, 65, 0.15);
-  border-color: rgba(0, 255, 65, 0.5);
-  color: #00ff41;
-  box-shadow: 0 0 12px rgba(0, 255, 65, 0.3), 0 0 4px rgba(0, 255, 65, 0.15);
+  background: rgba(137, 180, 250, 0.15);
+  border-color: rgba(137, 180, 250, 0.5);
+  color: #89b4fa;
+  box-shadow: 0 0 12px rgba(137, 180, 250, 0.3), 0 0 4px rgba(137, 180, 250, 0.15);
 }
 
 /* Coding mode: tool results */
 body.coding-mode .aria-msg.tool {
-  color: #1a9e1a;
+  color: #a6adc8;
 }
 
 /* Coding mode: welcome screen */
-body.coding-mode .welcome-icon { filter: hue-rotate(120deg) brightness(1.5); }
-body.coding-mode .welcome-title { color: #00ff41; text-shadow: 0 0 10px rgba(0, 255, 65, 0.3); }
-body.coding-mode .welcome-subtitle { color: #1a9e1a; }
+body.coding-mode .welcome-icon { filter: brightness(0.9); }
+body.coding-mode .welcome-title { color: #89b4fa; text-shadow: 0 0 10px rgba(137, 180, 250, 0.2); }
+body.coding-mode .welcome-subtitle { color: #a6adc8; }
 body.coding-mode .suggestion-chip {
-  background: rgba(0, 255, 65, 0.06);
-  border-color: rgba(0, 255, 65, 0.2);
-  color: #33ff33;
+  background: rgba(137, 180, 250, 0.06);
+  border-color: rgba(137, 180, 250, 0.15);
+  color: #cdd6f4;
 }
 body.coding-mode .suggestion-chip:hover {
-  background: rgba(0, 255, 65, 0.12);
-  border-color: rgba(0, 255, 65, 0.4);
+  background: rgba(137, 180, 250, 0.12);
+  border-color: rgba(137, 180, 250, 0.3);
 }
 
 /* Coding mode: token bar */
-body.coding-mode #aria-token-bar { background: #0d1a0d; }
-body.coding-mode #aria-token-fill { background: linear-gradient(90deg, #00ff41, #33ff33); }
-body.coding-mode #aria-token-label { color: #1a9e1a; }
+body.coding-mode #aria-token-bar { background: #191928; }
+body.coding-mode #aria-token-fill { background: linear-gradient(90deg, #89b4fa, #cba6f7); }
+body.coding-mode #aria-token-label { color: #a6adc8; }
 
 /* Coding mode banner — persistent indicator at top of chat */
 .coding-mode-banner {
@@ -1866,11 +1933,11 @@ body.coding-mode #aria-token-label { color: #1a9e1a; }
   align-items: center;
   gap: 8px;
   padding: 6px 16px;
-  background: rgba(0, 255, 65, 0.06);
-  border-bottom: 1px solid rgba(0, 255, 65, 0.15);
+  background: rgba(137, 180, 250, 0.06);
+  border-bottom: 1px solid rgba(137, 180, 250, 0.12);
   font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
   font-size: 11px;
-  color: #00ff41;
+  color: #89b4fa;
   flex-shrink: 0;
 }
 body.coding-mode .coding-mode-banner {
@@ -1878,11 +1945,11 @@ body.coding-mode .coding-mode-banner {
 }
 .coding-mode-banner .banner-icon {
   font-size: 14px;
-  animation: pulse-green 2s ease-in-out infinite;
+  animation: pulse-blue 2s ease-in-out infinite;
 }
-@keyframes pulse-green {
-  0%, 100% { opacity: 0.6; text-shadow: 0 0 4px rgba(0, 255, 65, 0.2); }
-  50% { opacity: 1; text-shadow: 0 0 10px rgba(0, 255, 65, 0.5); }
+@keyframes pulse-blue {
+  0%, 100% { opacity: 0.6; text-shadow: 0 0 4px rgba(137, 180, 250, 0.2); }
+  50% { opacity: 1; text-shadow: 0 0 10px rgba(137, 180, 250, 0.4); }
 }
 
 /* ─── File Download Card (Phase 9.07 Track 5) ─── */
@@ -2022,11 +2089,11 @@ body.coding-mode .coding-mode-banner {
 }
 
 body.coding-mode .aria-thinking-chip {
-  background: rgba(0, 255, 65, 0.04);
-  border-color: rgba(0, 255, 65, 0.15);
+  background: rgba(137, 180, 250, 0.04);
+  border-color: rgba(137, 180, 250, 0.12);
 }
 body.coding-mode .thinking-chip-header:hover {
-  background: rgba(0, 255, 65, 0.06);
+  background: rgba(137, 180, 250, 0.06);
 }
 
 /* ═══════════════════════════════════════════
@@ -2045,9 +2112,9 @@ body.coding-mode .thinking-chip-header:hover {
 }
 
 body.coding-mode .team-live-panel {
-  border-color: rgba(0, 255, 65, 0.3);
-  background: rgba(0, 255, 65, 0.04);
-  box-shadow: 0 0 12px rgba(0, 255, 65, 0.06);
+  border-color: rgba(137, 180, 250, 0.25);
+  background: rgba(137, 180, 250, 0.04);
+  box-shadow: 0 0 12px rgba(137, 180, 250, 0.06);
 }
 
 .team-live-header {
@@ -2063,7 +2130,7 @@ body.coding-mode .team-live-panel {
 }
 
 body.coding-mode .team-live-header {
-  background: rgba(0, 255, 65, 0.03);
+  background: rgba(137, 180, 250, 0.03);
 }
 
 .team-live-status {
@@ -2092,7 +2159,7 @@ body.coding-mode .team-live-header {
 }
 
 body.coding-mode .team-mate-card.active {
-  border-color: rgba(0, 255, 65, 0.35);
+  border-color: rgba(137, 180, 250, 0.35);
 }
 
 .team-mate-header {
@@ -2109,7 +2176,7 @@ body.coding-mode .team-mate-card.active {
 }
 
 body.coding-mode .team-mate-name {
-  color: var(--matrix-bright, #00ff41);
+  color: #89b4fa;
 }
 
 .team-mate-role {
