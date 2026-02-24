@@ -34,6 +34,7 @@ import {
   type SharedTask,
 } from './shared-task-list';
 import { WorktreeManager, createWorktreeManager, type WorktreeInfo } from './worktree-manager';
+import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -196,12 +197,25 @@ export function setTeamUpdateCallback(cb: TeamUpdateCallback): void {
   onTeamUpdate = cb;
 }
 
+function normalizeTeammateName(name: string): string {
+  return name.replace(/^@/, '').replace(/\s+/g, '-').toLowerCase();
+}
+
+function getPendingWorktreeNames(team: TeamSession): string[] {
+  if (!team.worktreeIsolation || !team.worktreeManager) return [];
+  const teammateNames = new Set(Array.from(team.teammates.values()).map(tm => normalizeTeammateName(tm.name)));
+  return team.worktreeManager
+    .listWorktrees()
+    .map(w => w.name)
+    .filter(n => teammateNames.has(normalizeTeammateName(n)));
+}
+
 function notifyUpdate(teamId: string): void {
   const team = activeTeams.get(teamId);
   if (team && onTeamUpdate) onTeamUpdate(teamId, team);
 
-  // Phase 9.096e: Auto-dissolve when all teammates reach terminal state.
-  // Dissolve is housekeeping, not a lead decision. Fire it automatically.
+  // Auto-finalize when all teammates reach terminal state.
+  // Tool-level enforcement: do not dissolve while unmerged worktrees remain.
   if (team && team.status === 'active') {
     const allTerminal = team.teammates.size > 0 &&
       Array.from(team.teammates.values()).every(t => t.status === 'done' || t.status === 'failed');
@@ -210,10 +224,12 @@ function notifyUpdate(teamId: string): void {
       // Small delay to let final UI updates land before cleanup
       setTimeout(async () => {
         try {
-          console.log(`[team] Auto-dissolving ${teamId} — all teammates finished.`);
-          await dissolveTeam(teamId);
+          console.log(`[team] Auto-finalizing ${teamId} — all teammates finished.`);
+          await finalizeTeam(teamId);
         } catch (e: any) {
-          console.error(`[team] Auto-dissolve failed for ${teamId}:`, e?.message);
+          console.error(`[team] Auto-finalize failed for ${teamId}:`, e?.message);
+          const stillTeam = activeTeams.get(teamId);
+          if (stillTeam) stillTeam._autoDissolveScheduled = false;
         }
       }, 2000);
     }
@@ -242,7 +258,7 @@ export async function createTeam(
 
   // Initialize mailbox and task list
   initMailbox(teamId, '@lead');
-  initTaskList(teamId);
+  initTaskList(teamId, true);
 
   // Phase 8.39: Set up worktree manager if isolation enabled and in a git repo
   const resolvedDir = workingDir.replace(/^~/, process.env.HOME || process.env.USERPROFILE || '.');
@@ -429,7 +445,16 @@ async function runTeammateSession(
       : baseConfig;
 
     const model = createModel(tmConfig);
-    const tools = createTools(browserCtx, sessionId, { developerMode: teamDevMode, llmConfig: tmConfig, agentName: name });
+    const team = activeTeams.get(teamId);
+    const tools = createTools(browserCtx, sessionId, {
+      developerMode: teamDevMode,
+      llmConfig: tmConfig,
+      codingMode: true,
+      teamId,
+      agentName: name,
+      worktreeIsolation: team?.worktreeIsolation,
+      projectWorkingDir: teammate.worktreePath || team?.workingDir || process.cwd(),
+    });
 
     // Get unread messages for this teammate
     const unread = getUnreadMessages(teamId, name);
@@ -475,7 +500,7 @@ async function runTeammateSession(
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent }],
       tools,
-      maxOutputTokens: tmConfig.thinking !== false ? 16384 : 2048,
+      maxOutputTokens: 16384,
       // Phase 9.096f: Match main agent step limit (200). 100 was cutting teammates short.
       stopWhen: stepCountIs(200),
       abortSignal: tmAbortController.signal,
@@ -487,9 +512,10 @@ async function runTeammateSession(
             const toolName = tr.toolName || 'unknown';
             teammate.toolsUsed.push(toolName);
 
-            const resultStr = typeof tr.result === 'string'
-              ? tr.result
-              : JSON.stringify(tr.result ?? '');
+            const rawResult = (tr as any).result ?? (tr as any).output ?? '';
+            const resultStr = typeof rawResult === 'string'
+              ? rawResult
+              : JSON.stringify(rawResult ?? '');
 
             // Broadcast tool activity to in-chat panel
             teamBroadcast('team:teammate-tool', {
@@ -500,7 +526,15 @@ async function runTeammateSession(
 
             // Passive file tracking + auto mailbox on file writes (throttled)
             if (toolName === 'file_write' || toolName === 'file_append') {
-              const filePath = (tr as any).args?.path || (tr as any).args?.file_path || '';
+              const inputArgs = (tr as any).args || (tr as any).input || {};
+              let filePath = inputArgs.path || inputArgs.file_path || '';
+              // Fallback: parse from result string (e.g. "✅ Written: /path/to/file (123 bytes)")
+              if (!filePath) {
+                const writtenMatch = resultStr.match(/Written:\s*([^\s(]+)/);
+                if (writtenMatch) {
+                  filePath = writtenMatch[1];
+                }
+              }
               if (filePath) {
                 if (!teammate.filesWritten) teammate.filesWritten = [];
                 teammate.filesWritten.push(filePath);
@@ -563,9 +597,10 @@ async function runTeammateSession(
             if (!teammate._activityLog) teammate._activityLog = [];
             for (const tr of toolResults) {
               const toolName = (tr as any).toolName || 'unknown';
-              const args = (tr as any).args || {};
+              const args = (tr as any).args || (tr as any).input || {};
               const desc = describeToolActivity(toolName, args);
-              const resultStr = typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? '');
+              const rawResult = (tr as any).result ?? (tr as any).output ?? '';
+              const resultStr = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult ?? '');
               const resultPreview = resultStr.slice(0, 200);
               teammate._activityLog.push(`${desc} → ${resultPreview}`);
             }
@@ -878,7 +913,7 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
       system: systemPrompt,
       messages: resumeHistory,
       tools,
-      maxOutputTokens: 2048, // teammates use secondary model (thinking off)
+      maxOutputTokens: 16384, // universal cap
       stopWhen: stepCountIs(200), // Phase 9.096f: match main agent
       abortSignal: abortController.signal,
       onStepFinish: async (event: any) => {
@@ -887,12 +922,21 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
           for (const tr of toolResults) {
             const toolName = tr.toolName || 'unknown';
             teammate.toolsUsed.push(toolName);
-            const resultStr = typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? '');
+            const rawResult = (tr as any).result ?? (tr as any).output ?? '';
+            const resultStr = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult ?? '');
             teamBroadcast('team:teammate-tool', { name, toolName, display: `🔧 ${toolName} → ${resultStr.slice(0, 120)}` });
 
             // Passive file tracking
             if (toolName === 'file_write' || toolName === 'file_append') {
-              const filePath = (tr as any).args?.path || (tr as any).args?.file_path || '';
+              const inputArgs = (tr as any).args || (tr as any).input || {};
+              let filePath = inputArgs.path || inputArgs.file_path || '';
+              // Fallback: parse from result string (e.g. "✅ Written: /path/to/file (123 bytes)")
+              if (!filePath) {
+                const writtenMatch = resultStr.match(/Written:\s*([^\s(]+)/);
+                if (writtenMatch) {
+                  filePath = writtenMatch[1];
+                }
+              }
               if (filePath) {
                 if (!teammate.filesWritten) teammate.filesWritten = [];
                 teammate.filesWritten.push(filePath);
@@ -923,9 +967,10 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
             if (!teammate._activityLog) teammate._activityLog = [];
             for (const tr of toolResults) {
               const toolName = (tr as any).toolName || 'unknown';
-              const args = (tr as any).args || {};
+              const args = (tr as any).args || (tr as any).input || {};
               const desc = describeToolActivity(toolName, args);
-              const resultStr = typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? '');
+              const rawResult = (tr as any).result ?? (tr as any).output ?? '';
+              const resultStr = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult ?? '');
               teammate._activityLog.push(`${desc} → ${resultStr.slice(0, 200)}`);
             }
             if (event.text) {
@@ -1030,6 +1075,21 @@ export function writeContract(
 
   // Write the contract file
   fs.writeFileSync(absolutePath, content, 'utf-8');
+
+  // Tool-level merge safety: if using worktrees in a git repo, auto-commit contract updates
+  // so worktree_merge won't fail with "untracked files would be overwritten".
+  if (team.worktreeIsolation && team.worktreeManager) {
+    try {
+      const relForGit = path.relative(resolvedDir, absolutePath);
+      execSync(`git add -- "${relForGit.replace(/"/g, '\\"')}"`, { cwd: resolvedDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      const staged = execSync('git diff --cached --name-only', { cwd: resolvedDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }) as string;
+      if (staged.trim().length > 0) {
+        execSync(`git commit -m "[tappi] Update contract ${relativePath.replace(/"/g, '\\"')}"`, { cwd: resolvedDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      }
+    } catch {
+      // Non-fatal: contract write still succeeded
+    }
+  }
 
   // Track the contract
   const contract: ContractFile = {
@@ -1342,6 +1402,15 @@ export function getTeamStatus(teamId: string): string {
     }
   }
 
+  const pendingWorktrees = getPendingWorktreeNames(team);
+  if (!hasWorkingTeammates && pendingWorktrees.length > 0) {
+    lines.push(
+      '',
+      `⚠️ Pending merges: ${pendingWorktrees.join(', ')}. Team will not dissolve until these are merged.`,
+      'Use `team_finalize` (recommended) or `worktree_merge` for each worktree.'
+    );
+  }
+
   // Phase 9.096d: Role reminder when teammates are working
   if (hasWorkingTeammates) {
     lines.push(
@@ -1352,6 +1421,64 @@ export function getTeamStatus(teamId: string): string {
       '• `team_status` — re-check progress',
       '⚠️ Do NOT write code in the project directory while teammates are running.',
     );
+  }
+
+  return lines.join('\n');
+}
+
+// ─── Finalize Team (merge + dissolve) ───
+
+export async function finalizeTeam(teamId: string): Promise<string> {
+  const team = activeTeams.get(teamId);
+  if (!team) return `❌ Team "${teamId}" not found.`;
+
+  // No worktree isolation: just dissolve
+  if (!team.worktreeIsolation || !team.worktreeManager) {
+    return dissolveTeam(teamId);
+  }
+
+  const lines: string[] = [`🔧 Finalizing team ${teamId}...`];
+  const pending = getPendingWorktreeNames(team);
+
+  if (pending.length === 0) {
+    lines.push('✓ No pending worktrees.');
+    lines.push(await dissolveTeam(teamId));
+    return lines.join('\n');
+  }
+
+  // Only merge teammates that are terminal; never merge active/interrupted work
+  const terminalNames = new Set(
+    Array.from(team.teammates.values())
+      .filter(t => t.status === 'done' || t.status === 'failed')
+      .map(t => normalizeTeammateName(t.name))
+  );
+
+  for (const wtName of pending) {
+    if (!terminalNames.has(normalizeTeammateName(wtName))) {
+      lines.push(`⏭️ Skipped ${wtName}: teammate not terminal yet.`);
+      continue;
+    }
+    try {
+      const merged = await team.worktreeManager.mergeWorktree(wtName, { strategy: 'squash' });
+      lines.push(merged.message);
+      if (merged.success) {
+        const removed = await team.worktreeManager.removeWorktree(wtName, { force: false });
+        lines.push(removed.message);
+      }
+    } catch (e: any) {
+      lines.push(`❌ Finalize failed for ${wtName}: ${e?.message || e}`);
+    }
+  }
+
+  const remaining = getPendingWorktreeNames(team);
+  if (remaining.length === 0) {
+    lines.push('✓ All worktrees merged.');
+    lines.push(await dissolveTeam(teamId));
+  } else {
+    lines.push(`⚠️ Remaining unmerged worktrees: ${remaining.join(', ')}. Resolve conflicts and run team_finalize again.`);
+    team.status = 'completing';
+    team._autoDissolveScheduled = false;
+    notifyUpdate(teamId);
   }
 
   return lines.join('\n');

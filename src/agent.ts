@@ -559,7 +559,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
         // effort:'medium' controls how much the model thinks (keeping costs reasonable).
         // 16K gives headroom for thinking (~8K) + response (~2K) + safety margin.
         // Without thinking, 2048 is enough for response only.
-        maxOutputTokens: llmConfig.thinking !== false ? 16384 : 2048,
+        maxOutputTokens: 16384,
         ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
         // Phase 8.40 + Phase 9 fix: AI SDK v6 defaults to stepCountIs(1) which
         // limits the agent to a single LLM call. Override with 200 steps so the
@@ -731,7 +731,17 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
             console.log('[agent] unhandled chunk type:', ct);
           }
         }
-        // tool-call / tool-result events handled by onStepFinish — skip here
+        // Emit tool events for SSE consumers
+        if (chunk.type === 'tool-call') {
+          const tc = chunk as any;
+          try { agentEvents.emit('tool', { type: 'tool-call', toolName: tc.toolName, args: tc.args }); } catch {}
+        }
+        if (chunk.type === 'tool-result') {
+          const tr = chunk as any;
+          const raw = tr.result ?? tr.output ?? '';
+          const resultStr = typeof raw === 'string' ? raw.slice(0, 500) : JSON.stringify(raw).slice(0, 500);
+          try { agentEvents.emit('tool', { type: 'tool-result', toolName: tr.toolName, result: resultStr }); } catch {}
+        }
       }
       console.log('[agent] Stream complete, response:', fullResponse.length, 'chars, tools:', toolsUsed.length);
     } catch (streamErr: any) {
@@ -938,7 +948,7 @@ async function generateEvictionSummaryIfNeeded(sessionId: string, llmConfig: LLM
     const { text } = await generateText({
       model,
       prompt,
-      maxOutputTokens: 300, // Keep summaries compact
+      maxOutputTokens: 16384, // universal cap
     });
 
     if (text && text.trim()) {

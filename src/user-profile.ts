@@ -252,7 +252,7 @@ ${browsingData}`;
     let { text } = await generateText({
       model,
       prompt: basePrompt,
-      maxOutputTokens: 400, // Allow room but validate after
+      maxOutputTokens: 16384, // universal cap
     });
 
     text = text.trim();
@@ -266,7 +266,7 @@ ${browsingData}`;
       parsed = JSON.parse(text);
     } catch {
       console.warn('[user-profile] LLM output is not valid JSON, retrying with strict prompt');
-      const retry = await generateText({ model, prompt: strictPrompt, maxOutputTokens: 300 });
+      const retry = await generateText({ model, prompt: strictPrompt, maxOutputTokens: 16384 });
       let retryText = retry.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
       try {
         parsed = JSON.parse(retryText);
@@ -280,7 +280,7 @@ ${browsingData}`;
     const profileStr = JSON.stringify(parsed);
     if (estimateTokens(profileStr) > MAX_TOKENS) {
       console.warn('[user-profile] Profile exceeds 200 tokens, retrying with strict constraint');
-      const retry = await generateText({ model, prompt: strictPrompt, maxOutputTokens: 300 });
+      const retry = await generateText({ model, prompt: strictPrompt, maxOutputTokens: 16384 });
       let retryText = retry.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
       try {
         parsed = JSON.parse(retryText);

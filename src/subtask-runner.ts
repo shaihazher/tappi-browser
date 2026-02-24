@@ -781,7 +781,7 @@ async function runBrowsingSubtask(
       system: systemPrompt,
       messages: messages as any,
       tools,
-      maxOutputTokens: llmConfig.thinking !== false ? 16384 : 2048,
+      maxOutputTokens: 16384,
       ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
       stopWhen: stepCountIs(100),
       abortSignal: subtaskAbortController.signal,
@@ -935,7 +935,7 @@ async function runCompileStep(
   const result = streamText({
     model,
     prompt,
-    maxOutputTokens: llmConfig.thinking !== false ? 16384 : 2048,
+    maxOutputTokens: 16384,
   });
 
   let fullText = '';
