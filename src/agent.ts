@@ -555,7 +555,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
         tools,
         // With thinking ON, the total output budget (thinking + response) must be high
         // enough for both. 16384 when thinking, 4096 otherwise.
-        maxOutputTokens: llmConfig.thinking !== false ? 16384 : 4096,
+        maxOutputTokens: 2048,
         ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
         // Phase 8.40 + Phase 9 fix: AI SDK v6 defaults to stepCountIs(1) which
         // limits the agent to a single LLM call. Override with 200 steps so the
