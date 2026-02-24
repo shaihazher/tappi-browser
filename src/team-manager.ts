@@ -500,7 +500,7 @@ async function runTeammateSession(
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent }],
       tools,
-      maxOutputTokens: 16384,
+      maxOutputTokens: 32768,
       // Phase 9.096f: Match main agent step limit (200). 100 was cutting teammates short.
       stopWhen: stepCountIs(200),
       abortSignal: tmAbortController.signal,
@@ -913,7 +913,7 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
       system: systemPrompt,
       messages: resumeHistory,
       tools,
-      maxOutputTokens: 16384, // universal cap
+      maxOutputTokens: 32768, // universal cap
       stopWhen: stepCountIs(200), // Phase 9.096f: match main agent
       abortSignal: abortController.signal,
       onStepFinish: async (event: any) => {

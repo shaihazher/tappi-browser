@@ -418,7 +418,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
         // effort:'medium' controls how much the model thinks (keeping costs reasonable).
         // 16K gives headroom for thinking (~8K) + response (~2K) + safety margin.
         // Without thinking, 2048 is enough for response only.
-        maxOutputTokens: 16384,
+        maxOutputTokens: 32768,
         ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
         // Phase 8.40 + Phase 9 fix: AI SDK v6 defaults to stepCountIs(1) which
         // limits the agent to a single LLM call. Override with 200 steps so the
@@ -807,7 +807,7 @@ async function generateEvictionSummaryIfNeeded(sessionId: string, llmConfig: LLM
     const { text } = await generateText({
       model,
       prompt,
-      maxOutputTokens: 16384, // universal cap
+      maxOutputTokens: 32768, // universal cap
     });
 
     if (text && text.trim()) {
