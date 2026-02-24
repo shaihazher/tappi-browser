@@ -24,7 +24,7 @@ export interface LLMConfig {
   provider: string;
   model: string;
   apiKey: string; // decrypted — may be empty for Bedrock/Vertex/Ollama
-  thinking?: boolean;      // true = medium thinking, false = no thinking
+  thinking?: boolean;      // true = adaptive thinking (medium effort), false = no thinking
   deepMode?: boolean;      // true = decompose complex tasks (default), false = always direct
   // Cloud provider fields
   region?: string;         // Bedrock: AWS region
@@ -78,23 +78,17 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
   switch (provider) {
     case 'anthropic':
     case 'bedrock': {
-      // Use the `effort` parameter (output_config.effort) — same approach as OpenClaw.
-      // This controls thinking, text responses, and tool calls without needing explicit
-      // thinking config. The model decides when/how much to think based on effort level.
-      // maxTokens here is for the response only — thinking budget is managed by effort.
+      // Adaptive thinking (Opus 4.6 / Sonnet 4.6): model decides when/how much to think.
+      // No effort constraint — let the model reason as much as it needs.
+      // maxOutputTokens (set by caller, ~16K) gives headroom for thinking + response.
       if (thinkingEnabled) {
         return {
           anthropic: {
-            maxTokens: 2048,
-            effort: 'medium',
+            thinking: { type: 'adaptive' },
           },
         };
       }
-      return {
-        anthropic: {
-          maxTokens: 2048,
-        },
-      };
+      return {};
     }
 
     case 'openai':
@@ -132,12 +126,12 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
         if (thinkingEnabled) {
           return {
             anthropic: {
-              maxTokens: 2048,
+              thinking: { type: 'adaptive' },
               effort: 'medium',
             },
           };
         }
-        return { anthropic: { maxTokens: 2048 } };
+        return {};
       }
       if (model.startsWith('openai/') && /^openai\/(o1|o3|o4)/.test(model)) {
         if (thinkingEnabled) {

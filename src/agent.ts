@@ -553,9 +553,11 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
         system: activeSystemPrompt,
         messages: messages as any, // AI SDK accepts ModelMessage[]
         tools,
-        // With thinking ON, the total output budget (thinking + response) must be high
-        // enough for both. 16384 when thinking, 4096 otherwise.
-        maxOutputTokens: 2048,
+        // With adaptive thinking, max_tokens includes BOTH thinking + response tokens.
+        // effort:'medium' controls how much the model thinks (keeping costs reasonable).
+        // 16K gives headroom for thinking (~8K) + response (~2K) + safety margin.
+        // Without thinking, 2048 is enough for response only.
+        maxOutputTokens: llmConfig.thinking !== false ? 16384 : 2048,
         ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
         // Phase 8.40 + Phase 9 fix: AI SDK v6 defaults to stepCountIs(1) which
         // limits the agent to a single LLM call. Override with 200 steps so the
@@ -598,6 +600,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
         onStepFinish: async (event: any) => {
           try {
             const toolResults = event.toolResults || [];
+            console.log(`[agent] STEP FINISH — step: ${event.stepNumber ?? '?'}, finishReason: ${event.finishReason ?? 'n/a'}, tools: ${toolResults.length}, text: ${(event.text?.length ?? 0)} chars, reasoning: ${(event.reasoningText?.length ?? 0)} chars`);
 
             if (toolResults.length === 0) {
               idleCount++;
@@ -709,6 +712,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
           sendChunk(mainWindow, textDelta, false, ariaWebContents);
 
         } else if (chunk.type === 'finish') {
+          const finishMeta = chunk as any;
+          console.log(`[agent] FINISH — finishReason: ${finishMeta.finishReason ?? 'n/a'}, reasoningChunks: ${reasoningChunkCount}, textChunks: ${textChunkCount}, response: ${fullResponse.length} chars, usage:`, JSON.stringify(finishMeta.usage ?? {}));
           if (reasoningBuffer) {
             broadcast('agent:reasoning-chunk', { text: reasoningBuffer, done: true });
             if (reasoningBuffer.length > 0) {

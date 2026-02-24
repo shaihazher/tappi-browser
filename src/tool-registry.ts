@@ -589,23 +589,33 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
           }
           // Phase 9.096d: Gate — block writes into team working dir while teammates are running (lead only)
           // Teammates are expected to write to their worktrees — this gate is for the lead
+          const resolvedTeamDir = activeTeam.workingDir.replace(/^~/, os.homedir());
           if (!callerName || callerName === '@lead') {
             const hasRunningTeammates = Array.from(activeTeam.teammates.values()).some(tm => tm.status === 'working');
             if (hasRunningTeammates) {
-              const resolvedTeamDir = activeTeam.workingDir.replace(/^~/, os.homedir());
               if (resolvedPath.startsWith(resolvedTeamDir)) {
                 return `❌ Write blocked: "${filePath}" is inside the team's working directory (${activeTeam.workingDir}). Teammates are currently writing files there. Writing from the lead while teammates are running causes merge conflicts. Wait for teammates to finish, or use team_interrupt to redirect them.`;
               }
             }
           }
-          // Sequence warning: writing to a contract file directly
+          // Sequence warning / auto-register: writing to a contract file directly
           const isContractFile = activeTeam.contracts.some(c => {
             const contractAbs = c.absolutePath || path.join(activeTeam.workingDir, c.path);
             return resolvedPath === contractAbs || resolvedPath.endsWith(c.path);
           });
-          if (isContractFile) {
-            const result = fileTools.fileWrite(filePath, content);
-            return result + '\n\n⚠️ This is a contract file. Use team_write_contracts instead — it auto-copies to all teammate worktrees and keeps interfaces in sync.';
+          // Also detect NEW files written to a contracts/ directory (not yet registered)
+          const relPath = path.relative(resolvedTeamDir, resolvedPath);
+          const isInContractsDir = !relPath.startsWith('..') && (relPath.startsWith('contracts/') || relPath.startsWith('contracts\\'));
+          if (isContractFile || isInContractsDir) {
+            // Auto-register as a team contract so team_run_teammate doesn't gate
+            const teamId = teamManager.getActiveTeamId()!;
+            const result = teamManager.writeContract(
+              teamId,
+              isContractFile ? activeTeam.contracts.find(c => resolvedPath.endsWith(c.path))?.path || relPath : relPath,
+              content,
+              `Auto-registered from file_write to ${relPath}`,
+            );
+            return result + '\n\n💡 Auto-registered as a team contract. Next time, use team_write_contracts directly — it auto-copies to all teammate worktrees.';
           }
         }
         return fileTools.fileWrite(filePath, content);
