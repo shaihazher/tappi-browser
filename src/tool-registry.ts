@@ -1205,7 +1205,7 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
 
   return {
     exec: tool({
-      description: `Run a shell command. Output is captured — you see first 20 + last 20 lines. Use exec_grep to search full output. Default timeout: 30s.${shellProjectCwd ? ` Default cwd: ${shellProjectCwd}` : ' Default cwd: ~/tappi-workspace/'}`,
+      description: `Run a shell command (non-interactive, no TTY). Output is captured — you see first 20 + last 20 lines. Use exec_grep to search full output. Default timeout: 30s. Interactive prompts will hang or cancel — avoid scaffolding CLIs (create-vite, create-react-app, etc.) and write files directly instead.${shellProjectCwd ? ` Default cwd: ${shellProjectCwd}` : ' Default cwd: ~/tappi-workspace/'}`,
       inputSchema: z.object({
         command: z.string().describe('Shell command to run'),
         cwd: z.string().optional().describe(`Working directory${shellProjectCwd ? ` (default: ${shellProjectCwd})` : ' (default: ~/tappi-workspace/)'}`),

@@ -236,6 +236,8 @@ const CODING_MODE_SYSTEM_PROMPT_ADDENDUM = `
 - After \`team_interrupt\`, wait 30-60s then check \`team_status\`.
 
 **Contracts:** Types first, one concern per file, no implementations (stubs only), ≤20 lines each, max 5 per phase. Use relative imports that work from worktrees.
+
+**Shell:** exec is non-interactive (no TTY/stdin). Scaffolding tools (create-vite, create-react-app, create-next-app, etc.) will hang or cancel on prompts. Write project files directly with file_write instead.
 `;
 
 let activeRun: AbortController | null = null;
