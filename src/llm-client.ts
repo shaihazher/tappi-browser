@@ -78,17 +78,20 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
   switch (provider) {
     case 'anthropic':
     case 'bedrock': {
+      // With extended thinking, maxTokens is the TOTAL budget (thinking + response).
+      // 2048 is far too low — thinking alone can consume 1000+ tokens, leaving
+      // nothing for the actual response or tool calls. Use 16384 when thinking is ON.
       if (thinkingEnabled) {
         return {
           anthropic: {
-            maxTokens: 2048,
+            maxTokens: 16384,
             thinking: { type: 'adaptive', effort: 'medium' },
           },
         };
       }
       return {
         anthropic: {
-          maxTokens: 2048,
+          maxTokens: 4096,
         },
       };
     }
@@ -128,12 +131,12 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
         if (thinkingEnabled) {
           return {
             anthropic: {
-              maxTokens: 2048,
+              maxTokens: 16384,
               thinking: { type: 'adaptive', effort: 'medium' },
             },
           };
         }
-        return { anthropic: { maxTokens: 2048 } };
+        return { anthropic: { maxTokens: 4096 } };
       }
       if (model.startsWith('openai/') && /^openai\/(o1|o3|o4)/.test(model)) {
         if (thinkingEnabled) {

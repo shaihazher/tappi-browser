@@ -781,7 +781,7 @@ async function runBrowsingSubtask(
       system: systemPrompt,
       messages: messages as any,
       tools,
-      maxOutputTokens: 2048,
+      maxOutputTokens: llmConfig.thinking !== false ? 16384 : 4096,
       ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
       stopWhen: stepCountIs(100),
       abortSignal: subtaskAbortController.signal,

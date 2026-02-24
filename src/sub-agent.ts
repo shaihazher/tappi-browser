@@ -138,7 +138,7 @@ async function runSubAgent(
       system: SUB_AGENT_SYSTEM_PROMPT,
       messages,
       tools,
-      maxOutputTokens: 2048,
+      maxOutputTokens: llmConfig.thinking !== false ? 16384 : 4096,
       ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
       stopWhen: stepCountIs(50), // sub-agents get fewer steps
       onStepFinish: async (event: any) => {
