@@ -240,7 +240,7 @@ function updateAddressBar(tab) {
     urlInput.readOnly = true;
     urlInput.style.color = 'var(--lotus, #e8a0bf)';
     urlInput.style.cursor = 'default';
-    if (ssl) { ssl.textContent = '🪷'; ssl.style.opacity = '1'; }
+    if (ssl) { ssl.innerHTML = '<svg class="aria-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 2C12 2 8.5 7 8.5 10.5C8.5 12.4 9.3 13.8 10.5 14.6C9 15.2 7 15 5 14C5 14 5.5 17 8 19C9.2 20 10.5 20.5 12 20.5C13.5 20.5 14.8 20 16 19C18.5 17 19 14 19 14C17 15 15 15.2 13.5 14.6C14.7 13.8 15.5 12.4 15.5 10.5C15.5 7 12 2 12 2Z" fill="url(#lotus-grad-ssl)" stroke-linejoin="round"/><defs><linearGradient id="lotus-grad-ssl" x1="12" y1="2" x2="12" y2="20.5" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#f0b4d4"/><stop offset="100%" stop-color="#c57ba8"/></linearGradient></defs></svg>'; ssl.style.opacity = '1'; }
     if (bookmarkBtn) bookmarkBtn.style.display = 'none';
     return;
   }
@@ -866,7 +866,7 @@ agentClose.addEventListener('click', () => window.tappi.toggleAgent());
 function renderWelcome() {
   agentMessages.innerHTML = `
     <div class="agent-welcome">
-      <div class="lotus-big">🪷</div>
+      <div class="lotus-big"><svg class="aria-icon-lg" width="48" height="48" viewBox="0 0 24 24" fill="none"><path d="M12 2C12 2 8.5 7 8.5 10.5C8.5 12.4 9.3 13.8 10.5 14.6C9 15.2 7 15 5 14C5 14 5.5 17 8 19C9.2 20 10.5 20.5 12 20.5C13.5 20.5 14.8 20 16 19C18.5 17 19 14 19 14C17 15 15 15.2 13.5 14.6C14.7 13.8 15.5 12.4 15.5 10.5C15.5 7 12 2 12 2Z" fill="url(#lotus-grad-ab)" stroke-linejoin="round"/><defs><linearGradient id="lotus-grad-ab" x1="12" y1="2" x2="12" y2="20.5" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#f0b4d4"/><stop offset="100%" stop-color="#c57ba8"/></linearGradient></defs></svg></div>
       <h3>Hi, I'm Tappi</h3>
       <p>Your AI browser companion.<br>
       Ask me to navigate, summarize, fill forms, compare products — anything you see on the web.</p>
