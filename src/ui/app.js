@@ -1846,9 +1846,19 @@ document.querySelectorAll('.toggle-btn').forEach(btn => {
   });
 });
 
-// Show/hide API key
-toggleApikey.addEventListener('click', () => {
-  settingApikey.type = settingApikey.type === 'password' ? 'text' : 'password';
+// Show/hide API key — reveals actual key from backend
+toggleApikey.addEventListener('click', async () => {
+  if (settingApikey.type === 'password') {
+    // Revealing — fetch real key if the field has the mask placeholder
+    if (settingApikey.value === '••••••••') {
+      const result = await window.tappi.revealProviderApiKey();
+      if (result && result.key) settingApikey.value = result.key;
+    }
+    settingApikey.type = 'text';
+  } else {
+    // Hiding — if the user hasn't edited the key, restore the mask
+    settingApikey.type = 'password';
+  }
 });
 
 // Secondary model toggle (Phase 8.85)
@@ -1929,8 +1939,10 @@ settingsSave.addEventListener('click', async () => {
   if (result.success) {
     apikeyStatus.textContent = '✓ Settings saved';
     apikeyStatus.className = 'settings-hint success';
-    settingApikey.value = '';
-    settingApikey.placeholder = (rawKey || document.getElementById('setting-apikey').placeholder === '••••••••') ? '••••••••' : 'Enter API key';
+    // Restore masked value if a key is saved, empty if cleared
+    const hasKey = rawKey || settingApikey.value === '••••••••';
+    settingApikey.value = hasKey ? '••••••••' : '';
+    settingApikey.type = 'password';
     setTimeout(closeSettings, 800);
   }
 });

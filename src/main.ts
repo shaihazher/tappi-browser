@@ -1113,6 +1113,12 @@ function createWindow() {
     };
   });
 
+  // Reveal the actual LLM API key (for eye toggle in settings)
+  ipcMain.handle('config:reveal-api-key', () => {
+    if (!currentConfig.llm.apiKey) return { key: '' };
+    return { key: decryptApiKey(currentConfig.llm.apiKey) };
+  });
+
   // Shared config update logic — used by both IPC handler and REST API
   function applyConfigUpdates(updates: Partial<TappiConfig & { rawApiKey?: string; rawSecondaryApiKey?: string }>): { success: boolean } {
     if (updates.llm) {

@@ -94,6 +94,7 @@ contextBridge.exposeInMainWorld('tappi', {
   // Settings / Config
   getConfig: () => ipcRenderer.invoke('config:get'),
   saveConfig: (updates: any) => ipcRenderer.invoke('config:save', updates),
+  revealProviderApiKey: () => ipcRenderer.invoke('config:reveal-api-key'),
   onConfigLoaded: (callback: (config: any) => void) => {
     ipcRenderer.on('config:loaded', (_e, config) => callback(config));
   },
