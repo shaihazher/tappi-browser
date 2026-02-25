@@ -472,17 +472,56 @@ async function runSubAgent(
       },
     });
 
-    const fullResponse = result.text || '';
-    console.log(`[sub-agent] ${agentTask.id} complete: ${fullResponse.length} chars, ${agentTask.toolsUsed.length} tool calls, ${result.steps?.length ?? 0} steps`);
+    // ─── Result Extraction ───────────────────────────────────────────
+    // result.text only captures text from the LAST step, which is often
+    // minimal (e.g. "Research complete.") when the model spent 60 steps
+    // calling tools. The actual findings are in intermediate step texts
+    // and file_write tool results. We assemble the full response from
+    // ALL steps to capture the model's synthesis work.
 
-    // Validate result quality
-    const rawResult = fullResponse || `Used ${agentTask.toolsUsed.length} tools: ${[...new Set(agentTask.toolsUsed)].join(', ')}`;
-    const MIN_RESEARCH_CHARS = 200;
-    if (agentTask.taskType === 'research' && rawResult.length < MIN_RESEARCH_CHARS) {
-      agentTask.result = `⚠️ THIN RESULT (${rawResult.length} chars — expected ${MIN_RESEARCH_CHARS}+). The sub-agent may have failed to extract meaningful content.\n\n${rawResult}`;
-      console.warn(`[sub-agent] ${agentTask.id} produced thin research result: ${rawResult.length} chars`);
+    const steps = result.steps || [];
+    const stepTexts: string[] = [];
+    const writtenFiles: string[] = [];
+
+    for (const step of steps) {
+      // Collect model text from each step (the model's thinking/synthesis)
+      const stepText = (step.text || '').trim();
+      if (stepText.length > 0) {
+        stepTexts.push(stepText);
+      }
+
+      // Track files the sub-agent wrote (findings reports, etc.)
+      for (const tr of (step.toolResults || []) as any[]) {
+        if (!tr) continue;
+        const output = tr.result ?? tr.output ?? '';
+        if (tr.toolName === 'file_write' && typeof output === 'string') {
+          const fileMatch = output.match(/Written:\s*(\S+)/);
+          if (fileMatch) writtenFiles.push(fileMatch[1]);
+        }
+      }
+    }
+
+    // Assemble the full response: prefer all step texts joined (captures
+    // the model's progressive synthesis), fall back to result.text.
+    const allStepText = stepTexts.join('\n\n').trim();
+    const finalText = (result.text || '').trim();
+    const fullResponse = allStepText.length > finalText.length ? allStepText : finalText;
+
+    console.log(`[sub-agent] ${agentTask.id} complete: finalText=${finalText.length}, allStepText=${allStepText.length}, fullResponse=${fullResponse.length} chars, ${agentTask.toolsUsed.length} tool calls, ${steps.length} steps, files=${writtenFiles.length}`);
+
+    if (fullResponse.length > 0) {
+      agentTask.result = fullResponse;
+      if (writtenFiles.length > 0) {
+        agentTask.result += `\n\n📁 Files written: ${writtenFiles.join(', ')}`;
+      }
     } else {
-      agentTask.result = rawResult;
+      // No text at all — the model only called tools without any synthesis.
+      // Build a minimal summary from what we know.
+      agentTask.result = `Sub-agent completed ${steps.length} steps using ${[...new Set(agentTask.toolsUsed)].join(', ')}.`;
+      if (writtenFiles.length > 0) {
+        agentTask.result += ` Files written: ${writtenFiles.join(', ')}`;
+      }
+      console.warn(`[sub-agent] ${agentTask.id} produced no text output across ${steps.length} steps`);
     }
     agentTask.status = 'completed';
 
