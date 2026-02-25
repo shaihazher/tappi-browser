@@ -18,6 +18,7 @@ import * as subAgent from './sub-agent';
 import * as cronManager from './cron-manager';
 import { searchHistory } from './conversation';
 import { agentListConversations, agentSearchConversations, agentReadConversation, addConversationMessage } from './conversation-store';
+import { agentEvents } from './agent-bus';
 import { queryHistory, queryBookmarks, queryDownloads } from './database';
 import type { BrowserContext } from './browser-tools';
 import type { LLMConfig } from './llm-client';
@@ -45,7 +46,6 @@ function emitProjectsUpdated(): void {
 export interface ToolRegistryOptions {
   developerMode?: boolean;
   llmConfig?: LLMConfig;
-  codingMode?: boolean;
   teamId?: string;        // Set when called from a teammate session
   agentName?: string;     // Set when called from a teammate session (e.g. "@backend")
   agentBrowsingDataAccess?: boolean; // Phase 8.4.1: grant agent access to history/bookmarks/downloads
@@ -1062,24 +1062,25 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     // ═══ SHELL TOOLS (Developer Mode only — conditionally included) ═══
     ...(options?.developerMode ? createShellTools(sessionId, browserCtx, options.llmConfig, options) : {}),
 
-    // ═══ TEAM TOOLS (Coding Mode + Developer Mode — conditionally included) ═══
-    ...(options?.developerMode && options?.codingMode
+    // ═══ TEAM TOOLS (Developer Mode — always included when dev mode is on) ═══
+    // Previously gated behind coding mode toggle — now available for any coding task.
+    ...(options?.developerMode
       ? createTeamTools(sessionId, browserCtx, options.llmConfig, options.teamId, options.agentName, options.worktreeIsolation)
       : {}),
 
-    // ═══ WORKTREE TOOLS (Phase 8.39 — Coding Mode + Developer Mode + git repo) ═══
-    ...(options?.developerMode && options?.codingMode
+    // ═══ WORKTREE TOOLS (Developer Mode + git repo) ═══
+    ...(options?.developerMode
       ? createWorktreeTools(options.repoPath)
       : {}),
 
     // ═══ BROWSING DATA TOOLS (Privacy gate — only when agentBrowsingDataAccess is ON) ═══
     ...(options?.agentBrowsingDataAccess ? createBrowsingDataTools() : {}),
 
-    // ═══ PROJECT TOOLS (Coding Mode only — Phase 9.07) ═══
-    ...(options?.codingMode ? createProjectTools(options?.conversationId) : {}),
+    // ═══ PROJECT TOOLS (Developer Mode — Phase 9.07) ═══
+    ...(options?.developerMode ? createProjectTools(options?.conversationId) : {}),
 
-    // ═══ CODING MEMORY TOOLS (Coding Mode only — Phase coding-memory) ═══
-    ...(options?.codingMode ? createCodingMemoryTools() : {}),
+    // ═══ CODING MEMORY TOOLS (Developer Mode — Phase coding-memory) ═══
+    ...(options?.developerMode ? createCodingMemoryTools() : {}),
 
     // ═══ USER PROFILE (Phase 9.096c — always available) ═══
 
@@ -1183,6 +1184,8 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
           const ariaWC = (browserCtx.tabManager as any).ariaWebContents;
           if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:present-download', payload);
         } catch {}
+        // Emit via agentEvents so API/SSE clients can receive the download card
+        try { agentEvents.emit('download_card', payload); } catch {}
 
         // Persist download card for conversation history (Phase 9.1)
         if (options?.conversationId) {
@@ -1307,22 +1310,17 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
     // ═══ SUB-AGENT (requires shell/dev mode) ═══
 
     spawn_agent: tool({
-      description: 'Spawn a sub-agent for a complex or parallel task. Inherits your model, tools, and dev mode access. Gets its own conversation. Max 3 concurrent. Check status with sub_agent_status. Use model="primary" for critical sub-agents that need full reasoning.',
+      description: 'Spawn a sub-agent for a complex or parallel task. Each sub-agent gets its own dedicated browser tab and task-specific scaffolding (research/coding/story-writing). Max 5 concurrent. Sub-agents report back when done. Check status with sub_agent_status. Use model="primary" for critical sub-agents.',
       inputSchema: z.object({
         task: z.string().describe('Clear, self-contained task description for the sub-agent'),
+        task_type: z.enum(['research', 'coding', 'story-writing', 'normal']).optional().describe('Task type determines the sub-agent contract and scaffolding. Auto-detected if omitted.'),
         model: z.enum(['primary', 'secondary']).optional().describe('Model tier: "secondary" (default, faster/cheaper) or "primary" (full reasoning for critical tasks)'),
       }),
-      execute: async ({ task, model }: { task: string; model?: 'primary' | 'secondary' }) => {
+      execute: async ({ task, task_type, model }: { task: string; task_type?: 'research' | 'coding' | 'story-writing' | 'normal'; model?: 'primary' | 'secondary' }) => {
         if (!llmConfig) return '❌ No LLM config available for sub-agent.';
-        // Block sub-agents entirely in coding mode — use team orchestration instead
-        if (toolOptions?.codingMode) {
-          const activeTeam = teamManager.getActiveTeamId();
-          if (activeTeam) {
-            return '❌ Coding Mode: You have an active team ("' + activeTeam + '"). Use team_run_teammate to assign work to teammates — they have worktree isolation, contract enforcement, and merge validation. Do NOT use spawn_agent as a workaround.';
-          }
-          return '❌ Coding Mode: Use team orchestration (team_create → team_write_contracts → team_run_teammate) instead of spawn_agent. Teams give you worktree isolation, shared contracts, and validated merges. spawn_agent has none of these — teammates would overwrite each other\'s files.';
-        }
-        return subAgent.spawnSubAgent(task, browserCtx, llmConfig, sessionId, model || 'secondary');
+        // Resolve task type: use provided, or auto-classify from task description
+        const resolvedType = task_type || subAgent.classifyTask(task);
+        return subAgent.spawnSubAgent(task, browserCtx, llmConfig, sessionId, model || 'secondary', resolvedType);
       },
     }),
 

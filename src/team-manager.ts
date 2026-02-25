@@ -449,7 +449,6 @@ async function runTeammateSession(
     const tools = createTools(browserCtx, sessionId, {
       developerMode: teamDevMode,
       llmConfig: tmConfig,
-      codingMode: true,
       teamId,
       agentName: name,
       worktreeIsolation: team?.worktreeIsolation,

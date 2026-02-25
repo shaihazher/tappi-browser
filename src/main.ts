@@ -22,6 +22,7 @@ import { TabManager } from './tab-manager';
 import { executeCommand, getMenu, type ExecutorContext } from './command-executor';
 import type { BrowserContext } from './browser-tools';
 import { runAgent, stopAgent, clearHistory, agentProgressData, interruptMainSession } from './agent';
+import { agentEvents } from './agent-bus';
 import { loadServices, registerService, removeService, storeApiKey, getApiKey, listApiKeys, deleteApiKey } from './http-tools';
 import { initDatabase, getDb, closeDatabase, reinitDatabase, addHistory, searchHistory, getRecentHistory, clearHistory as clearDbHistory, migrateBookmarksFromJson, getPermission, setPermission, getAllBookmarks, searchBookmarks, removeBookmark } from './database';
 import { profileManager } from './profile-manager';
@@ -507,6 +508,15 @@ function createWindow() {
   // Initialize download manager
   initDownloadManager(mainWindow);
 
+  // Relay agent download_card events to Electron windows (belt-and-suspenders for Electron mode)
+  agentEvents.on('download_card', (payload: any) => {
+    try { mainWindow?.webContents.send('agent:present-download', payload); } catch {}
+    try {
+      const ariaWC = tabManager?.ariaWebContents;
+      if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:present-download', payload);
+    } catch {}
+  });
+
   // Start ad blocker if enabled in config
   if (currentConfig.features.adBlocker) {
     startAdBlocker().then(() => {
@@ -872,7 +882,6 @@ function createWindow() {
       },
       window: mainWindow,
       developerMode: currentConfig.developerMode,
-      codingMode: codingMode ?? false,
       conversationId: convId || activeConversationId || undefined,
       ariaWebContents: tabManager?.ariaWebContents,
     });
@@ -2631,7 +2640,6 @@ function startDevServer() {
           },
           window: mainWindow,
           developerMode: currentConfig.developerMode,
-          codingMode: currentConfig.developerMode && (currentConfig.llm.codingMode === true),
           agentBrowsingDataAccess: currentConfig.privacy?.agentBrowsingDataAccess === true,
         });
         if (!socket.destroyed) socket.write('[agent] Running: ' + agentMsg + '\n');

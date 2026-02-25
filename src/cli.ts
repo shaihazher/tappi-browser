@@ -137,7 +137,14 @@ async function sseStream(endpoint: string, body: any): Promise<void> {
           if (line.startsWith('data: ')) {
             try {
               const payload = JSON.parse(line.slice(6));
-              process.stdout.write(payload.text || '');
+              if (payload.type === 'download_card' && payload.payload) {
+                // Download card event — show file info in terminal
+                const d = payload.payload;
+                const formats = (d.formats || []).join(', ');
+                process.stdout.write(`\n📎 File ready: ${d.name}${d.description ? ' — ' + d.description : ''} [${formats}]\n   Path: ${d.path}\n`);
+              } else {
+                process.stdout.write(payload.text || '');
+              }
             } catch {}
           }
         }

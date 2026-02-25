@@ -7,7 +7,6 @@
 
 import { streamText, generateText, stepCountIs } from 'ai';
 import type { BrowserWindow, WebContents } from 'electron';
-import { EventEmitter } from 'events';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -19,9 +18,9 @@ import * as toolManagerMod from './tool-manager';
 import { loadProfile, loadUserProfileTxt } from './user-profile';
 import type { BrowserContext } from './browser-tools';
 
-// Global event emitter for API server to subscribe to agent output
-export const agentEvents = new EventEmitter();
-agentEvents.setMaxListeners(50);
+// Re-export agentEvents from shared bus (avoids circular dep with tool-registry)
+export { agentEvents } from './agent-bus';
+import { agentEvents } from './agent-bus';
 
 // Phase 8.40: Progress tracking data (read by API server for /api/status)
 export interface AgentProgressData {
@@ -208,33 +207,70 @@ interface AgentRunOptions {
   window: BrowserWindow;
   sessionId?: string;
   developerMode?: boolean;
-  codingMode?: boolean; // true = team tools + coding system prompt (Phase 8.38)
   worktreeIsolation?: boolean; // Phase 8.39: git worktree isolation enabled
   agentBrowsingDataAccess?: boolean; // Phase 8.4.1: grant agent access to history/bookmarks/downloads
   conversationId?: string;  // Phase 8.35: SQLite conversation ID for persistence
   ariaWebContents?: WebContents | null; // Phase 8.35: Aria tab webcontents for broadcast
 }
 
-const CODING_MODE_SYSTEM_PROMPT_ADDENDUM = `
+// Task-type system prompt addendums — injected based on classified task type
+const TASK_TYPE_ADDENDUMS: Record<string, string> = {
+  research: `
+## Task Mode: Research
 
-## Coding Mode — Team Orchestration
+This is a research task. Use spawn_agent to delegate sub-research to up to 5 parallel agents.
 
-**Spawn a team for multi-file tasks.** Single-file fixes are fine to do directly.
-
-**Protocol — Contract-First:**
-1. \`team_create\` → 2. \`team_write_contracts\` (BEFORE spawning) → 3. \`team_task_add\` + \`team_run_teammate\` → 4. Monitor with \`team_status\`, merge with \`worktree_merge\`, validate with \`team_validate\` → 5. \`team_advance_phase\` for next batch.
+**Protocol:**
+1. Classify the research into 2-5 sub-topics.
+2. spawn_agent for each sub-topic — each gets its own tab and contract.
+3. Wait for all agents to complete (check sub_agent_status).
+4. Synthesize findings into a final report.
+5. Use present_download to offer the report as a downloadable file.
 
 **Rules:**
-- Contracts first, teammates second. No code without contracts.
-- Teams auto-dissolve when all teammates finish. Don't dissolve manually.
-- Trust your teammates. Worktree file counts in \`team_status\` are ground truth.
-- Never abandon a team mid-flow for \`spawn_agent\`. Teams have isolation + contracts; sub-agents don't.
-- After \`team_interrupt\`, wait 30-60s then check \`team_status\`.
+- Each sub-agent handles ONE topic. Don't overlap.
+- Sub-agents save findings to ~/tappi-workspace/ with their ID in the filename.
+- Synthesize AFTER all sub-agents are done, not before.
+`,
 
-**Contracts:** Types first, one concern per file, no implementations (stubs only), ≤20 lines each, max 5 per phase. Use relative imports that work from worktrees.
+  coding: `
+## Task Mode: Coding
 
-**Shell:** exec is non-interactive (no TTY/stdin). Scaffolding tools (create-vite, create-react-app, create-next-app, etc.) will hang or cancel on prompts. Write project files directly with file_write instead.
-`;
+This is a coding task. For multi-file or complex implementations, use spawn_agent.
+
+**When to spawn sub-agents:**
+- Building multiple independent modules/files
+- Tasks with clear parallelizable boundaries (e.g., frontend + backend + tests)
+
+**Protocol for multi-file work:**
+1. Plan the architecture and define interfaces first.
+2. spawn_agent for each distinct module — each agent works on its assigned files only.
+3. Each sub-agent has ONE tab and stays in ~/tappi-workspace/.
+4. Wait for all sub-agents, then integrate their output.
+
+**Single-file fixes:** Do directly, no sub-agents needed.
+
+**Shell:** exec is non-interactive. Write files directly with file_write for scaffolding.
+`,
+
+  'story-writing': `
+## Task Mode: Story Writing
+
+This is a creative writing task. Use spawn_agent for parallel section/chapter generation.
+
+**When to spawn sub-agents:**
+- Writing multiple chapters or scenes simultaneously
+- Different POV segments that can be written independently
+- World-building + plot + dialogue as separate concerns
+
+**Protocol:**
+1. Define character/world constraints in your response first.
+2. spawn_agent for each section — each gets the established style + context.
+3. Sub-agents save their output to ~/tappi-workspace/ with their ID in the filename.
+4. Compile and edit the sections into the final piece.
+5. Use present_download to offer the complete piece as a downloadable file.
+`,
+};
 
 let activeRun: AbortController | null = null;
 let _lastStopReason: string | null = null; // Phase 8.40: track why agent stopped
@@ -259,7 +295,7 @@ function sendError(mainWindow: BrowserWindow, msg: string, extraWC?: WebContents
 }
 
 export async function runAgent(opts: AgentRunOptions): Promise<void> {
-  const { userMessage, browserCtx, llmConfig, window: mainWindow, sessionId = 'default', developerMode = false, codingMode = false, worktreeIsolation = true, agentBrowsingDataAccess = false, conversationId, ariaWebContents } = opts;
+  const { userMessage, browserCtx, llmConfig, window: mainWindow, sessionId = 'default', developerMode = false, worktreeIsolation = true, agentBrowsingDataAccess = false, conversationId, ariaWebContents } = opts;
 
   // Helper: broadcast to both chrome UI and Aria tab
   function broadcast(channel: string, data?: any) {
@@ -279,8 +315,18 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
   // ─── Agent Loop ────────────────────────────────────────────────────────────
 
   let errorSent = false;
-  let streamStarted = false;  // hoisted — needed by codingMode early broadcast + lazy guards below
+  let streamStarted = false;
   const toolsUsed: string[] = [];
+
+  // ─── Task Classification ───────────────────────────────────────────────────
+  // Classify the incoming message to determine which task mode to activate.
+  // research/coding/story-writing get mode-specific system prompt addendums.
+  const { classifyTask } = require('./sub-agent') as typeof import('./sub-agent');
+  const taskType = classifyTask(userMessage);
+  const taskAddendum = TASK_TYPE_ADDENDUMS[taskType] || '';
+  if (taskType !== 'normal') {
+    console.log(`[agent] Task classified as: ${taskType}`);
+  }
 
   try {
     const model = createModel(llmConfig);
@@ -316,13 +362,12 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
       }
     }
 
-    const tools = createTools(browserCtx, sessionId, { developerMode, llmConfig, codingMode, worktreeIsolation, agentBrowsingDataAccess, conversationId, projectWorkingDir });
+    const tools = createTools(browserCtx, sessionId, { developerMode, llmConfig, worktreeIsolation, agentBrowsingDataAccess, conversationId, projectWorkingDir });
 
-    // ─── Coding Memory Bootstrap (Phase coding-memory) ────────────────────
-    // When in coding mode, check if the active team's project dir (or cwd) has
-    // a .tappi-coding-memory/ directory. If so, inject the last 3 sessions + main.md.
+    // ─── Coding Memory Bootstrap ───────────────────────────────────────────
+    // For coding tasks, check if the project dir has .tappi-coding-memory/.
     let codingMemoryContext = '';
-    if (codingMode) {
+    if (taskType === 'coding') {
       try {
         const activeTeam = teamManager.getActiveTeam();
         const projectDir = activeTeam?.workingDir || projectWorkingDir || process.cwd();
@@ -331,15 +376,14 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
           codingMemoryContext = '\n\n' + memCtx;
         }
       } catch (memErr: any) {
-        // Non-fatal — bootstrap is best-effort
         console.error('[agent] coding-memory bootstrap error:', memErr?.message);
       }
     }
 
-    const activeSystemPrompt = codingMode
-      ? SYSTEM_PROMPT + CODING_MODE_SYSTEM_PROMPT_ADDENDUM + codingMemoryContext
+    const activeSystemPrompt = taskAddendum
+      ? SYSTEM_PROMPT + taskAddendum + codingMemoryContext
       : SYSTEM_PROMPT;
-    console.log('[agent] Run starting:', Object.keys(tools).length, 'tools,', browserContext.length, 'chars context (ZERO page elements), devMode:', developerMode, 'codingMode:', codingMode);
+    console.log('[agent] Run starting:', Object.keys(tools).length, 'tools,', browserContext.length, 'chars context, devMode:', developerMode, 'taskType:', taskType);
 
     // Add user message to history
     addMessage(sessionId, { role: 'user', content: userMessage });
@@ -398,12 +442,17 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
     // Collect ordered conversation events for persistence (Phase 9.1: rich conversation history)
     const conversationEvents: Array<{ role: string; content: string }> = [];
     try {
-      // In coding mode, fire stream-start early so the UI shows a visible indicator
-      // while the LLM thinks (can take 30s+ with thinking ON).
-      if (codingMode && !streamStarted) {
+      // For complex task types (coding/research/story), fire stream-start early so the
+      // UI shows a visible indicator while the LLM plans (can take 30s+ with thinking ON).
+      if (taskType !== 'normal' && !streamStarted) {
         broadcast('agent:stream-start', {});
         streamStarted = true;
-        sendChunk(mainWindow, '🏗️ Planning with team orchestration...', false, ariaWebContents);
+        const taskLabels: Record<string, string> = {
+          coding: '🏗️ Planning coding task...',
+          research: '🔍 Planning research...',
+          'story-writing': '✍️ Planning story...',
+        };
+        sendChunk(mainWindow, taskLabels[taskType] || '🧠 Planning...', false, ariaWebContents);
       }
       console.log('[agent] Calling LLM:', llmConfig.provider, llmConfig.model, 'key:', llmConfig.apiKey.slice(0, 4) + '***');
       const providerOptions = buildProviderOptions(llmConfig);
@@ -447,9 +496,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
             };
           }
           // Idle detection: 5 consecutive text-only turns → abort
-          // Phase 9.096f: In coding mode, lead often waits for teammates (text-only turns
-          // are normal). Use a higher threshold to avoid premature stoppage.
-          const idleThreshold = codingMode ? 15 : 5;
+          // For coding/research/story tasks, use a higher threshold since the agent
+          // may be waiting on sub-agents (text-only polling turns are normal).
+          const idleThreshold = (taskType !== 'normal') ? 15 : 5;
           if (idleCount >= idleThreshold) {
             console.log(`[agent] Idle detection: ${idleCount} text-only turns — stopping`);
             stopReason = 'idle';

@@ -484,11 +484,21 @@ async function handleRequest(
       }
     };
 
+    const downloadCardHandler = (data: any) => {
+      try {
+        res.write(`data: ${JSON.stringify({ type: 'download_card', payload: data })}\n\n`);
+      } catch {
+        agentEvents.removeListener('download_card', downloadCardHandler);
+      }
+    };
+
     agentEvents.on('chunk', chunkHandler);
+    agentEvents.on('download_card', downloadCardHandler);
 
     // Cleanup on client disconnect
     req.on('close', () => {
       agentEvents.removeListener('chunk', chunkHandler);
+      agentEvents.removeListener('download_card', downloadCardHandler);
     });
 
     runAgent({
@@ -508,11 +518,11 @@ async function handleRequest(
       },
       window: mainWindow,
       developerMode: cfg.developerMode,
-      codingMode: cfg.developerMode && cfg.llm?.codingMode === true,
       agentBrowsingDataAccess: cfg.privacy?.agentBrowsingDataAccess === true,
     }).catch(e => {
       try { res.write(`data: ${JSON.stringify({ text: `❌ ${e.message}`, done: true })}\n\n`); res.end(); } catch {}
       agentEvents.removeListener('chunk', chunkHandler);
+      agentEvents.removeListener('download_card', downloadCardHandler);
     });
 
     return; // response handled by SSE
@@ -597,7 +607,6 @@ async function handleRequest(
         },
         window: mainWindow,
         developerMode: cfg.developerMode,
-        codingMode: cfg.developerMode && cfg.llm?.codingMode === true,
         agentBrowsingDataAccess: cfg.privacy?.agentBrowsingDataAccess === true,
       }).catch(e => {
         if (!resolved) {
@@ -734,7 +743,6 @@ async function handleRequest(
     const browserCtx: browserTools.BrowserContext = { window: mainWindow, tabManager, config: cfg };
     const tools = createTools(browserCtx, 'api', {
       developerMode: cfg.developerMode,
-      codingMode: cfg.developerMode && cfg.llm?.codingMode,
       agentBrowsingDataAccess: cfg.privacy?.agentBrowsingDataAccess === true,
     });
     const toolList = Object.entries(tools).map(([name, t]: [string, any]) => ({
@@ -753,7 +761,6 @@ async function handleRequest(
       const browserCtx: browserTools.BrowserContext = { window: mainWindow, tabManager, config: cfg };
       const tools = createTools(browserCtx, 'api', {
         developerMode: cfg.developerMode,
-        codingMode: cfg.developerMode && cfg.llm?.codingMode,
         agentBrowsingDataAccess: cfg.privacy?.agentBrowsingDataAccess === true,
         llmConfig: apiKey ? {
           provider: cfg.llm.provider,
