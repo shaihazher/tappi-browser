@@ -14,8 +14,17 @@
  * Output buffers are purged when the sub-agent session ends.
  */
 
-import { generateText, stepCountIs } from 'ai';
-import { createModel, buildProviderOptions, getModelConfig, type LLMConfig } from './llm-client';
+import { generateText, streamText, stepCountIs } from 'ai';
+import {
+  createModel,
+  buildProviderOptions,
+  getModelConfig,
+  withCodexProviderOptions,
+  logProviderRequestError,
+  extractRequestErrorDetails,
+  runLiteLLMCodexToolLoop,
+  type LLMConfig,
+} from './llm-client';
 import { createTools, TOOL_USAGE_GUIDE } from './tool-registry';
 import * as browserTools from './browser-tools';
 import * as httpTools from './http-tools';
@@ -31,14 +40,29 @@ export interface SubAgentTask {
   task: string;
   taskType: TaskType;       // classified task type
   contract: string;         // system prompt scaffolding for this task type
-  status: 'running' | 'completed' | 'failed';
+  depth: SubAgentDepth;     // Phase 9.12: budget control
+  status: 'running' | 'completed' | 'failed' | 'killed';
   sessionId: string;
   assignedTabId?: string;   // dedicated browser tab for this sub-agent
+  abortController?: AbortController; // Phase 9.12: for kill support
   result?: string;
   error?: string;
   startedAt: number;
   finishedAt?: number;
   toolsUsed: string[];
+  metrics?: {
+    provider: string;
+    mode: 'streamText' | 'generateText';
+    steps: number;
+    toolCalls: number;
+    uniqueTools: number;
+    suspicious: boolean;
+    suspiciousReason?: string;
+    attempts?: number;
+    emptyToolIntentSteps?: number;
+    toolCallFailures?: number;
+    recoveredByNonStreamRetry?: boolean;
+  };
 }
 
 export type TaskType = 'research' | 'coding' | 'story-writing' | 'normal';
@@ -48,12 +72,36 @@ const MAX_CONCURRENT = 5;
 const activeAgents = new Map<string, SubAgentTask>();
 let agentCounter = 0;
 
+// Phase 9.12: Depth presets — control how much work a sub-agent does
+export type SubAgentDepth = 'quick' | 'standard' | 'deep';
+const DEPTH_PRESETS: Record<SubAgentDepth, { maxSteps: number; maxSources: number; maxOutputChars: number; thinkingEnabled: boolean }> = {
+  quick:    { maxSteps: 5,  maxSources: 1, maxOutputChars: 800,  thinkingEnabled: false },
+  standard: { maxSteps: 15, maxSources: 3, maxOutputChars: 2000, thinkingEnabled: false },
+  deep:     { maxSteps: 30, maxSources: 5, maxOutputChars: 4000, thinkingEnabled: true },
+};
+
 // ─── Task Classifier ───
 
 /**
  * Classify a task as research, coding, story-writing, or normal.
  * Called for each incoming user message to decide whether to spawn sub-agents.
  */
+function hasKeyword(msg: string, keyword: string): boolean {
+  const escaped = keyword
+    .toLowerCase()
+    .trim()
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\s+/g, '\\s+');
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`).test(msg);
+}
+
+function hasAnyKeyword(msg: string, keywords: string[]): boolean {
+  for (const kw of keywords) {
+    if (hasKeyword(msg, kw)) return true;
+  }
+  return false;
+}
+
 export function classifyTask(userMessage: string): TaskType {
   const msg = userMessage.toLowerCase();
 
@@ -91,17 +139,22 @@ export function classifyTask(userMessage: string): TaskType {
   let storyScore = 0;
 
   for (const kw of researchKeywords) {
-    if (msg.includes(kw)) researchScore++;
+    if (hasKeyword(msg, kw)) researchScore++;
   }
   for (const kw of codingKeywords) {
-    if (msg.includes(kw)) codingScore++;
+    if (hasKeyword(msg, kw)) codingScore++;
   }
   for (const kw of storyKeywords) {
-    if (msg.includes(kw)) storyScore++;
+    if (hasKeyword(msg, kw)) storyScore++;
   }
 
-  // Multi-file / complexity signals boost coding
-  if (/\b(files?|modules?|services?|pages?|components?)\b/.test(msg)) codingScore++;
+  // Multi-file / complexity signals boost coding (kept conservative)
+  if (/\b(files?|modules?|services?|components?)\b/.test(msg)) codingScore++;
+  if (/\bpages\b/.test(msg)) codingScore += 0.5;
+
+  // Report-style tasks usually indicate research intent.
+  if (/\b(report|research report|trend report|market report)\b/.test(msg)) researchScore += 0.5;
+
   if (/\b(multiple|several|various|all the)\b/.test(msg)) {
     researchScore += 0.5;
     codingScore += 0.5;
@@ -111,6 +164,16 @@ export function classifyTask(userMessage: string): TaskType {
 
   // Must meet a minimum threshold to warrant sub-agents
   if (maxScore < 1) return 'normal';
+
+  // Tie-break: if no explicit coding intent, prefer research over coding.
+  const explicitCodingSignal = hasAnyKeyword(msg, [
+    'code', 'implement', 'build', 'debug', 'refactor',
+    'function', 'class', 'script', 'api', 'backend', 'frontend',
+    'database', 'typescript', 'javascript', 'python', 'sql',
+  ]);
+  if (researchScore === codingScore && researchScore > 0 && !explicitCodingSignal) {
+    return 'research';
+  }
 
   if (storyScore === maxScore && storyScore > 0) return 'story-writing';
   if (codingScore === maxScore && codingScore > 0) return 'coding';
@@ -124,31 +187,25 @@ export function classifyTask(userMessage: string): TaskType {
 const RESEARCH_CONTRACT = `## Sub-Agent Contract: Research
 
 You are a research sub-agent. Your ONE job is the specific research task assigned to you.
+You have a LIMITED step budget — be efficient. Do NOT visit every link. Pick the best 1-3 sources.
 
-### How to Research (follow this loop)
-1. **search("your query")** → Google search results appear
-2. **elements()** → see clickable search result links
-3. **click(N)** → click a promising result to open the page
-4. **text()** → read the full page content and extract key information
-5. **Repeat** steps 1-4 for 3-5 different sources
-6. **file_write** → save your compiled findings to ~/tappi-workspace/
-
-⚠️ **CRITICAL**: You MUST call text() after navigating to each page to actually READ it.
-Just navigating to a URL gives you nothing. The page is a black box until you call text().
+### How to Research
+1. **search("your query")** → scan the search result snippets first
+2. **click(N)** → only click the most promising result
+3. **text({ grep: "key term" })** → extract what you need. Do NOT read entire pages.
+4. If you have enough info, stop and synthesize. Don't keep searching.
 
 ### Rules
 1. **Scope**: Only research what you were assigned. Do not expand scope.
-2. **Depth**: Find 3-5 high-quality sources. Extract specific facts, quotes, data points, and trends.
-3. **Do NOT stop early**. If you've only visited 1-2 pages, keep going. Aim for 3-5 sources minimum.
-4. **Tab**: You have ONE dedicated browser tab. Use ONLY that tab.
-5. **Done**: When finished, your final text output must contain all your findings in full.
+2. **Efficiency**: Prefer grep over full-page reads. 1-3 good sources > 5 shallow ones.
+3. **Tab**: You have ONE dedicated browser tab. Use ONLY that tab.
+4. **Budget**: You have limited steps. Use them wisely. Stop when you have a good answer.
+5. **Done**: When finished, your final text output must contain your findings.
 
 ### Output Format
 - 2-3 sentence executive summary
-- Detailed bullet-point findings organized by subtopic
-- Source URLs for every claim
-- Gaps or conflicting information flagged
-- MUST be at least 500 words. Thin outputs are useless.
+- Key findings as bullet points with source URLs
+- Keep it concise — quality over volume
 `;
 
 const CODING_CONTRACT = `## Sub-Agent Contract: Coding
@@ -229,6 +286,23 @@ export type SubAgentProgressCallback = (data: {
   done: boolean;
 }) => void;
 
+function allocateSubAgentTab(id: string, browserCtx: BrowserContext): string | undefined {
+  try {
+    if (!browserCtx.tabManager) return undefined;
+    const tabId = browserCtx.tabManager.createTab('about:blank', undefined, { background: true });
+    console.log(`[sub-agent] ${id} allocated tab: ${tabId}`);
+    return tabId;
+  } catch (e) {
+    console.warn(`[sub-agent] ${id} failed to allocate tab:`, e);
+    return undefined;
+  }
+}
+
+/**
+ * Phase 9.12: Non-blocking spawn. Returns immediately with agent ID.
+ * The main agent checks status with sub_agent_status and kills with kill_agent.
+ * No retries, no auto-promotion — the agent controls the workflow.
+ */
 export async function spawnSubAgent(
   task: string,
   browserCtx: BrowserContext,
@@ -237,90 +311,95 @@ export async function spawnSubAgent(
   modelPurpose: 'primary' | 'secondary' = 'secondary',
   taskType?: TaskType,
   onProgress?: SubAgentProgressCallback,
+  depth: SubAgentDepth = 'standard',
 ): Promise<string> {
   // Check concurrency limit
   const running = Array.from(activeAgents.values()).filter(a => a.status === 'running');
   if (running.length >= MAX_CONCURRENT) {
-    return `❌ Max ${MAX_CONCURRENT} concurrent sub-agents. Running: ${running.map(a => a.id).join(', ')}. Wait for one to finish or check status.`;
+    return `❌ Max ${MAX_CONCURRENT} concurrent sub-agents. Running: ${running.map(a => a.id).join(', ')}. Wait for one to finish or check status with sub_agent_status.`;
   }
 
   const id = `sub-${++agentCounter}`;
   const sessionId = `${parentSessionId}:${id}`;
   const resolvedType = taskType || 'normal';
   const contract = getContractForTaskType(resolvedType);
-
-  // Auto-promote lightweight models for research tasks.
-  // Models like Haiku can navigate but can't effectively plan multi-step browsing
-  // research — they burn through steps producing thin results.
-  let effectivePurpose = modelPurpose;
-  if (resolvedType === 'research' && modelPurpose === 'secondary') {
-    const secondaryConfig = getModelConfig('secondary', llmConfig);
-    if (isLightweightModel(secondaryConfig)) {
-      effectivePurpose = 'primary';
-      console.log(`[sub-agent] ${id} auto-promoted to primary model — ${secondaryConfig.model} too lightweight for research`);
-    }
-  }
+  const preset = DEPTH_PRESETS[depth];
 
   // Allocate a dedicated browser tab for this sub-agent
-  let assignedTabId: string | undefined;
-  try {
-    if (browserCtx.tabManager) {
-      assignedTabId = browserCtx.tabManager.createTab('about:blank', undefined, { background: true });
-      console.log(`[sub-agent] ${id} allocated tab: ${assignedTabId}`);
-    }
-  } catch (e) {
-    console.warn(`[sub-agent] ${id} failed to allocate tab:`, e);
-  }
+  const assignedTabId = allocateSubAgentTab(id, browserCtx);
+
+  const abortController = new AbortController();
 
   const agentTask: SubAgentTask = {
     id,
     task,
     taskType: resolvedType,
     contract,
+    depth,
     status: 'running',
     sessionId,
     assignedTabId,
+    abortController,
     startedAt: Date.now(),
     toolsUsed: [],
   };
   activeAgents.set(id, agentTask);
 
-  // Resolve the appropriate model config
-  const resolvedConfig = getModelConfig(effectivePurpose, llmConfig);
+  // Resolve model config
+  const activeConfig = getModelConfig(modelPurpose, llmConfig);
 
-  // Await the sub-agent to completion and return full results.
-  // The AI SDK executes parallel tool calls concurrently, so multiple
-  // spawn_agent calls in the same step all run in parallel automatically.
+  // Phase 9.12: Override thinking for sub-agents based on depth
+  const subAgentConfig: LLMConfig = {
+    ...activeConfig,
+    thinking: preset.thinkingEnabled,
+  };
+
   // Emit initial progress event — sub-agent spawned
   if (onProgress) {
     onProgress({ agentId: id, taskType: resolvedType, step: 0, tools: [], status: 'running', elapsed: 0, done: false });
   }
 
-  try {
-    await runSubAgent(agentTask, browserCtx, resolvedConfig, onProgress);
-  } catch (err: any) {
+  // Fire and forget — run in background, don't block the main agent
+  runSubAgent(agentTask, browserCtx, subAgentConfig, onProgress).catch(err => {
     agentTask.status = 'failed';
     agentTask.error = err?.message || 'Unknown error';
     agentTask.finishedAt = Date.now();
     releaseSubAgentTab(agentTask, browserCtx);
-  }
+  }).finally(() => {
+    // Emit final progress event
+    if (onProgress) {
+      const duration = ((agentTask.finishedAt || Date.now()) - agentTask.startedAt) / 1000;
+      onProgress({
+        agentId: id, taskType: resolvedType, step: agentTask.toolsUsed.length,
+        tools: [...new Set(agentTask.toolsUsed)], status: agentTask.status as any,
+        elapsed: duration * 1000, done: true,
+      });
+    }
+  });
 
-  const duration = ((agentTask.finishedAt || Date.now()) - agentTask.startedAt) / 1000;
+  console.log(`[sub-agent] ${id} spawned (depth=${depth}, maxSteps=${preset.maxSteps}, model=${subAgentConfig.model}, thinking=${preset.thinkingEnabled})`);
+  return `🚀 Spawned ${id} [${resolvedType}, depth=${depth}] — running in background.\nUse sub_agent_status to check progress. Use kill_agent("${id}") to stop it.`;
+}
 
-  // Emit final progress event — sub-agent finished
-  if (onProgress) {
-    onProgress({
-      agentId: id, taskType: resolvedType, step: agentTask.toolsUsed.length,
-      tools: [...new Set(agentTask.toolsUsed)], status: agentTask.status as any,
-      elapsed: duration * 1000, done: true,
-    });
-  }
+/**
+ * Phase 9.12: Kill a running sub-agent.
+ */
+export function killSubAgent(id: string, browserCtx: BrowserContext): string {
+  const agent = activeAgents.get(id);
+  if (!agent) return `❌ Sub-agent "${id}" not found.`;
+  if (agent.status !== 'running') return `ℹ️ ${id} is already ${agent.status}.`;
 
-  if (agentTask.status === 'completed') {
-    return `✅ ${id} [${resolvedType}] completed in ${duration.toFixed(1)}s\n\n${agentTask.result || '(no output)'}`;
-  } else {
-    return `❌ ${id} [${resolvedType}] failed after ${duration.toFixed(1)}s: ${agentTask.error || 'Unknown error'}`;
-  }
+  agent.abortController?.abort();
+  agent.status = 'killed';
+  agent.error = 'Killed by parent agent';
+  agent.finishedAt = Date.now();
+  releaseSubAgentTab(agent, browserCtx);
+  cleanupSession(agent.sessionId);
+  purgeSession(agent.sessionId);
+  clearHistory(agent.sessionId);
+
+  const duration = ((agent.finishedAt - agent.startedAt) / 1000).toFixed(1);
+  return `🛑 Killed ${id} after ${duration}s. ${agent.toolsUsed.length} tool calls completed.`;
 }
 
 // ─── Status ───
@@ -331,19 +410,20 @@ export function getSubAgentStatus(id?: string): string {
     if (!agent) return `Sub-agent "${id}" not found.`;
 
     const duration = ((agent.finishedAt || Date.now()) - agent.startedAt) / 1000;
+    const statusEmoji = agent.status === 'running' ? '⏳' : agent.status === 'completed' ? '✅' : agent.status === 'killed' ? '🛑' : '❌';
     const lines = [
-      `${agent.id} [${agent.taskType}]: ${agent.status === 'running' ? '⏳ running' : agent.status === 'completed' ? '✓ completed' : '✗ failed'} (${duration.toFixed(1)}s)`,
-      `Task: ${agent.task}`,
-      `Tab: ${agent.assignedTabId || 'none'}`,
+      `${statusEmoji} ${agent.id} [${agent.taskType}, depth=${agent.depth}] — ${agent.status} (${duration.toFixed(1)}s)`,
+      `Task: ${agent.task.slice(0, 120)}`,
     ];
-    if (agent.toolsUsed.length > 0) lines.push(`Tools used: ${[...new Set(agent.toolsUsed)].join(', ')}`);
+    if (agent.toolsUsed.length > 0) lines.push(`Tools: ${agent.toolsUsed.length} calls (${[...new Set(agent.toolsUsed)].join(', ')})`);
     if (agent.result) {
-      // For completed agents, return full result (up to 4000 chars) so the
-      // main agent can synthesize properly. Running agents get truncated preview.
-      const maxLen = agent.status === 'completed' ? 4000 : 500;
-      lines.push(`Result: ${agent.result.length > maxLen ? agent.result.slice(0, maxLen) + `... (${agent.result.length} chars total)` : agent.result}`);
+      // Phase 9.12: Cap result output based on depth preset
+      const preset = DEPTH_PRESETS[agent.depth];
+      const maxLen = preset.maxOutputChars;
+      lines.push(`Result:\n${agent.result.length > maxLen ? agent.result.slice(0, maxLen) + `\n... (${agent.result.length} chars total — full result saved to file if applicable)` : agent.result}`);
     }
     if (agent.error) lines.push(`Error: ${agent.error}`);
+    if (agent.status === 'running') lines.push(`💡 Use kill_agent("${agent.id}") to stop.`);
     return lines.join('\n');
   }
 
@@ -351,9 +431,9 @@ export function getSubAgentStatus(id?: string): string {
   if (activeAgents.size === 0) return 'No sub-agents.';
 
   return Array.from(activeAgents.values()).map(a => {
-    const status = a.status === 'running' ? '⏳' : a.status === 'completed' ? '✓' : '✗';
+    const statusEmoji = a.status === 'running' ? '⏳' : a.status === 'completed' ? '✅' : a.status === 'killed' ? '🛑' : '❌';
     const duration = ((a.finishedAt || Date.now()) - a.startedAt) / 1000;
-    return `${status} ${a.id} [${a.taskType}]: ${a.task.slice(0, 60)}${a.task.length > 60 ? '...' : ''} (${duration.toFixed(1)}s)`;
+    return `${statusEmoji} ${a.id} [${a.taskType}, ${a.depth}] ${a.task.slice(0, 60)}${a.task.length > 60 ? '...' : ''} (${duration.toFixed(1)}s, ${a.toolsUsed.length} tools)`;
   }).join('\n');
 }
 
@@ -390,6 +470,19 @@ async function runSubAgent(
     browserCtx.tabManager.setAgentTarget(assignedTabId);
   }
 
+  let executionMode: 'streamText' | 'generateText' = llmConfig.provider === 'openai-codex' ? 'streamText' : 'generateText';
+  let codexToolIntentSteps = 0;
+  let codexParsedToolCalls = 0;
+  let codexExecutedToolResults = 0;
+  let codexEmptyToolIntentSteps = 0;
+  let codexToolFailures = 0;
+  let codexRecoveredByNonStreamRetry = false;
+
+  // Phase 9.12: Depth-based step limit
+  const depthPreset = DEPTH_PRESETS[agentTask.depth];
+  const MAX_STEPS = depthPreset.maxSteps;
+  const abortSignal = agentTask.abortController?.signal;
+
   try {
     console.log(`[sub-agent] ${agentTask.id} running with model: ${llmConfig.provider}/${llmConfig.model}, thinking: ${llmConfig.thinking}`);
     const model = createModel(llmConfig);
@@ -410,125 +503,275 @@ async function runSubAgent(
       : SUB_AGENT_BASE_PROMPT;
 
     const providerOptions = buildProviderOptions(llmConfig);
+    const callProviderOptions: Record<string, any> = withCodexProviderOptions(
+      llmConfig.provider,
+      { ...providerOptions },
+      systemPrompt,
+      systemPrompt,
+    );
 
-    // Use generateText (non-streaming) with maxSteps instead of streamText.
-    // streamText's multi-step loop via OpenRouter silently drops tool calls
-    // after the first round-trip, causing sub-agents to bail after 1 search.
-    // generateText parses complete responses and handles multi-step reliably.
-    const MAX_STEPS = 60;
+    // Phase 9.12: MAX_STEPS comes from depth preset (set above)
 
-    const result = await generateText({
-      model,
-      system: systemPrompt,
-      messages: [
-        { role: 'user' as const, content: `[Browser: ${browserContext}]${tabNote}\n\n${task}` },
-      ],
-      tools,
-      maxOutputTokens: 32768,
-      ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
-      stopWhen: stepCountIs(MAX_STEPS),
-      onStepFinish: async (event: any) => {
-        try {
-          const toolCalls = event.toolCalls || [];
-          const toolResults = event.toolResults || [];
-          const stepNum = event.stepNumber ?? '?';
-          const finishReason = event.finishReason ?? 'n/a';
-          const textLen = event.text?.length ?? 0;
-          console.log(`[sub-agent] ${agentTask.id} step ${stepNum}: finish=${finishReason}, calls=${toolCalls.length}, results=${toolResults.length}, text=${textLen} chars`);
-
-          const stepToolNames: string[] = [];
-          let stepUrl: string | undefined;
-
-          for (const tr of toolResults) {
-            const toolName = tr.toolName || 'unknown';
-            agentTask.toolsUsed.push(toolName);
-            stepToolNames.push(toolName);
-          }
-
-          // Extract URL from tool calls (navigate, search, open, etc.)
-          for (const tc of toolCalls) {
-            const args = tc.args || {};
-            if (args.url) { stepUrl = args.url; break; }
-            if (args.query) { stepUrl = `🔍 ${args.query}`; break; }
-          }
-
-          // Broadcast progress to UI
-          if (onProgress) {
-            const elapsed = Date.now() - agentTask.startedAt;
-            onProgress({
-              agentId: agentTask.id,
-              taskType: agentTask.taskType,
-              step: typeof stepNum === 'number' ? stepNum : parseInt(stepNum, 10) || 0,
-              tools: stepToolNames,
-              url: stepUrl,
-              status: 'running',
-              elapsed,
-              done: false,
-            });
-          }
-        } catch (e) {
-          console.error(`[sub-agent] ${agentTask.id} onStepFinish error:`, e);
-        }
-      },
-    });
-
-    // ─── Result Extraction ───────────────────────────────────────────
-    // result.text only captures text from the LAST step, which is often
-    // minimal (e.g. "Research complete.") when the model spent 60 steps
-    // calling tools. The actual findings are in intermediate step texts
-    // and file_write tool results. We assemble the full response from
-    // ALL steps to capture the model's synthesis work.
-
-    const steps = result.steps || [];
+    // Capture synthesis + file outputs from step callbacks so we can share a
+    // robust result regardless of streaming/non-streaming execution mode.
     const stepTexts: string[] = [];
     const writtenFiles: string[] = [];
+    let observedSteps = 0;
 
-    for (const step of steps) {
-      // Collect model text from each step (the model's thinking/synthesis)
-      const stepText = (step.text || '').trim();
-      if (stepText.length > 0) {
-        stepTexts.push(stepText);
+    const resetRunTracking = () => {
+      stepTexts.length = 0;
+      writtenFiles.length = 0;
+      observedSteps = 0;
+      agentTask.toolsUsed = [];
+      codexToolIntentSteps = 0;
+      codexParsedToolCalls = 0;
+      codexExecutedToolResults = 0;
+      codexEmptyToolIntentSteps = 0;
+      codexToolFailures = 0;
+    };
+
+    const handleStepFinish = async (event: any) => {
+      try {
+        const toolCalls = event.toolCalls || [];
+        const toolResults = event.toolResults || [];
+        const stepNum = event.stepNumber ?? '?';
+        const finishReason = String(event.finishReason ?? 'n/a');
+        const textLen = event.text?.length ?? 0;
+        const toolIntent = /tool/i.test(finishReason) || toolCalls.length > 0;
+        if (toolIntent) codexToolIntentSteps++;
+        codexParsedToolCalls += toolCalls.length;
+        codexExecutedToolResults += toolResults.length;
+        if (toolIntent && toolCalls.length === 0 && toolResults.length === 0) {
+          codexEmptyToolIntentSteps++;
+          codexToolFailures++;
+        }
+
+        console.log(`[sub-agent] ${agentTask.id} step ${stepNum}: finish=${finishReason}, calls=${toolCalls.length}, results=${toolResults.length}, tool_intent=${toolIntent ? 'yes' : 'no'}, text=${textLen} chars`);
+
+        const numericStep = typeof stepNum === 'number' ? stepNum : parseInt(stepNum, 10);
+        if (Number.isFinite(numericStep)) {
+          observedSteps = Math.max(observedSteps, (numericStep as number) + 1);
+        } else {
+          observedSteps += 1;
+        }
+
+        const stepToolNames: string[] = [];
+        let stepUrl: string | undefined;
+
+        for (const tr of toolResults) {
+          const toolName = tr.toolName || 'unknown';
+          agentTask.toolsUsed.push(toolName);
+          stepToolNames.push(toolName);
+
+          // Track files the sub-agent wrote (findings reports, etc.)
+          const output = tr.result ?? tr.output ?? '';
+          if (toolName === 'file_write' && typeof output === 'string') {
+            const fileMatch = output.match(/Written:\s*(\S+)/);
+            if (fileMatch) writtenFiles.push(fileMatch[1]);
+          }
+        }
+
+        const stepText = (event.text || '').trim();
+        if (stepText.length > 0) {
+          stepTexts.push(stepText);
+        }
+
+        // Extract URL from tool calls (navigate, search, open, etc.)
+        for (const tc of toolCalls) {
+          const args = tc.args || {};
+          if (args.url) { stepUrl = args.url; break; }
+          if (args.query) { stepUrl = `🔍 ${args.query}`; break; }
+        }
+
+        // Broadcast progress to UI
+        if (onProgress) {
+          const elapsed = Date.now() - agentTask.startedAt;
+          onProgress({
+            agentId: agentTask.id,
+            taskType: agentTask.taskType,
+            step: Number.isFinite(numericStep) ? (numericStep as number) : 0,
+            tools: stepToolNames,
+            url: stepUrl,
+            status: 'running',
+            elapsed,
+            done: false,
+          });
+        }
+      } catch (e) {
+        console.error(`[sub-agent] ${agentTask.id} onStepFinish error:`, e);
+      }
+    };
+
+    // Codex path: LiteLLM runtime with robust streamed tool-call assembly.
+    let finalText = '';
+    let fallbackSteps: any[] = [];
+
+    if (llmConfig.provider === 'openai-codex') {
+      executionMode = 'streamText';
+      const codexRun = await runLiteLLMCodexToolLoop({
+        config: llmConfig,
+        system: systemPrompt,
+        messages: [
+          { role: 'user', content: `[Browser: ${browserContext}]${tabNote}\n\n${task}` },
+        ],
+        tools,
+        maxSteps: MAX_STEPS,
+        providerOptions: callProviderOptions,
+        abortSignal,
+        onTextDelta: (delta) => {
+          finalText += delta;
+        },
+        onStepFinish: handleStepFinish,
+        logPrefix: `sub-agent.${agentTask.id}.codex`,
+      });
+
+      if (!finalText.trim()) {
+        finalText = codexRun.text || '';
       }
 
-      // Track files the sub-agent wrote (findings reports, etc.)
-      for (const tr of (step.toolResults || []) as any[]) {
-        if (!tr) continue;
-        const output = tr.result ?? tr.output ?? '';
-        if (tr.toolName === 'file_write' && typeof output === 'string') {
-          const fileMatch = output.match(/Written:\s*(\S+)/);
-          if (fileMatch) writtenFiles.push(fileMatch[1]);
+      codexToolFailures = codexRun.metrics.toolCallFailures + codexRun.metrics.unresolvedEmptyToolIntentSteps;
+      codexRecoveredByNonStreamRetry = codexRun.metrics.emptyToolIntentRetries > 0;
+
+      console.log(`[sub-agent] ${agentTask.id} codex litellm metrics:`, JSON.stringify(codexRun.metrics));
+    } else {
+      executionMode = 'generateText';
+      const result = await generateText({
+        model,
+        system: systemPrompt,
+        messages: [
+          { role: 'user' as const, content: `[Browser: ${browserContext}]${tabNote}\n\n${task}` },
+        ],
+        tools,
+        maxOutputTokens: 16384,
+        ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
+        stopWhen: stepCountIs(MAX_STEPS),
+        abortSignal,
+        onStepFinish: handleStepFinish,
+      });
+
+      finalText = (result.text || '').trim();
+      fallbackSteps = result.steps || [];
+    }
+
+    // Fallback: if step callbacks didn't provide text/results, use generateText steps.
+    if (stepTexts.length === 0 && fallbackSteps.length > 0) {
+      for (const step of fallbackSteps) {
+        const stepText = (step.text || '').trim();
+        if (stepText.length > 0) stepTexts.push(stepText);
+
+        for (const tr of (step.toolResults || []) as any[]) {
+          if (!tr) continue;
+          const output = tr.result ?? tr.output ?? '';
+          if (tr.toolName === 'file_write' && typeof output === 'string') {
+            const fileMatch = output.match(/Written:\s*(\S+)/);
+            if (fileMatch) writtenFiles.push(fileMatch[1]);
+          }
         }
       }
     }
 
     // Assemble the full response: prefer all step texts joined (captures
-    // the model's progressive synthesis), fall back to result.text.
+    // the model's progressive synthesis), fall back to final streamed/text output.
+    finalText = (finalText || '').trim();
     const allStepText = stepTexts.join('\n\n').trim();
-    const finalText = (result.text || '').trim();
     const fullResponse = allStepText.length > finalText.length ? allStepText : finalText;
 
-    console.log(`[sub-agent] ${agentTask.id} complete: finalText=${finalText.length}, allStepText=${allStepText.length}, fullResponse=${fullResponse.length} chars, ${agentTask.toolsUsed.length} tool calls, ${steps.length} steps, files=${writtenFiles.length}`);
+    const uniqueFiles = [...new Set(writtenFiles)];
+    const stepCount = Math.max(observedSteps, fallbackSteps.length);
+    const toolCallCount = agentTask.toolsUsed.length;
+    const uniqueToolCount = new Set(agentTask.toolsUsed).size;
+
+    // Shallow-run detector: catch silent degradation where agents stop after
+    // one call/step and still appear "successful".
+    let suspicious = false;
+    let suspiciousReason = '';
+    if (agentTask.taskType !== 'normal' && stepCount <= 1 && toolCallCount <= 1) {
+      suspicious = true;
+      suspiciousReason = 'non-normal task finished with ≤1 step and ≤1 tool call';
+    } else if (agentTask.taskType === 'research' && stepCount <= 2 && toolCallCount <= 2 && fullResponse.length < 300) {
+      suspicious = true;
+      suspiciousReason = 'research run appears shallow (low steps/tools and short synthesis)';
+    }
+
+    agentTask.metrics = {
+      provider: llmConfig.provider,
+      mode: executionMode,
+      steps: stepCount,
+      toolCalls: toolCallCount,
+      uniqueTools: uniqueToolCount,
+      suspicious,
+      ...(suspiciousReason ? { suspiciousReason } : {}),
+      emptyToolIntentSteps: codexEmptyToolIntentSteps,
+      toolCallFailures: codexToolFailures,
+      recoveredByNonStreamRetry: codexRecoveredByNonStreamRetry,
+    };
+
+    console.log(`[sub-agent] ${agentTask.id} complete: finalText=${finalText.length}, allStepText=${allStepText.length}, fullResponse=${fullResponse.length} chars, ${toolCallCount} tool calls, ${stepCount} steps, files=${uniqueFiles.length}, mode=${executionMode}, suspicious=${suspicious}, tool_failures=${codexToolFailures}, empty_tool_intent_steps=${codexEmptyToolIntentSteps}, recovered=${codexRecoveredByNonStreamRetry}`);
 
     if (fullResponse.length > 0) {
       agentTask.result = fullResponse;
-      if (writtenFiles.length > 0) {
-        agentTask.result += `\n\n📁 Files written: ${writtenFiles.join(', ')}`;
+      if (uniqueFiles.length > 0) {
+        agentTask.result += `\n\n📁 Files written: ${uniqueFiles.join(', ')}`;
+      }
+      if (suspicious) {
+        agentTask.result += `\n\n[Diagnostics] shallow_run=true; reason=${suspiciousReason}; steps=${stepCount}; tool_calls=${toolCallCount}; unique_tools=${uniqueToolCount}`;
       }
     } else {
       // No text at all — the model only called tools without any synthesis.
       // Build a minimal summary from what we know.
-      agentTask.result = `Sub-agent completed ${steps.length} steps using ${[...new Set(agentTask.toolsUsed)].join(', ')}.`;
-      if (writtenFiles.length > 0) {
-        agentTask.result += ` Files written: ${writtenFiles.join(', ')}`;
+      agentTask.result = `Sub-agent completed ${stepCount} steps using ${[...new Set(agentTask.toolsUsed)].join(', ')}.`;
+      if (uniqueFiles.length > 0) {
+        agentTask.result += ` Files written: ${uniqueFiles.join(', ')}`;
       }
-      console.warn(`[sub-agent] ${agentTask.id} produced no text output across ${steps.length} steps`);
+      console.warn(`[sub-agent] ${agentTask.id} produced no text output across ${stepCount} steps`);
+    }
+
+    // Surface suspicious runs loudly, but don't hard-fail healthy-looking outputs.
+    // This prevents false failures while still exposing shallow/degraded behavior.
+    if (suspicious) {
+      console.warn(`[sub-agent] ${agentTask.id} suspicious run flagged: ${suspiciousReason}`);
     }
     agentTask.status = 'completed';
 
   } catch (err: any) {
-    console.error(`[sub-agent] ${agentTask.id} FAILED:`, err?.message || err);
+    // Phase 9.12: Handle kill (AbortError)
+    if (err?.name === 'AbortError') {
+      if (agentTask.status === 'killed') {
+        // Already marked as killed by killSubAgent — just preserve partial result
+        console.log(`[sub-agent] ${agentTask.id} killed by parent`);
+        return;
+      }
+      // Unknown abort — treat as failure
+      agentTask.status = 'failed';
+      agentTask.error = 'Aborted';
+      return;
+    }
+
+    if (llmConfig.provider === 'openai-codex') {
+      logProviderRequestError(`sub-agent.${agentTask.id}`, err);
+    }
+
+    const details = extractRequestErrorDetails(err, 1600);
+
+    console.error(`[sub-agent] ${agentTask.id} FAILED:`, details);
+
+    agentTask.metrics = {
+      provider: llmConfig.provider,
+      mode: executionMode,
+      steps: agentTask.metrics?.steps ?? 0,
+      toolCalls: agentTask.toolsUsed.length,
+      uniqueTools: new Set(agentTask.toolsUsed).size,
+      suspicious: true,
+      suspiciousReason: details.statusCode ? `request failed with status ${details.statusCode}` : 'request failed',
+      emptyToolIntentSteps: codexEmptyToolIntentSteps,
+      toolCallFailures: codexToolFailures,
+      recoveredByNonStreamRetry: codexRecoveredByNonStreamRetry,
+    };
+
     agentTask.status = 'failed';
-    agentTask.error = err?.message || 'Unknown error';
+    agentTask.error = details.responseBody
+      ? `${details.message || 'Bad Request'} — ${details.responseBody}`
+      : (details.message || 'Unknown error');
   } finally {
     agentTask.finishedAt = Date.now();
 
@@ -595,16 +838,15 @@ function assembleBrowserContext(browserCtx: BrowserContext): string {
   }
 }
 
-const SUB_AGENT_BASE_PROMPT = `You are a Tappi sub-agent — a focused worker spawned by the main agent to complete a specific task.
-
-You have access to all the same tools as the main agent: browser, files, HTTP, shell (if dev mode is on).
+const SUB_AGENT_BASE_PROMPT = `You are a Tappi sub-agent — a focused worker with a LIMITED step budget.
 
 Core rules:
-1. Focus on the task you were given. Don't go off track.
-2. Be efficient — use grep/search before reading/scrolling.
-3. You have ONE dedicated browser tab. Work only in that tab. Do not open or switch to other tabs.
-4. When done, summarize what you accomplished clearly and concisely.
-5. If you hit a blocker you can't resolve, explain clearly what's blocking you.
+1. Focus ONLY on the task you were given. Do not expand scope.
+2. Be efficient — grep > scroll > read-all. Every tool call costs a step.
+3. You have ONE dedicated browser tab. Work only in that tab.
+4. When done, output your findings clearly and concisely. Then stop.
+5. Do NOT visit more pages than necessary. 1-3 good sources beats 5 shallow ones.
+6. If you can answer from search result snippets alone, do that.
 
 The page is a black box — use elements/text tools to see it.
 `;

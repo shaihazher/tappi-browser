@@ -1,8 +1,9 @@
 /**
  * llm-client.ts — Multi-provider LLM client using Vercel AI SDK.
  *
- * Supports 8 providers:
+ * Supports 9 providers:
  * - Anthropic (API key or OAuth token)
+ * - OpenAI Codex (ChatGPT OAuth token or API key)
  * - OpenAI (API key)
  * - Google Gemini (API key)
  * - OpenRouter (API key → OpenAI-compatible)
@@ -19,12 +20,90 @@ import { createAmazonBedrock } from '@ai-sdk/amazon-bedrock';
 import { createAzure } from '@ai-sdk/azure';
 import { createVertex } from '@ai-sdk/google-vertex';
 import type { LanguageModel } from 'ai';
+import { z } from 'zod';
+
+export interface RequestErrorDetails {
+  message: string;
+  statusCode?: number;
+  responseBody?: string;
+  requestBodyValues?: string;
+}
+
+function compactErrorField(value: any, maxLen = 2000): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  let text = '';
+  if (typeof value === 'string') {
+    text = value;
+  } else {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = String(value);
+    }
+  }
+  if (!text) return undefined;
+  return text.length > maxLen ? text.slice(0, maxLen) + '…' : text;
+}
+
+/**
+ * Normalize AI SDK/provider errors so every call site can log the same fields.
+ * Includes statusCode + responseBody + requestBodyValues for codex contract debugging.
+ */
+export function extractRequestErrorDetails(err: any, maxLen = 2000): RequestErrorDetails {
+  const nested = err?.cause || {};
+  const statusCode = err?.statusCode ?? err?.status ?? nested?.statusCode ?? nested?.status;
+  const responseBody = compactErrorField(
+    err?.responseBody ?? err?.data ?? nested?.responseBody ?? nested?.data,
+    maxLen,
+  );
+  const requestBodyValues = compactErrorField(
+    err?.requestBodyValues ?? nested?.requestBodyValues,
+    maxLen,
+  );
+
+  return {
+    message: err?.message || nested?.message || String(err),
+    ...(statusCode !== undefined ? { statusCode } : {}),
+    ...(responseBody ? { responseBody } : {}),
+    ...(requestBodyValues ? { requestBodyValues } : {}),
+  };
+}
+
+/**
+ * Standardized structured error logging for LLM calls.
+ */
+export function logProviderRequestError(scope: string, err: any): void {
+  console.error(`[${scope}] LLM request failed:`, extractRequestErrorDetails(err));
+}
+
+/**
+ * Attach codex-specific provider options for the LiteLLM/OpenAI-compatible path.
+ *
+ * Keep signature stable for existing call sites, but ignore legacy `instructions`
+ * injection from the old ChatGPT Codex backend.
+ */
+export function withCodexProviderOptions(
+  provider: string,
+  providerOptions: Record<string, any>,
+  _instructions: string,
+  _fallbackInstructions = 'You are Aria, a helpful AI assistant.',
+): Record<string, any> {
+  if (provider !== 'openai-codex') return providerOptions;
+  return {
+    ...providerOptions,
+    openai: {
+      ...(providerOptions.openai || {}),
+      // Codex via LiteLLM should run at high reasoning effort by default.
+      reasoningEffort: (providerOptions.openai && providerOptions.openai.reasoningEffort) || 'medium',
+    },
+  };
+}
 
 export interface LLMConfig {
   provider: string;
   model: string;
   apiKey: string; // decrypted — may be empty for Bedrock/Vertex/Ollama
-  thinking?: boolean;      // true = adaptive thinking (medium effort), false = no thinking
+  thinking?: boolean;      // true = adaptive/deep thinking (high effort where supported), false = no thinking
   // Cloud provider fields
   region?: string;         // Bedrock: AWS region
   projectId?: string;      // Vertex: GCP project ID
@@ -54,13 +133,13 @@ export function getModelConfig(
     // No secondary configured → everything uses primary
     return config;
   }
-  // Return a secondary LLM config derived from primary, overriding provider/model/apiKey
+  // Phase 9.12: Secondary model gets thinking OFF by default for cost efficiency.
+  // Sub-agents and teammates override this via their depth/config as needed.
   return {
     ...config,
     provider: config.secondaryProvider || config.provider,
     model: config.secondaryModel,
     apiKey: config.secondaryApiKey || config.apiKey,
-    // Thinking is typically off for secondary (lightweight tasks)
     thinking: false,
   };
 }
@@ -73,6 +152,8 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
   const thinkingEnabled = config.thinking !== false; // default ON
   const provider = config.provider;
   const model = config.model || '';
+  // Phase 9.12: Medium thinking budget — balances quality vs cost
+  const thinkingBudget = 8192;
 
   switch (provider) {
     case 'anthropic':
@@ -90,9 +171,25 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
       return {};
     }
 
+    case 'openai-codex': {
+      // Phase 9.12: Default to medium reasoning for cost efficiency.
+      if (thinkingEnabled) {
+        return {
+          openai: {
+            reasoningEffort: 'medium',
+          },
+        };
+      }
+      return {
+        openai: {
+          reasoningEffort: 'low',
+        },
+      };
+    }
+
     case 'openai':
     case 'azure': {
-      // OpenAI o1/o3 models support reasoning_effort
+      // Phase 9.12: Default to medium reasoning effort
       const isReasoningModel = /^(o1|o3|o4)/.test(model);
       if (thinkingEnabled && isReasoningModel) {
         return {
@@ -106,12 +203,12 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
 
     case 'google':
     case 'vertex': {
-      // Gemini 2.5+ supports thinkingConfig
+      // Gemini 2.5+ supports thinkingConfig. Use a larger budget for deeper reasoning.
       const supportsThinking = /gemini-(2\.5|3)/.test(model);
       if (thinkingEnabled && supportsThinking) {
         return {
           google: {
-            thinkingConfig: { thinkingBudget: 8192 },
+            thinkingConfig: { thinkingBudget: thinkingBudget },
           },
         };
       }
@@ -126,7 +223,6 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
           return {
             anthropic: {
               thinking: { type: 'adaptive' },
-              effort: 'medium',
             },
           };
         }
@@ -139,7 +235,7 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
       }
       if (model.startsWith('google/') && /google\/gemini-(2\.5|3)/.test(model)) {
         if (thinkingEnabled) {
-          return { google: { thinkingConfig: { thinkingBudget: 8192 } } };
+          return { google: { thinkingConfig: { thinkingBudget: thinkingBudget } } };
         }
       }
       return {};
@@ -154,6 +250,7 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
 
 const DEFAULT_MODELS: Record<string, string> = {
   anthropic: 'claude-sonnet-4-6',
+  'openai-codex': 'gpt-5.3-codex',
   openai: 'gpt-4o',
   google: 'gemini-2.0-flash',
   openrouter: 'anthropic/claude-sonnet-4-6',
@@ -165,6 +262,61 @@ const DEFAULT_MODELS: Record<string, string> = {
 
 export function getDefaultModel(provider: string): string {
   return DEFAULT_MODELS[provider] || DEFAULT_MODELS.anthropic;
+}
+
+function parseOpenAIAuthClaims(token: string): Record<string, any> | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length < 2 || !parts[1]) return null;
+    const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
+    const payload = JSON.parse(payloadJson) as Record<string, any>;
+    const namespaced = payload?.['https://api.openai.com/auth'];
+    if (namespaced && typeof namespaced === 'object') return namespaced;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function isLikelyLiteLLMUrl(raw: string): boolean {
+  if (!raw) return false;
+  const lowered = raw.toLowerCase();
+  if (lowered.includes('openrouter.ai') || lowered.includes('api.openai.com') || lowered.includes('chatgpt.com')) {
+    return false;
+  }
+  try {
+    const parsed = new URL(raw);
+    const host = parsed.hostname.toLowerCase();
+    if (host === '127.0.0.1' || host === 'localhost' || host === '0.0.0.0' || host === '::1') return true;
+    if (host.includes('litellm')) return true;
+    return parsed.pathname.includes('/v1');
+  } catch {
+    return lowered.includes('127.0.0.1') || lowered.includes('localhost') || lowered.includes('litellm');
+  }
+}
+
+function getLiteLLMBaseUrl(config: LLMConfig): string {
+  const envRaw = process.env.LITELLM_BASE_URL || process.env.LITELLM_URL || '';
+  const configRaw = (config.baseUrl || '').trim();
+
+  const chosen = envRaw
+    || (isLikelyLiteLLMUrl(configRaw) ? configRaw : '')
+    || 'http://127.0.0.1:4000/v1';
+
+  const trimmed = chosen.replace(/\/+$/, '');
+  return trimmed.endsWith('/v1') ? trimmed : `${trimmed}/v1`;
+}
+
+function buildCodexAuthHeaders(apiKey: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    'X-Provider': 'openai-codex',
+  };
+  const claims = parseOpenAIAuthClaims(apiKey);
+  const chatgptAccountId = claims?.chatgpt_account_id;
+  if (chatgptAccountId) {
+    headers['chatgpt-account-id'] = String(chatgptAccountId);
+  }
+  return headers;
 }
 
 export function createModel(config: LLMConfig): LanguageModel {
@@ -186,6 +338,21 @@ export function createModel(config: LLMConfig): LanguageModel {
         return anthropic(model);
       }
       return createAnthropic({ apiKey })(model);
+    }
+
+    case 'openai-codex': {
+      if (!apiKey) throw new Error('OpenAI Codex token required. Open Settings (⌘,) and sign in with ChatGPT.');
+
+      // Codex now runs through a LiteLLM OpenAI-compatible gateway.
+      // Reuse the existing decrypted OAuth/API key exactly as stored.
+      const litellmBaseUrl = getLiteLLMBaseUrl(config);
+      const codex = createOpenAI({
+        apiKey,
+        baseURL: litellmBaseUrl,
+        headers: buildCodexAuthHeaders(apiKey),
+      });
+      const normalizedModel = model || DEFAULT_MODELS['openai-codex'];
+      return codex.chat(normalizedModel as any);
     }
 
     case 'openai': {
@@ -268,7 +435,7 @@ export function createModel(config: LLMConfig): LanguageModel {
     }
 
     default:
-      throw new Error(`Unknown provider: ${provider}. Supported: anthropic, openai, google, openrouter, ollama, bedrock, vertex, azure.`);
+      throw new Error(`Unknown provider: ${provider}. Supported: anthropic, openai-codex, openai, google, openrouter, ollama, bedrock, vertex, azure.`);
   }
 }
 
@@ -290,7 +457,7 @@ function extractAzureResourceName(endpoint: string): string {
  * Check if a provider requires an API key (vs auto-detection).
  */
 export function requiresApiKey(provider: string): boolean {
-  return ['anthropic', 'openai', 'google', 'openrouter'].includes(provider);
+  return ['anthropic', 'openai-codex', 'openai', 'google', 'openrouter'].includes(provider);
 }
 
 /**
@@ -306,6 +473,7 @@ export function supportsAutoDetect(provider: string): boolean {
 export function getProviderInfo(provider: string): { name: string; description: string; fields: string[] } {
   const providers: Record<string, { name: string; description: string; fields: string[] }> = {
     anthropic: { name: 'Anthropic', description: 'Claude models', fields: ['apiKey'] },
+    'openai-codex': { name: 'OpenAI Codex', description: 'Codex GPT models', fields: ['apiKey'] },
     openai: { name: 'OpenAI', description: 'GPT models', fields: ['apiKey'] },
     google: { name: 'Google', description: 'Gemini models', fields: ['apiKey'] },
     openrouter: { name: 'OpenRouter', description: 'Multi-provider gateway', fields: ['apiKey'] },
@@ -315,4 +483,879 @@ export function getProviderInfo(provider: string): { name: string; description: 
     azure: { name: 'Azure OpenAI', description: 'Azure-managed OpenAI', fields: ['endpoint', 'apiKey'] },
   };
   return providers[provider] || { name: provider, description: '', fields: ['apiKey'] };
+}
+
+type LiteLLMRole = 'system' | 'user' | 'assistant' | 'tool';
+
+interface LiteLLMMessage {
+  role: LiteLLMRole;
+  content?: string | null;
+  tool_call_id?: string;
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: {
+      name: string;
+      arguments: string;
+    };
+  }>;
+}
+
+interface LiteLLMToolSpec {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters: Record<string, any>;
+  };
+}
+
+interface LiteLLMToolDeltaState {
+  index: number;
+  id: string;
+  name: string;
+  argumentsText: string;
+}
+
+interface LiteLLMUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+interface LiteLLMStepRawResult {
+  text: string;
+  reasoningText: string;
+  finishReason: string;
+  toolIntent: boolean;
+  toolCalls: LiteLLMToolCall[];
+  usage: LiteLLMUsage;
+}
+
+export interface LiteLLMToolCall {
+  id: string;
+  index: number;
+  name: string;
+  argumentsText: string;
+  args: Record<string, any>;
+  parseError?: string;
+}
+
+export interface LiteLLMToolResult {
+  toolName: string;
+  toolCallId: string;
+  args: Record<string, any>;
+  output: any;
+  outputText: string;
+  success: boolean;
+  error?: string;
+}
+
+export interface LiteLLMStepEvent {
+  stepNumber: number;
+  finishReason: string;
+  text: string;
+  reasoningText: string;
+  toolIntent: boolean;
+  retryNonStream: boolean;
+  toolCalls: LiteLLMToolCall[];
+  toolResults: LiteLLMToolResult[];
+}
+
+export interface LiteLLMMetrics {
+  steps: number;
+  toolCalls: number;
+  toolCallSuccesses: number;
+  toolCallFailures: number;
+  emptyToolIntentRetries: number;
+  unresolvedEmptyToolIntentSteps: number;
+}
+
+export interface LiteLLMRunOptions {
+  config: LLMConfig;
+  system?: string;
+  messages: Array<{ role: string; content: any }>;
+  tools?: Record<string, any>;
+  maxSteps?: number;
+  providerOptions?: Record<string, any>;
+  abortSignal?: AbortSignal;
+  onTextDelta?: (delta: string) => void;
+  onReasoningDelta?: (delta: string) => void;
+  onToolCall?: (toolCall: LiteLLMToolCall) => void;
+  onToolResult?: (toolResult: LiteLLMToolResult) => void;
+  onStepFinish?: (event: LiteLLMStepEvent) => Promise<void> | void;
+  logPrefix?: string;
+}
+
+export interface LiteLLMRunResult {
+  text: string;
+  reasoningText: string;
+  steps: LiteLLMStepEvent[];
+  usage: LiteLLMUsage;
+  metrics: LiteLLMMetrics;
+}
+
+function safeJsonStringify(value: any): string {
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value ?? null);
+  } catch {
+    return String(value);
+  }
+}
+
+function flattenStructuredContent(content: any): string {
+  if (content === null || content === undefined) return '';
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return safeJsonStringify(content);
+
+  const parts: string[] = [];
+  for (const rawPart of content) {
+    if (!rawPart || typeof rawPart !== 'object') continue;
+    const part = rawPart as Record<string, any>;
+
+    if (typeof part.text === 'string' && part.text.length > 0) {
+      parts.push(part.text);
+      continue;
+    }
+
+    if (part.type === 'tool-call') {
+      const name = typeof part.toolName === 'string' ? part.toolName : 'unknown';
+      const args = safeJsonStringify(part.args ?? {});
+      parts.push(`[tool-call:${name} ${args}]`);
+      continue;
+    }
+
+    if (part.type === 'tool-result') {
+      const name = typeof part.toolName === 'string' ? part.toolName : 'unknown';
+      const result = safeJsonStringify(part.result ?? part.output ?? '');
+      parts.push(`[tool-result:${name} ${result}]`);
+      continue;
+    }
+
+    if (part.type === 'reasoning') {
+      if (typeof part.text === 'string' && part.text.length > 0) {
+        parts.push(`[reasoning:${part.text}]`);
+      }
+      continue;
+    }
+
+    if (typeof part.content === 'string' && part.content.length > 0) {
+      parts.push(part.content);
+    }
+  }
+
+  return parts.join('\n');
+}
+
+function toLiteLLMMessages(messages: Array<{ role: string; content: any }>): LiteLLMMessage[] {
+  const mapped: LiteLLMMessage[] = [];
+
+  for (const msg of messages) {
+    const role = msg?.role;
+    const content = flattenStructuredContent(msg?.content);
+
+    if (role === 'system' || role === 'user' || role === 'assistant') {
+      mapped.push({ role, content });
+      continue;
+    }
+
+    if (role === 'tool') {
+      // Historical tool messages from AI SDK sessions may not include tool_call_id in a
+      // shape LiteLLM accepts. Preserve context as assistant text to avoid invalid payloads.
+      mapped.push({ role: 'assistant', content: content ? `[tool-history] ${content}` : '[tool-history]' });
+      continue;
+    }
+
+    // Unknown role: degrade safely to user text.
+    mapped.push({ role: 'user', content });
+  }
+
+  return mapped;
+}
+
+function buildLiteLLMToolSpecs(tools: Record<string, any>): LiteLLMToolSpec[] {
+  const specs: LiteLLMToolSpec[] = [];
+
+  for (const [name, rawTool] of Object.entries(tools || {})) {
+    const tool = rawTool as {
+      description?: string;
+      inputSchema?: any;
+      execute?: (...args: any[]) => any;
+    };
+
+    if (!tool || typeof tool.execute !== 'function') continue;
+
+    let parameters: Record<string, any> = {
+      type: 'object',
+      properties: {},
+      additionalProperties: true,
+    };
+
+    if (tool.inputSchema) {
+      try {
+        parameters = z.toJSONSchema(tool.inputSchema as any) as Record<string, any>;
+      } catch (schemaErr: any) {
+        console.warn(`[litellm-codex] Failed to serialize schema for tool "${name}":`, schemaErr?.message || schemaErr);
+      }
+    }
+
+    specs.push({
+      type: 'function',
+      function: {
+        name,
+        description: tool.description || '',
+        parameters,
+      },
+    });
+  }
+
+  return specs;
+}
+
+function parseToolArgsLenient(rawArgs: unknown): { args: Record<string, any>; argumentsText: string; parseError?: string } {
+  if (rawArgs === undefined || rawArgs === null) {
+    return { args: {}, argumentsText: '{}' };
+  }
+
+  if (typeof rawArgs === 'object') {
+    return {
+      args: rawArgs as Record<string, any>,
+      argumentsText: safeJsonStringify(rawArgs),
+    };
+  }
+
+  const original = String(rawArgs);
+  const trimmed = original.trim();
+
+  const candidates = new Set<string>();
+  candidates.add(original);
+  candidates.add(trimmed);
+  candidates.add(trimmed.replace(/,\s*([}\]])/g, '$1'));
+
+  // Brace balancing repair for fragmented stream arguments.
+  const balanced = (() => {
+    let repaired = trimmed;
+    const openCurly = (repaired.match(/\{/g) || []).length;
+    const closeCurly = (repaired.match(/\}/g) || []).length;
+    if (openCurly > closeCurly) repaired += '}'.repeat(openCurly - closeCurly);
+    const openSquare = (repaired.match(/\[/g) || []).length;
+    const closeSquare = (repaired.match(/\]/g) || []).length;
+    if (openSquare > closeSquare) repaired += ']'.repeat(openSquare - closeSquare);
+    return repaired;
+  })();
+  candidates.add(balanced);
+  candidates.add(balanced.replace(/,\s*([}\]])/g, '$1'));
+
+  let lastErr = '';
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object') {
+        return { args: parsed as Record<string, any>, argumentsText: candidate };
+      }
+      return { args: { value: parsed }, argumentsText: candidate };
+    } catch (err: any) {
+      lastErr = err?.message || String(err);
+    }
+  }
+
+  return {
+    args: {},
+    argumentsText: trimmed || original,
+    parseError: lastErr || 'Failed to parse tool arguments',
+  };
+}
+
+function resolveReasoningEffort(providerOptions?: Record<string, any>): 'low' | 'medium' | 'high' {
+  const raw = providerOptions?.openai?.reasoningEffort;
+  if (raw === 'low' || raw === 'medium' || raw === 'high') return raw;
+  return 'high';
+}
+
+function extractTextFromDelta(delta: any): string {
+  if (!delta) return '';
+
+  if (typeof delta.content === 'string') return delta.content;
+
+  if (Array.isArray(delta.content)) {
+    const bits: string[] = [];
+    for (const part of delta.content) {
+      if (typeof part === 'string') {
+        bits.push(part);
+      } else if (part && typeof part === 'object') {
+        if (typeof part.text === 'string') bits.push(part.text);
+        else if (typeof part.content === 'string') bits.push(part.content);
+      }
+    }
+    return bits.join('');
+  }
+
+  if (typeof delta.text === 'string') return delta.text;
+  if (typeof delta.output_text === 'string') return delta.output_text;
+  return '';
+}
+
+function extractReasoningFromDelta(delta: any): string {
+  if (!delta) return '';
+
+  if (typeof delta.reasoning === 'string') return delta.reasoning;
+  if (typeof delta.reasoning_content === 'string') return delta.reasoning_content;
+
+  if (Array.isArray(delta.reasoning)) {
+    const bits: string[] = [];
+    for (const part of delta.reasoning) {
+      if (typeof part === 'string') bits.push(part);
+      else if (part && typeof part === 'object') {
+        if (typeof part.text === 'string') bits.push(part.text);
+        else if (typeof part.content === 'string') bits.push(part.content);
+      }
+    }
+    return bits.join('');
+  }
+
+  return '';
+}
+
+function buildToolCallsFromAccumulator(acc: Map<number, LiteLLMToolDeltaState>, stepNumber: number): LiteLLMToolCall[] {
+  const ordered = [...acc.values()].sort((a, b) => a.index - b.index);
+  return ordered
+    .map((item) => {
+      const parsed = parseToolArgsLenient(item.argumentsText);
+      const name = (item.name || '').trim();
+      if (!name) return null;
+      return {
+        id: item.id || `call_step_${stepNumber}_${item.index}`,
+        index: item.index,
+        name,
+        argumentsText: parsed.argumentsText,
+        args: parsed.args,
+        ...(parsed.parseError ? { parseError: parsed.parseError } : {}),
+      } as LiteLLMToolCall;
+    })
+    .filter((item): item is LiteLLMToolCall => Boolean(item));
+}
+
+async function runLiteLLMStreamStep(params: {
+  config: LLMConfig;
+  body: Record<string, any>;
+  stepNumber: number;
+  abortSignal?: AbortSignal;
+  onTextDelta?: (delta: string) => void;
+  onReasoningDelta?: (delta: string) => void;
+}): Promise<LiteLLMStepRawResult> {
+  const url = `${getLiteLLMBaseUrl(params.config)}/chat/completions`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${params.config.apiKey}`,
+      ...buildCodexAuthHeaders(params.config.apiKey),
+    },
+    body: JSON.stringify({ ...params.body, stream: true, stream_options: { include_usage: true } }),
+    signal: params.abortSignal,
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`LiteLLM stream error (${response.status}): ${body.slice(0, 2000)}`);
+  }
+
+  if (!response.body) {
+    throw new Error('LiteLLM stream error: empty response body');
+  }
+
+  const decoder = new TextDecoder();
+  const reader = response.body.getReader();
+  let buffer = '';
+  let eventLines: string[] = [];
+  let done = false;
+
+  let text = '';
+  let reasoningText = '';
+  let finishReason = '';
+  let toolIntent = false;
+  const usage: LiteLLMUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  const toolAcc = new Map<number, LiteLLMToolDeltaState>();
+
+  const processEvent = (payloadText: string): void => {
+    const payloadTrimmed = payloadText.trim();
+    if (!payloadTrimmed) return;
+    if (payloadTrimmed === '[DONE]') {
+      done = true;
+      return;
+    }
+
+    let payload: any;
+    try {
+      payload = JSON.parse(payloadTrimmed);
+    } catch {
+      return;
+    }
+
+    if (payload?.usage && typeof payload.usage === 'object') {
+      usage.inputTokens += Number(payload.usage.prompt_tokens || 0);
+      usage.outputTokens += Number(payload.usage.completion_tokens || 0);
+      usage.totalTokens += Number(payload.usage.total_tokens || 0);
+    }
+
+    const choices = Array.isArray(payload?.choices) ? payload.choices : [];
+    for (const choice of choices) {
+      const delta = choice?.delta || {};
+
+      const textDelta = extractTextFromDelta(delta);
+      if (textDelta) {
+        text += textDelta;
+        params.onTextDelta?.(textDelta);
+      }
+
+      const reasoningDelta = extractReasoningFromDelta(delta);
+      if (reasoningDelta) {
+        reasoningText += reasoningDelta;
+        params.onReasoningDelta?.(reasoningDelta);
+      }
+
+      const deltaToolCalls = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];
+      if (deltaToolCalls.length > 0) toolIntent = true;
+
+      for (const rawTc of deltaToolCalls) {
+        const tc = rawTc as Record<string, any>;
+        const idxRaw = tc.index;
+        const index = typeof idxRaw === 'number' ? idxRaw : Number(idxRaw ?? 0) || 0;
+
+        const existing = toolAcc.get(index) || {
+          index,
+          id: '',
+          name: '',
+          argumentsText: '',
+        };
+
+        if (typeof tc.id === 'string' && tc.id.length > 0) {
+          existing.id = tc.id;
+        }
+
+        const fn = (tc.function && typeof tc.function === 'object') ? tc.function as Record<string, any> : {};
+
+        if (typeof fn.name === 'string' && fn.name.length > 0) {
+          existing.name += fn.name;
+        }
+
+        if (typeof fn.arguments === 'string' && fn.arguments.length > 0) {
+          existing.argumentsText += fn.arguments;
+        }
+
+        toolAcc.set(index, existing);
+      }
+
+      if (typeof choice?.finish_reason === 'string' && choice.finish_reason.length > 0) {
+        finishReason = choice.finish_reason;
+        if (finishReason === 'tool_calls') toolIntent = true;
+      }
+    }
+  };
+
+  const flushEvent = (): void => {
+    if (eventLines.length === 0) return;
+    const payload = eventLines.join('\n');
+    eventLines = [];
+    processEvent(payload);
+  };
+
+  while (!done) {
+    const { value, done: readerDone } = await reader.read();
+    if (readerDone) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    let lineBreakIndex = buffer.indexOf('\n');
+    while (lineBreakIndex >= 0) {
+      const rawLine = buffer.slice(0, lineBreakIndex);
+      buffer = buffer.slice(lineBreakIndex + 1);
+      const line = rawLine.replace(/\r$/, '');
+
+      if (line.length === 0) {
+        flushEvent();
+      } else if (line.startsWith('data:')) {
+        eventLines.push(line.slice(5).trimStart());
+      }
+
+      lineBreakIndex = buffer.indexOf('\n');
+    }
+  }
+
+  if (buffer.trim().length > 0) {
+    const trailingLines = buffer.split('\n').map((line) => line.replace(/\r$/, ''));
+    for (const line of trailingLines) {
+      if (!line) {
+        flushEvent();
+      } else if (line.startsWith('data:')) {
+        eventLines.push(line.slice(5).trimStart());
+      }
+    }
+  }
+
+  flushEvent();
+
+  return {
+    text,
+    reasoningText,
+    finishReason: finishReason || 'stop',
+    toolIntent,
+    toolCalls: buildToolCallsFromAccumulator(toolAcc, params.stepNumber),
+    usage,
+  };
+}
+
+async function runLiteLLMNonStreamStep(params: {
+  config: LLMConfig;
+  body: Record<string, any>;
+  stepNumber: number;
+  abortSignal?: AbortSignal;
+}): Promise<LiteLLMStepRawResult> {
+  const url = `${getLiteLLMBaseUrl(params.config)}/chat/completions`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${params.config.apiKey}`,
+      ...buildCodexAuthHeaders(params.config.apiKey),
+    },
+    body: JSON.stringify({ ...params.body, stream: false }),
+    signal: params.abortSignal,
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`LiteLLM non-stream error (${response.status}): ${body.slice(0, 2000)}`);
+  }
+
+  const payload = await response.json() as any;
+  const usage: LiteLLMUsage = {
+    inputTokens: Number(payload?.usage?.prompt_tokens || 0),
+    outputTokens: Number(payload?.usage?.completion_tokens || 0),
+    totalTokens: Number(payload?.usage?.total_tokens || 0),
+  };
+
+  const choice = Array.isArray(payload?.choices) && payload.choices.length > 0
+    ? payload.choices[0]
+    : null;
+
+  const message = (choice?.message && typeof choice.message === 'object')
+    ? choice.message as Record<string, any>
+    : {};
+
+  const content = (() => {
+    const rawContent = message?.content;
+    if (typeof rawContent === 'string') return rawContent;
+    if (Array.isArray(rawContent)) {
+      return rawContent.map((part: any) => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part === 'object') {
+          if (typeof part.text === 'string') return part.text;
+          if (typeof part.content === 'string') return part.content;
+        }
+        return '';
+      }).join('');
+    }
+    return '';
+  })();
+
+  const rawToolCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+  const toolCalls: LiteLLMToolCall[] = rawToolCalls.map((raw: any, idx: number) => {
+    const id = typeof raw?.id === 'string' && raw.id.length > 0 ? raw.id : `call_step_${params.stepNumber}_${idx}`;
+    const fn = raw?.function && typeof raw.function === 'object' ? raw.function : {};
+    const name = typeof fn?.name === 'string' ? fn.name : '';
+    const parsed = parseToolArgsLenient(fn?.arguments);
+    return {
+      id,
+      index: typeof raw?.index === 'number' ? raw.index : idx,
+      name,
+      argumentsText: parsed.argumentsText,
+      args: parsed.args,
+      ...(parsed.parseError ? { parseError: parsed.parseError } : {}),
+    };
+  }).filter((call) => call.name.length > 0);
+
+  const finishReason = typeof choice?.finish_reason === 'string' && choice.finish_reason.length > 0
+    ? choice.finish_reason
+    : 'stop';
+  const toolIntent = finishReason === 'tool_calls' || toolCalls.length > 0;
+
+  return {
+    text: content,
+    reasoningText: '',
+    finishReason,
+    toolIntent,
+    toolCalls,
+    usage,
+  };
+}
+
+async function executeLiteLLMToolCall(
+  tools: Record<string, any>,
+  toolCall: LiteLLMToolCall,
+): Promise<LiteLLMToolResult> {
+  const tool = tools[toolCall.name] as {
+    inputSchema?: any;
+    execute?: (args: any, opts?: { toolCallId?: string; messages?: any[] }) => Promise<any> | any;
+  } | undefined;
+
+  if (!tool || typeof tool.execute !== 'function') {
+    const outputText = `❌ Tool "${toolCall.name}" is not available.`;
+    return {
+      toolName: toolCall.name,
+      toolCallId: toolCall.id,
+      args: toolCall.args,
+      output: outputText,
+      outputText,
+      success: false,
+      error: outputText,
+    };
+  }
+
+  let parsedArgs: Record<string, any> = toolCall.args;
+
+  if (tool.inputSchema && typeof tool.inputSchema.parse === 'function') {
+    try {
+      parsedArgs = tool.inputSchema.parse(parsedArgs) as Record<string, any>;
+    } catch (schemaErr: any) {
+      const errMsg = `❌ Invalid arguments for tool "${toolCall.name}": ${schemaErr?.message || String(schemaErr)}`;
+      return {
+        toolName: toolCall.name,
+        toolCallId: toolCall.id,
+        args: toolCall.args,
+        output: errMsg,
+        outputText: errMsg,
+        success: false,
+        error: errMsg,
+      };
+    }
+  }
+
+  try {
+    const output = await tool.execute(parsedArgs, { toolCallId: toolCall.id, messages: [] });
+    const outputText = typeof output === 'string' ? output : safeJsonStringify(output);
+    return {
+      toolName: toolCall.name,
+      toolCallId: toolCall.id,
+      args: parsedArgs,
+      output,
+      outputText,
+      success: true,
+    };
+  } catch (execErr: any) {
+    const errMsg = execErr?.message || String(execErr);
+    const outputText = `❌ Tool "${toolCall.name}" failed: ${errMsg}`;
+    return {
+      toolName: toolCall.name,
+      toolCallId: toolCall.id,
+      args: parsedArgs,
+      output: outputText,
+      outputText,
+      success: false,
+      error: outputText,
+    };
+  }
+}
+
+/**
+ * Codex-only LiteLLM runtime loop.
+ *
+ * - Streams text/tool call deltas from LiteLLM chat completions
+ * - Reassembles fragmented tool-call JSON arguments by tool index
+ * - Retries one step in non-stream mode if tool intent is signaled but parsed calls are empty
+ * - Executes every parsed tool call sequentially and appends deterministic tool results
+ */
+export async function runLiteLLMCodexToolLoop(opts: LiteLLMRunOptions): Promise<LiteLLMRunResult> {
+  const { config } = opts;
+  if (config.provider !== 'openai-codex') {
+    throw new Error('runLiteLLMCodexToolLoop is only valid for provider=openai-codex');
+  }
+
+  const logPrefix = opts.logPrefix || 'litellm-codex';
+  const maxSteps = Math.max(1, opts.maxSteps ?? 200);
+  const tools = opts.tools || {};
+  const toolSpecs = buildLiteLLMToolSpecs(tools);
+  const reasoningEffort = resolveReasoningEffort(opts.providerOptions);
+
+  const transcript: LiteLLMMessage[] = [];
+  if (opts.system && opts.system.trim().length > 0) {
+    transcript.push({ role: 'system', content: opts.system });
+  }
+  transcript.push(...toLiteLLMMessages(opts.messages));
+
+  const usage: LiteLLMUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  const steps: LiteLLMStepEvent[] = [];
+  const metrics: LiteLLMMetrics = {
+    steps: 0,
+    toolCalls: 0,
+    toolCallSuccesses: 0,
+    toolCallFailures: 0,
+    emptyToolIntentRetries: 0,
+    unresolvedEmptyToolIntentSteps: 0,
+  };
+
+  let fullText = '';
+  let fullReasoning = '';
+
+  for (let stepNumber = 0; stepNumber < maxSteps; stepNumber++) {
+    const body: Record<string, any> = {
+      model: config.model || DEFAULT_MODELS['openai-codex'],
+      messages: transcript,
+      reasoning_effort: reasoningEffort,
+      max_tokens: 32768,
+      ...(toolSpecs.length > 0
+        ? {
+          tools: toolSpecs,
+          tool_choice: 'auto',
+          parallel_tool_calls: false,
+        }
+        : {}),
+    };
+
+    const stepStream = await runLiteLLMStreamStep({
+      config,
+      body,
+      stepNumber,
+      abortSignal: opts.abortSignal,
+      onTextDelta: (delta) => {
+        fullText += delta;
+        opts.onTextDelta?.(delta);
+      },
+      onReasoningDelta: (delta) => {
+        fullReasoning += delta;
+        opts.onReasoningDelta?.(delta);
+      },
+    });
+
+    usage.inputTokens += stepStream.usage.inputTokens;
+    usage.outputTokens += stepStream.usage.outputTokens;
+    usage.totalTokens += stepStream.usage.totalTokens;
+
+    let step = stepStream;
+    let retryNonStream = false;
+
+    if (step.toolIntent && step.toolCalls.length === 0) {
+      metrics.emptyToolIntentRetries += 1;
+      retryNonStream = true;
+      const nonStream = await runLiteLLMNonStreamStep({
+        config,
+        body,
+        stepNumber,
+        abortSignal: opts.abortSignal,
+      });
+
+      usage.inputTokens += nonStream.usage.inputTokens;
+      usage.outputTokens += nonStream.usage.outputTokens;
+      usage.totalTokens += nonStream.usage.totalTokens;
+
+      // Keep streamed text if non-stream returned none; otherwise prefer non-stream payload.
+      step = {
+        text: nonStream.text || step.text,
+        reasoningText: nonStream.reasoningText || step.reasoningText,
+        finishReason: nonStream.finishReason || step.finishReason,
+        toolIntent: nonStream.toolIntent || step.toolIntent,
+        toolCalls: nonStream.toolCalls,
+        usage: {
+          inputTokens: step.usage.inputTokens + nonStream.usage.inputTokens,
+          outputTokens: step.usage.outputTokens + nonStream.usage.outputTokens,
+          totalTokens: step.usage.totalTokens + nonStream.usage.totalTokens,
+        },
+      };
+    }
+
+    if (step.toolIntent && step.toolCalls.length === 0) {
+      metrics.unresolvedEmptyToolIntentSteps += 1;
+    }
+
+    const assistantToolCalls = step.toolCalls.map((call) => ({
+      id: call.id,
+      type: 'function' as const,
+      function: {
+        name: call.name,
+        arguments: call.argumentsText || safeJsonStringify(call.args),
+      },
+    }));
+
+    // Always append assistant turn so the next step has complete context.
+    transcript.push(
+      assistantToolCalls.length > 0
+        ? {
+          role: 'assistant',
+          content: step.text || null,
+          tool_calls: assistantToolCalls,
+        }
+        : {
+          role: 'assistant',
+          content: step.text || '',
+        },
+    );
+
+    const stepEvent: LiteLLMStepEvent = {
+      stepNumber,
+      finishReason: step.finishReason || 'stop',
+      text: step.text,
+      reasoningText: step.reasoningText,
+      toolIntent: step.toolIntent,
+      retryNonStream,
+      toolCalls: step.toolCalls,
+      toolResults: [],
+    };
+
+    for (const call of step.toolCalls.sort((a, b) => a.index - b.index)) {
+      opts.onToolCall?.(call);
+
+      const toolResult = await executeLiteLLMToolCall(tools, call);
+      stepEvent.toolResults.push(toolResult);
+      opts.onToolResult?.(toolResult);
+
+      metrics.toolCalls += 1;
+      if (toolResult.success) metrics.toolCallSuccesses += 1;
+      else metrics.toolCallFailures += 1;
+
+      transcript.push({
+        role: 'tool',
+        tool_call_id: call.id,
+        content: toolResult.outputText,
+      });
+    }
+
+    metrics.steps = stepNumber + 1;
+
+    console.log(
+      `[${logPrefix}] STEP ${stepNumber + 1} ` +
+      `finish=${stepEvent.finishReason} ` +
+      `intent=${stepEvent.toolIntent} ` +
+      `parsed_calls=${stepEvent.toolCalls.length} ` +
+      `executed=${stepEvent.toolResults.length} ` +
+      `retry_non_stream=${retryNonStream}`,
+    );
+
+    await opts.onStepFinish?.(stepEvent);
+    steps.push(stepEvent);
+
+    if (step.toolCalls.length === 0) {
+      // No more tool calls in this step — final answer reached.
+      break;
+    }
+  }
+
+  console.log(
+    `[${logPrefix}] SUMMARY ` +
+    `steps=${metrics.steps} ` +
+    `tool_calls=${metrics.toolCalls} ` +
+    `tool_success=${metrics.toolCallSuccesses} ` +
+    `tool_failures=${metrics.toolCallFailures} ` +
+    `empty_intent_retries=${metrics.emptyToolIntentRetries} ` +
+    `unresolved_empty_intent=${metrics.unresolvedEmptyToolIntentSteps}`,
+  );
+
+  return {
+    text: fullText,
+    reasoningText: fullReasoning,
+    steps,
+    usage,
+    metrics,
+  };
 }

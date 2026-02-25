@@ -10,7 +10,16 @@ import type { BrowserWindow, WebContents } from 'electron';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
-import { createModel, buildProviderOptions, getModelConfig, type LLMConfig } from './llm-client';
+import {
+  createModel,
+  buildProviderOptions,
+  getModelConfig,
+  withCodexProviderOptions,
+  logProviderRequestError,
+  extractRequestErrorDetails,
+  runLiteLLMCodexToolLoop,
+  type LLMConfig,
+} from './llm-client';
 import { createTools, TOOL_USAGE_GUIDE } from './tool-registry';
 import * as browserTools from './browser-tools';
 import * as httpTools from './http-tools';
@@ -221,71 +230,13 @@ interface AgentRunOptions {
   agentBrowsingDataAccess?: boolean; // Phase 8.4.1: grant agent access to history/bookmarks/downloads
   conversationId?: string;  // Phase 8.35: SQLite conversation ID for persistence
   ariaWebContents?: WebContents | null; // Phase 8.35: Aria tab webcontents for broadcast
+  executionRetryCount?: number; // Internal guard: auto-retry planning-only non-normal runs once
+  codexToolRetryCount?: number; // Internal guard: codex empty-tool-call recovery retries
+  codexForceNonStream?: boolean; // Internal guard: retry codex once via non-stream generateText
 }
 
-// Task-type system prompt addendums — injected based on classified task type
-const TASK_TYPE_ADDENDUMS: Record<string, string> = {
-  research: `
-## Task Mode: Research
-
-This is a research task. Use spawn_agent to delegate sub-research to up to 5 parallel agents.
-
-**Protocol:**
-1. Classify the research into 2-5 sub-topics.
-2. Call spawn_agent for ALL sub-topics in a single response. They run in parallel and each returns its full findings when done.
-3. Once you have all results, synthesize into a comprehensive final report.
-4. Write the report to a file and call present_download.
-
-**Important:** spawn_agent blocks until the sub-agent finishes and returns the complete result. You do NOT need to poll or wait — just call all spawn_agents at once, and the next time you speak you'll have all the findings ready to synthesize.
-
-**Handling thin/failed results:**
-- If a result starts with "⚠️ THIN RESULT", supplement with your own knowledge.
-- If a result starts with "❌", that agent failed — note the gap in your report.
-
-**Rules:**
-- Each sub-agent handles ONE topic. Don't overlap.
-- You MUST produce a final report even if sub-agent results are imperfect.
-- **IMPORTANT: After writing any report to a file, you MUST call present_download with the file path.**
-`,
-
-  coding: `
-## Task Mode: Coding
-
-This is a coding task. For multi-file or complex implementations, use spawn_agent.
-
-**When to spawn sub-agents:**
-- Building multiple independent modules/files
-- Tasks with clear parallelizable boundaries (e.g., frontend + backend + tests)
-
-**Protocol for multi-file work:**
-1. Plan the architecture and define interfaces first.
-2. spawn_agent for each distinct module — each agent works on its assigned files only.
-3. Each sub-agent has ONE tab and stays in ~/tappi-workspace/.
-4. Wait for all sub-agents, then integrate their output.
-
-**Single-file fixes:** Do directly, no sub-agents needed.
-
-**Shell:** exec is non-interactive. Write files directly with file_write for scaffolding.
-`,
-
-  'story-writing': `
-## Task Mode: Story Writing
-
-This is a creative writing task. Use spawn_agent for parallel section/chapter generation.
-
-**When to spawn sub-agents:**
-- Writing multiple chapters or scenes simultaneously
-- Different POV segments that can be written independently
-- World-building + plot + dialogue as separate concerns
-
-**Protocol:**
-1. Define character/world constraints in your response first.
-2. spawn_agent for each section — each gets the established style + context.
-3. Sub-agents save their output to ~/tappi-workspace/ with their ID in the filename.
-4. Compile and edit the sections into the final piece.
-5. Use present_download to offer the complete piece as a downloadable file.
-`,
-};
+// Task-type addendums removed (Phase 9.12) — the agent decides when/if to spawn sub-agents.
+// No forced orchestration. spawn_agent is a tool the agent can use when it makes sense.
 
 let activeRun: AbortController | null = null;
 let _lastStopReason: string | null = null; // Phase 8.40: track why agent stopped
@@ -309,8 +260,23 @@ function sendError(mainWindow: BrowserWindow, msg: string, extraWC?: WebContents
   sendChunk(mainWindow, `❌ ${msg}`, true, extraWC);
 }
 
+// Phase 9.12: Removed isReportDeliverableRequest and hasReportArtifacts — no forced retry loops.
+
 export async function runAgent(opts: AgentRunOptions): Promise<void> {
-  const { userMessage, browserCtx, llmConfig, window: mainWindow, sessionId = 'default', developerMode = false, worktreeIsolation = true, agentBrowsingDataAccess = false, conversationId, ariaWebContents } = opts;
+  const {
+    userMessage,
+    browserCtx,
+    llmConfig,
+    window: mainWindow,
+    sessionId = 'default',
+    developerMode = false,
+    worktreeIsolation = true,
+    agentBrowsingDataAccess = false,
+    conversationId,
+    ariaWebContents,
+    codexForceNonStream = false,
+    codexToolRetryCount = 0,
+  } = opts;
 
   // Helper: broadcast to both chrome UI and Aria tab
   function broadcast(channel: string, data?: any) {
@@ -333,15 +299,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
   let streamStarted = false;
   const toolsUsed: string[] = [];
 
-  // ─── Task Classification ───────────────────────────────────────────────────
-  // Classify the incoming message to determine which task mode to activate.
-  // research/coding/story-writing get mode-specific system prompt addendums.
-  const { classifyTask } = require('./sub-agent') as typeof import('./sub-agent');
-  const taskType = classifyTask(userMessage);
-  const taskAddendum = TASK_TYPE_ADDENDUMS[taskType] || '';
-  if (taskType !== 'normal') {
-    console.log(`[agent] Task classified as: ${taskType}`);
-  }
+  // Phase 9.12: No automatic task classification or forced orchestration.
+  // The agent decides if/when to use spawn_agent based on its own judgment.
+  const taskType = 'normal';
 
   try {
     const model = createModel(llmConfig);
@@ -383,24 +343,22 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
     });
 
     // ─── Coding Memory Bootstrap ───────────────────────────────────────────
-    // For coding tasks, check if the project dir has .tappi-coding-memory/.
+    // If there's an active team or project, inject coding memory context.
     let codingMemoryContext = '';
-    if (taskType === 'coding') {
-      try {
-        const activeTeam = teamManager.getActiveTeam();
-        const projectDir = activeTeam?.workingDir || projectWorkingDir || process.cwd();
+    try {
+      const activeTeam = teamManager.getActiveTeam();
+      const projectDir = activeTeam?.workingDir || projectWorkingDir;
+      if (projectDir) {
         const memCtx = bootstrapContext(projectDir);
         if (memCtx) {
           codingMemoryContext = '\n\n' + memCtx;
         }
-      } catch (memErr: any) {
-        console.error('[agent] coding-memory bootstrap error:', memErr?.message);
       }
+    } catch (memErr: any) {
+      console.error('[agent] coding-memory bootstrap error:', memErr?.message);
     }
 
-    const activeSystemPrompt = taskAddendum
-      ? SYSTEM_PROMPT + taskAddendum + codingMemoryContext
-      : SYSTEM_PROMPT;
+    const activeSystemPrompt = SYSTEM_PROMPT + codingMemoryContext;
     console.log('[agent] Run starting:', Object.keys(tools).length, 'tools,', browserContext.length, 'chars context, devMode:', developerMode, 'taskType:', taskType);
 
     // Add user message to history
@@ -436,6 +394,35 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
     let idleCount = 0;
     let toolCallCount = 0;
 
+    const isCodex = llmConfig.provider === 'openai-codex';
+    let codexNeedsNonStreamRetry = false;
+    let codexToolFailureCount = 0;
+    let codexToolIntentSteps = 0;
+    let codexParsedToolCalls = 0;
+    let codexExecutedToolResults = 0;
+    let codexStreamAssembledCalls = 0;
+    let codexStreamArgParseErrors = 0;
+
+    const codexStreamToolInputByIndex = new Map<number, {
+      toolName: string;
+      argsText: string;
+      finalized: boolean;
+    }>();
+
+    const parseJsonArgsSafe = (raw: any): any => {
+      if (raw === undefined || raw === null) return {};
+      if (typeof raw === 'object') return raw;
+      if (typeof raw !== 'string') return { value: raw };
+      const text = raw.trim();
+      if (!text) return {};
+      try {
+        return JSON.parse(text);
+      } catch {
+        codexStreamArgParseErrors++;
+        return { __raw: text };
+      }
+    };
+
     // Timeout: abort at configured timeout
     const timeoutHandle = setTimeout(() => {
       stopReason = 'timeout';
@@ -456,221 +443,440 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
     }, 1000);
     agentProgressData = { running: true, elapsed: 0, toolCalls: 0, timeoutMs };
 
-    let result;
+    let result: any;
+    let resultMode: 'streamText' | 'generateText' | 'litellm' = isCodex ? 'litellm' : (codexForceNonStream ? 'generateText' : 'streamText');
+    let codexLiteUsage: { inputTokens: number; outputTokens: number; totalTokens: number } | null = null;
+    let codexLiteMetrics: {
+      steps: number;
+      toolCalls: number;
+      toolCallSuccesses: number;
+      toolCallFailures: number;
+      emptyToolIntentRetries: number;
+      unresolvedEmptyToolIntentSteps: number;
+    } | null = null;
+    let fullResponse = '';
     // Collect ordered conversation events for persistence (Phase 9.1: rich conversation history)
     const conversationEvents: Array<{ role: string; content: string }> = [];
     try {
-      // For complex task types (coding/research/story), fire stream-start early so the
-      // UI shows a visible indicator while the LLM plans (can take 30s+ with thinking ON).
-      if (taskType !== 'normal' && !streamStarted) {
-        broadcast('agent:stream-start', {});
-        streamStarted = true;
-        const taskLabels: Record<string, string> = {
-          coding: '🏗️ Planning coding task...',
-          research: '🔍 Planning research...',
-          'story-writing': '✍️ Planning story...',
-        };
-        sendChunk(mainWindow, taskLabels[taskType] || '🧠 Planning...', false, ariaWebContents);
-      }
+      // Stream-start fires on first chunk from LLM (no early artificial indicators).
       console.log('[agent] Calling LLM:', llmConfig.provider, llmConfig.model, 'key:', llmConfig.apiKey.slice(0, 4) + '***');
       const providerOptions = buildProviderOptions(llmConfig);
-      console.log('[agent] Thinking:', llmConfig.thinking !== false ? 'ON' : 'OFF', '| providerOptions:', JSON.stringify(providerOptions));
 
-      result = streamText({
-        model,
-        system: activeSystemPrompt,
-        messages: messages as any, // AI SDK accepts ModelMessage[]
-        tools,
-        // With adaptive thinking, max_tokens includes BOTH thinking + response tokens.
-        // effort:'medium' controls how much the model thinks (keeping costs reasonable).
-        // 16K gives headroom for thinking (~8K) + response (~2K) + safety margin.
-        // Without thinking, 2048 is enough for response only.
-        maxOutputTokens: 32768,
-        ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
-        // Phase 8.40 + Phase 9 fix: AI SDK v6 defaults to stepCountIs(1) which
-        // limits the agent to a single LLM call. Override with 200 steps so the
-        // agent loops (navigate → elements → click → …) until it finishes or times out.
-        stopWhen: stepCountIs(200),
-        abortSignal: abortController.signal,
-        prepareStep: async ({ messages: currentMessages }: { messages: any[] }) => {
-          // 80% timeout warning injection
-          if (warningPending && !warningInjected) {
-            warningInjected = true;
-            const elapsed = Date.now() - runStart;
-            const elapsedMin = Math.floor(elapsed / 60000);
-            const totalMin = Math.floor(timeoutMs / 60000);
-            const warningMsg = `[⏰ Approaching timeout (${elapsedMin}m of ${totalMin}m). Wrap up your current task.]`;
-            console.log('[agent] Injecting timeout warning');
-            return { messages: [...currentMessages, { role: 'user', content: warningMsg }] };
-          }
-          // Duplicate detection hint injection
-          if (dupHintPending) {
-            dupHintPending = false;
-            return {
-              messages: [...currentMessages, {
-                role: 'user',
-                content: "[You're repeating the same action. Try a different approach.]",
-              }],
-            };
-          }
-          // Idle detection: 5 consecutive text-only turns → abort
-          // For coding/research/story tasks, use a higher threshold since the agent
-          // may be waiting on sub-agents (text-only polling turns are normal).
-          const idleThreshold = (taskType !== 'normal') ? 15 : 5;
-          if (idleCount >= idleThreshold) {
-            console.log(`[agent] Idle detection: ${idleCount} text-only turns — stopping`);
-            stopReason = 'idle';
-            _lastStopReason = 'idle';
-            abortController.abort();
-          }
-          return undefined;
-        },
-        onStepFinish: async (event: any) => {
-          try {
-            const toolResults = event.toolResults || [];
-            console.log(`[agent] STEP FINISH — step: ${event.stepNumber ?? '?'}, finishReason: ${event.finishReason ?? 'n/a'}, tools: ${toolResults.length}, text: ${(event.text?.length ?? 0)} chars, reasoning: ${(event.reasoningText?.length ?? 0)} chars`);
+      // Codex (openai-codex) now routes through LiteLLM with OpenAI-compatible chat.
+      // Keep provider-level reasoning defaults while preserving shared call path.
+      const callProviderOptions: Record<string, any> = withCodexProviderOptions(
+        llmConfig.provider,
+        { ...providerOptions },
+        activeSystemPrompt,
+      );
 
-            if (toolResults.length === 0) {
-              idleCount++;
-            } else {
-              idleCount = 0;
+      console.log('[agent] Thinking:', llmConfig.thinking !== false ? 'ON' : 'OFF', '| providerOptions:', JSON.stringify(callProviderOptions));
+
+      const handleStepFinish = async (event: any) => {
+        try {
+          const toolCalls = event.toolCalls || [];
+          const toolResults = event.toolResults || [];
+          const finishReason = String(event.finishReason ?? 'n/a');
+          const toolIntent = /tool/i.test(finishReason) || toolCalls.length > 0;
+
+          console.log(`[agent] STEP FINISH — step: ${event.stepNumber ?? '?'}, finishReason: ${finishReason}, tools: ${toolResults.length}, parsed_calls: ${toolCalls.length}, tool_intent: ${toolIntent ? 'yes' : 'no'}, text: ${(event.text?.length ?? 0)} chars, reasoning: ${(event.reasoningText?.length ?? 0)} chars`);
+
+          if (toolResults.length === 0) {
+            idleCount++;
+          } else {
+            idleCount = 0;
+          }
+
+          for (const tc of toolCalls) {
+            try {
+              agentEvents.emit('tool', {
+                type: 'tool-call',
+                toolName: tc.toolName,
+                args: tc.args ?? {},
+              });
+            } catch {}
+          }
+
+          for (const tr of toolResults) {
+            const toolName = tr.toolName || 'unknown';
+            const rawOutput = tr.output ?? tr.result ?? '';
+            const resultStr = typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput) ?? '(empty)';
+
+            toolsUsed.push(toolName);
+            toolCallCount++;
+
+            // Duplicate detection: same tool + same args 3x in a row
+            const argsStr = JSON.stringify(tr.args ?? {});
+            recentCalls.push({ tool: toolName, args: argsStr });
+            if (recentCalls.length > 3) recentCalls.shift();
+            if (
+              recentCalls.length === 3 &&
+              recentCalls.every(c => c.tool === toolName && c.args === argsStr)
+            ) {
+              dupHintPending = true;
+              recentCalls = [];
             }
 
-            for (const tr of toolResults) {
-              const toolName = tr.toolName || 'unknown';
-              const rawOutput = tr.output ?? tr.result ?? '';
-              const resultStr = typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput) ?? '(empty)';
-
-              toolsUsed.push(toolName);
-              toolCallCount++;
-
-              // Duplicate detection: same tool + same args 3x in a row
-              const argsStr = JSON.stringify(tr.args ?? {});
-              recentCalls.push({ tool: toolName, args: argsStr });
-              if (recentCalls.length > 3) recentCalls.shift();
-              if (
-                recentCalls.length === 3 &&
-                recentCalls.every(c => c.tool === toolName && c.args === argsStr)
-              ) {
-                dupHintPending = true;
-                recentCalls = [];
-              }
-
-              // Status/info tools get full display; action tools get truncated
-              // present_download returns HTML that the UI parses — must not be truncated
-              const isInfoTool = /^(team_status|team_task_list|list_|file_list|exec_list|sub_agent_status|browsing_history|downloads|present_download)/.test(toolName);
-              const maxDisplay = isInfoTool ? 1500 : 200;
-              const display = `🔧 ${toolName}${resultStr.length > maxDisplay ? '\n' + resultStr.slice(0, maxDisplay) + '...' : resultStr.length > 50 ? '\n' + resultStr : ' → ' + resultStr}`;
-              broadcast('agent:tool-result', { toolName, result: resultStr, display });
-              // Persist tool result for conversation history
-              conversationEvents.push({ role: 'tool', content: display });
-            }
-          } catch (stepErr: any) {
-            console.error('[agent] onStepFinish error:', stepErr?.message || stepErr);
+            // Status/info tools get full display; action tools get truncated
+            // present_download returns HTML that the UI parses — must not be truncated
+            const isInfoTool = /^(team_status|team_task_list|list_|file_list|exec_list|sub_agent_status|browsing_history|downloads|present_download)/.test(toolName);
+            const maxDisplay = isInfoTool ? 1500 : 200;
+            const display = `🔧 ${toolName}${resultStr.length > maxDisplay ? '\n' + resultStr.slice(0, maxDisplay) + '...' : resultStr.length > 50 ? '\n' + resultStr : ' → ' + resultStr}`;
+            broadcast('agent:tool-result', { toolName, result: resultStr, display });
+            try { agentEvents.emit('tool', { type: 'tool-result', toolName, result: resultStr.slice(0, 500) }); } catch {}
+            // Persist tool result for conversation history
+            conversationEvents.push({ role: 'tool', content: display });
           }
-        },
-      });
+        } catch (stepErr: any) {
+          console.error('[agent] onStepFinish error:', stepErr?.message || stepErr);
+        }
+      };
+
+      if (isCodex) {
+        resultMode = 'litellm';
+
+        let codexReasoningBuffer = '';
+        let codexReasoningChunkCount = 0;
+        let codexTextChunkCount = 0;
+
+        const codexRun = await runLiteLLMCodexToolLoop({
+          config: llmConfig,
+          system: activeSystemPrompt,
+          messages: messages as any,
+          tools,
+          maxSteps: 200,
+          providerOptions: callProviderOptions,
+          abortSignal: abortController.signal,
+          onReasoningDelta: (delta: string) => {
+            codexReasoningChunkCount++;
+            codexReasoningBuffer += delta;
+
+            if (!streamStarted) {
+              broadcast('agent:stream-start', {});
+              streamStarted = true;
+            }
+
+            const snippet = codexReasoningBuffer.length > 400
+              ? '…' + codexReasoningBuffer.slice(-400)
+              : codexReasoningBuffer;
+            broadcast('agent:reasoning-chunk', { text: snippet, done: false });
+          },
+          onTextDelta: (delta: string) => {
+            codexTextChunkCount++;
+            if (!streamStarted) {
+              broadcast('agent:stream-start', {});
+              streamStarted = true;
+            }
+            fullResponse += delta;
+            _activePartialResponse = fullResponse;
+            sendChunk(mainWindow, delta, false, ariaWebContents);
+          },
+          onToolCall: (tc) => {
+            try {
+              agentEvents.emit('tool', {
+                type: 'tool-call',
+                toolName: tc.name,
+                args: tc.args ?? {},
+              });
+            } catch {}
+          },
+          onStepFinish: async (event) => {
+            if (event.toolIntent) codexToolIntentSteps++;
+            codexParsedToolCalls += event.toolCalls.length;
+            codexExecutedToolResults += event.toolResults.length;
+            if (event.toolIntent && event.toolCalls.length === 0 && event.toolResults.length === 0) {
+              codexToolFailureCount++;
+            }
+
+            await handleStepFinish({
+              stepNumber: event.stepNumber,
+              finishReason: event.finishReason,
+              toolCalls: event.toolCalls.map(tc => ({ toolName: tc.name, args: tc.args })),
+              toolResults: event.toolResults.map(tr => ({ toolName: tr.toolName, output: tr.output, result: tr.output, args: tr.args })),
+              text: event.text,
+              reasoningText: event.reasoningText,
+            });
+          },
+          logPrefix: 'agent.codex.litellm',
+        });
+
+        if (codexReasoningBuffer.length > 0) {
+          broadcast('agent:reasoning-chunk', { text: codexReasoningBuffer, done: true });
+          conversationEvents.push({ role: 'thinking', content: codexReasoningBuffer });
+        }
+
+        console.log(`[agent] Codex LiteLLM stream done — textChunks=${codexTextChunkCount}, reasoningChunks=${codexReasoningChunkCount}`);
+
+        codexLiteUsage = codexRun.usage;
+        codexLiteMetrics = codexRun.metrics;
+        fullResponse = codexRun.text || fullResponse;
+        _activePartialResponse = fullResponse;
+
+        codexNeedsNonStreamRetry = codexRun.metrics.unresolvedEmptyToolIntentSteps > 0;
+
+        result = {
+          text: fullResponse,
+          steps: codexRun.steps,
+          usage: Promise.resolve(codexRun.usage),
+          response: Promise.resolve({ messages: [] }),
+        };
+      } else {
+        const llmCallBase: Record<string, any> = {
+          model,
+          system: activeSystemPrompt,
+          messages: messages as any,
+          tools,
+          maxOutputTokens: 32768,
+          ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
+          stopWhen: stepCountIs(200),
+          abortSignal: abortController.signal,
+          prepareStep: async ({ messages: currentMessages }: { messages: any[] }) => {
+            // 80% timeout warning injection
+            if (warningPending && !warningInjected) {
+              warningInjected = true;
+              const elapsed = Date.now() - runStart;
+              const elapsedMin = Math.floor(elapsed / 60000);
+              const totalMin = Math.floor(timeoutMs / 60000);
+              const warningMsg = `[⏰ Approaching timeout (${elapsedMin}m of ${totalMin}m). Wrap up your current task.]`;
+              console.log('[agent] Injecting timeout warning');
+              return { messages: [...currentMessages, { role: 'user', content: warningMsg }] };
+            }
+            // Duplicate detection hint injection
+            if (dupHintPending) {
+              dupHintPending = false;
+              return {
+                messages: [...currentMessages, {
+                  role: 'user',
+                  content: "[You're repeating the same action. Try a different approach.]",
+                }],
+              };
+            }
+            // Idle detection: 5 consecutive text-only turns → abort
+            if (idleCount >= 5) {
+              console.log(`[agent] Idle detection: ${idleCount} text-only turns — stopping`);
+              stopReason = 'idle';
+              _lastStopReason = 'idle';
+              abortController.abort();
+            }
+            return undefined;
+          },
+          onStepFinish: handleStepFinish,
+        };
+
+        if (codexForceNonStream) {
+          resultMode = 'generateText';
+          result = await generateText(llmCallBase as any);
+        } else {
+          resultMode = 'streamText';
+          result = streamText(llmCallBase as any);
+        }
+      }
     } catch (initErr: any) {
       clearTimeout(timeoutHandle);
       clearTimeout(warningHandle);
       clearInterval(progressInterval);
       agentProgressData = { running: false, elapsed: 0, toolCalls: 0, timeoutMs: 0 };
-      console.error('[agent] Init error:', initErr?.message || initErr);
-      sendError(mainWindow, initErr?.message || 'Failed to start LLM call', ariaWebContents);
+      if (llmConfig.provider === 'openai-codex') {
+        logProviderRequestError('agent.main.init', initErr);
+      } else {
+        console.error('[agent] Init error:', initErr?.message || initErr);
+      }
+      const initDetails = extractRequestErrorDetails(initErr, 1200);
+      sendError(mainWindow, initDetails.responseBody || initDetails.message || 'Failed to start LLM call', ariaWebContents);
       errorSent = true;
       return;
     }
 
-    let fullResponse = '';
-
     try {
-      console.log('[agent] Starting stream...');
+      console.log('[agent] Starting', resultMode, '...');
       let reasoningBuffer = '';
       let reasoningChunkCount = 0;
       let textChunkCount = 0;
-      for await (const chunk of result.fullStream) {
-        if (abortController.signal.aborted) break;
 
-        if (chunk.type === 'reasoning-start') {
-          console.log('[agent] Thinking started');
-          // Kick off stream-start so the UI is ready before reasoning text arrives
-          if (!streamStarted) {
-            broadcast('agent:stream-start', {});
-            streamStarted = true;
-          }
+      if (resultMode === 'streamText') {
+        for await (const chunk of result.fullStream) {
+          if (abortController.signal.aborted) break;
 
-        } else if (chunk.type === 'reasoning-delta') {
-          reasoningChunkCount++;
-          const rdelta = (chunk as any).delta ?? (chunk as any).text ?? (chunk as any).textDelta ?? '';
-          if (reasoningChunkCount === 1) console.log('[agent] First reasoning token — keys:', Object.keys(chunk as any).join(','), '| delta len:', rdelta.length);
-          if (reasoningChunkCount % 50 === 0) console.log(`[agent] Thinking... (${reasoningBuffer.length} chars)`);
-          reasoningBuffer += rdelta;
-          // Rolling 400-char preview so the chip stays snappy
-          const snippet = reasoningBuffer.length > 400 ? '…' + reasoningBuffer.slice(-400) : reasoningBuffer;
-          broadcast('agent:reasoning-chunk', { text: snippet, done: false });
+          if (chunk.type === 'reasoning-start') {
+            console.log('[agent] Thinking started');
+            // Kick off stream-start so the UI is ready before reasoning text arrives
+            if (!streamStarted) {
+              broadcast('agent:stream-start', {});
+              streamStarted = true;
+            }
 
-        } else if (chunk.type === 'reasoning-end') {
-          console.log(`[agent] Thinking done — ${reasoningBuffer.length} chars`);
-          // Collapse chip with full text
-          broadcast('agent:reasoning-chunk', { text: reasoningBuffer, done: true });
-          // Persist thinking for conversation history
-          if (reasoningBuffer.length > 0) {
-            conversationEvents.push({ role: 'thinking', content: reasoningBuffer });
-          }
-          reasoningBuffer = '';
+          } else if (chunk.type === 'reasoning-delta') {
+            reasoningChunkCount++;
+            const rdelta = (chunk as any).delta ?? (chunk as any).text ?? (chunk as any).textDelta ?? '';
+            if (reasoningChunkCount === 1) console.log('[agent] First reasoning token — keys:', Object.keys(chunk as any).join(','), '| delta len:', rdelta.length);
+            if (reasoningChunkCount % 50 === 0) console.log(`[agent] Thinking... (${reasoningBuffer.length} chars)`);
+            reasoningBuffer += rdelta;
+            // Rolling 400-char preview so the chip stays snappy
+            const snippet = reasoningBuffer.length > 400 ? '…' + reasoningBuffer.slice(-400) : reasoningBuffer;
+            broadcast('agent:reasoning-chunk', { text: snippet, done: false });
 
-        } else if (chunk.type === 'text-delta') {
-          textChunkCount++;
-          if (!streamStarted) {
-            console.log('[agent] First chunk received');
-            broadcast('agent:stream-start', {});
-            streamStarted = true;
-          }
-          // Collapse any still-open reasoning chip before text starts
-          if (reasoningBuffer) {
+          } else if (chunk.type === 'reasoning-end') {
+            console.log(`[agent] Thinking done — ${reasoningBuffer.length} chars`);
+            // Collapse chip with full text
             broadcast('agent:reasoning-chunk', { text: reasoningBuffer, done: true });
+            // Persist thinking for conversation history
             if (reasoningBuffer.length > 0) {
               conversationEvents.push({ role: 'thinking', content: reasoningBuffer });
             }
             reasoningBuffer = '';
-          }
-          const textDelta = (chunk as any).delta ?? (chunk as any).text ?? '';
-          if (textChunkCount === 1) console.log('[agent] First text token — keys:', Object.keys(chunk as any).join(','), '| delta len:', textDelta.length);
-          fullResponse += textDelta;
-          _activePartialResponse = fullResponse; // Phase 9.096d: live tracking for interrupt
-          sendChunk(mainWindow, textDelta, false, ariaWebContents);
 
-        } else if (chunk.type === 'finish') {
-          const finishMeta = chunk as any;
-          console.log(`[agent] FINISH — finishReason: ${finishMeta.finishReason ?? 'n/a'}, reasoningChunks: ${reasoningChunkCount}, textChunks: ${textChunkCount}, response: ${fullResponse.length} chars, usage:`, JSON.stringify(finishMeta.usage ?? {}));
-          if (reasoningBuffer) {
-            broadcast('agent:reasoning-chunk', { text: reasoningBuffer, done: true });
-            if (reasoningBuffer.length > 0) {
-              conversationEvents.push({ role: 'thinking', content: reasoningBuffer });
+          } else if (chunk.type === 'text-delta') {
+            textChunkCount++;
+            if (!streamStarted) {
+              console.log('[agent] First chunk received');
+              broadcast('agent:stream-start', {});
+              streamStarted = true;
             }
-            reasoningBuffer = '';
+            // Collapse any still-open reasoning chip before text starts
+            if (reasoningBuffer) {
+              broadcast('agent:reasoning-chunk', { text: reasoningBuffer, done: true });
+              if (reasoningBuffer.length > 0) {
+                conversationEvents.push({ role: 'thinking', content: reasoningBuffer });
+              }
+              reasoningBuffer = '';
+            }
+            const textDelta = (chunk as any).delta ?? (chunk as any).text ?? '';
+            if (textChunkCount === 1) console.log('[agent] First text token — keys:', Object.keys(chunk as any).join(','), '| delta len:', textDelta.length);
+            fullResponse += textDelta;
+            _activePartialResponse = fullResponse; // Phase 9.096d: live tracking for interrupt
+            sendChunk(mainWindow, textDelta, false, ariaWebContents);
+
+          } else if (chunk.type === 'finish') {
+            const finishMeta = chunk as any;
+            console.log(`[agent] FINISH — finishReason: ${finishMeta.finishReason ?? 'n/a'}, reasoningChunks: ${reasoningChunkCount}, textChunks: ${textChunkCount}, response: ${fullResponse.length} chars, usage:`, JSON.stringify(finishMeta.usage ?? {}));
+            if (reasoningBuffer) {
+              broadcast('agent:reasoning-chunk', { text: reasoningBuffer, done: true });
+              if (reasoningBuffer.length > 0) {
+                conversationEvents.push({ role: 'thinking', content: reasoningBuffer });
+              }
+              reasoningBuffer = '';
+            }
+          }
+          // log any unrecognised chunk types once so we can see what the stream is delivering
+          else {
+            const ct = (chunk as any).type;
+            const known = [
+              'start', 'start-step', 'finish-step',
+              'text-start', 'text-end',
+              'tool-call', 'tool-result',
+              'tool-input-start', 'tool-input-delta', 'tool-input-end',
+              'tool-output-available', 'tool-output-error',
+              'raw', 'response-metadata', 'source',
+            ];
+            if (!known.includes(ct)) {
+              console.log('[agent] unhandled chunk type:', ct);
+            }
+          }
+
+          const anyChunk = chunk as any;
+          const chunkType = String(anyChunk.type || '');
+
+          // Robust tool-call assembly for fragmented streamed deltas.
+          if (chunkType === 'tool-input-start') {
+            const idx = Number.isFinite(Number(anyChunk.toolCallIndex))
+              ? Number(anyChunk.toolCallIndex)
+              : codexStreamToolInputByIndex.size;
+            const existing = codexStreamToolInputByIndex.get(idx);
+            codexStreamToolInputByIndex.set(idx, {
+              toolName: anyChunk.toolName || existing?.toolName || 'unknown',
+              argsText: existing?.argsText || '',
+              finalized: false,
+            });
+          } else if (chunkType === 'tool-input-delta') {
+            const idx = Number.isFinite(Number(anyChunk.toolCallIndex))
+              ? Number(anyChunk.toolCallIndex)
+              : codexStreamToolInputByIndex.size;
+            const existing = codexStreamToolInputByIndex.get(idx) || {
+              toolName: anyChunk.toolName || 'unknown',
+              argsText: '',
+              finalized: false,
+            };
+            const delta = anyChunk.delta ?? anyChunk.text ?? anyChunk.textDelta ?? anyChunk.inputTextDelta ?? '';
+            if (typeof delta === 'string' && delta.length > 0) {
+              existing.argsText += delta;
+            }
+            if (!existing.toolName && anyChunk.toolName) existing.toolName = anyChunk.toolName;
+            codexStreamToolInputByIndex.set(idx, existing);
+          } else if (chunkType === 'tool-input-end') {
+            const idx = Number.isFinite(Number(anyChunk.toolCallIndex))
+              ? Number(anyChunk.toolCallIndex)
+              : codexStreamToolInputByIndex.size;
+            const existing = codexStreamToolInputByIndex.get(idx) || {
+              toolName: anyChunk.toolName || 'unknown',
+              argsText: '',
+              finalized: false,
+            };
+            if (existing.finalized) continue;
+            if (typeof anyChunk.input === 'string' && anyChunk.input.length > 0) {
+              existing.argsText = anyChunk.input;
+            }
+            const args = anyChunk.args ?? anyChunk.input ?? parseJsonArgsSafe(existing.argsText);
+            existing.finalized = true;
+            codexStreamToolInputByIndex.set(idx, existing);
+            codexStreamAssembledCalls++;
+            try {
+              agentEvents.emit('tool', {
+                type: 'tool-call',
+                toolName: anyChunk.toolName || existing.toolName || 'unknown',
+                args,
+              });
+            } catch {}
+          }
+
+          // Emit tool events for SSE consumers (support both classic and provider-executed chunk variants)
+          if (chunk.type === 'tool-call') {
+            try {
+              agentEvents.emit('tool', {
+                type: 'tool-call',
+                toolName: anyChunk.toolName,
+                args: anyChunk.args ?? anyChunk.input ?? {},
+              });
+            } catch {}
+          }
+          if (chunk.type === 'tool-result' || anyChunk.type === 'tool-output-available') {
+            const raw = anyChunk.result ?? anyChunk.output ?? '';
+            const resultStr = typeof raw === 'string' ? raw.slice(0, 500) : JSON.stringify(raw).slice(0, 500);
+            try { agentEvents.emit('tool', { type: 'tool-result', toolName: anyChunk.toolName, result: resultStr }); } catch {}
           }
         }
-        // log any unrecognised chunk types once so we can see what the stream is delivering
-        else {
-          const ct = (chunk as any).type;
-          if (ct !== 'tool-call' && ct !== 'tool-result' && ct !== 'tool-input-start' && ct !== 'tool-input-delta' && ct !== 'raw' && ct !== 'response-metadata' && ct !== 'source') {
-            console.log('[agent] unhandled chunk type:', ct);
+      } else if (resultMode === 'generateText') {
+        const generatedText = (result?.text || '').toString();
+        fullResponse = generatedText;
+        _activePartialResponse = fullResponse;
+        if (!streamStarted) {
+          broadcast('agent:stream-start', {});
+          streamStarted = true;
+        }
+        if (generatedText) {
+          sendChunk(mainWindow, generatedText, false, ariaWebContents);
+        }
+
+        // Non-stream fallback path: emit tool events from deterministic step data.
+        const steps = Array.isArray(result?.steps) ? result.steps : [];
+        for (const step of steps) {
+          for (const tc of (step?.toolCalls || [])) {
+            try {
+              agentEvents.emit('tool', { type: 'tool-call', toolName: tc.toolName, args: tc.args ?? {} });
+            } catch {}
+          }
+          for (const tr of (step?.toolResults || [])) {
+            const raw = tr?.result ?? tr?.output ?? '';
+            const resultStr = typeof raw === 'string' ? raw.slice(0, 500) : JSON.stringify(raw).slice(0, 500);
+            try {
+              agentEvents.emit('tool', { type: 'tool-result', toolName: tr?.toolName, result: resultStr });
+            } catch {}
           }
         }
-        // Emit tool events for SSE consumers
-        if (chunk.type === 'tool-call') {
-          const tc = chunk as any;
-          try { agentEvents.emit('tool', { type: 'tool-call', toolName: tc.toolName, args: tc.args }); } catch {}
-        }
-        if (chunk.type === 'tool-result') {
-          const tr = chunk as any;
-          const raw = tr.result ?? tr.output ?? '';
-          const resultStr = typeof raw === 'string' ? raw.slice(0, 500) : JSON.stringify(raw).slice(0, 500);
-          try { agentEvents.emit('tool', { type: 'tool-result', toolName: tr.toolName, result: resultStr }); } catch {}
-        }
+      } else {
+        // LiteLLM codex path streams chunks + tool events directly via callbacks.
       }
-      console.log('[agent] Stream complete, response:', fullResponse.length, 'chars, tools:', toolsUsed.length);
+
+      console.log('[agent] Stream complete, response:', fullResponse.length, 'chars, tools:', toolsUsed.length, '| mode:', resultMode);
     } catch (streamErr: any) {
       // AbortError = intentional stop (timeout, idle detection, or manual stop)
       if (streamErr?.name === 'AbortError') {
@@ -710,15 +916,15 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
         }
         return;
       }
-      console.error('[agent] Stream error:', JSON.stringify({
-        message: streamErr?.message,
-        data: streamErr?.data,
-        status: streamErr?.statusCode || streamErr?.status,
-        body: typeof streamErr?.responseBody === 'string' ? streamErr.responseBody.slice(0, 500) : undefined,
-      }));
+      if (llmConfig.provider === 'openai-codex') {
+        logProviderRequestError('agent.main.stream', streamErr);
+      } else {
+        console.error('[agent] Stream error:', streamErr?.message || streamErr);
+      }
       if (!errorSent) {
-        const errMsg = streamErr?.data?.error?.message || streamErr?.responseBody || streamErr?.message || 'Stream error';
-        sendError(mainWindow, typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg), ariaWebContents);
+        const details = extractRequestErrorDetails(streamErr, 1200);
+        const errMsg = details.responseBody || details.message || 'Stream error';
+        sendError(mainWindow, errMsg, ariaWebContents);
         errorSent = true;
       }
       return;
@@ -739,6 +945,26 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
       return;
     }
 
+    if (isCodex) {
+      console.log('[agent] Codex tool metrics:', JSON.stringify({
+        mode: resultMode,
+        toolIntentSteps: codexToolIntentSteps,
+        parsedToolCalls: codexParsedToolCalls,
+        executedToolResults: codexExecutedToolResults,
+        streamAssembledCalls: codexStreamAssembledCalls,
+        streamArgParseErrors: codexStreamArgParseErrors,
+        emptyParsedToolIntentSteps: codexToolFailureCount,
+        unresolvedToolCallFailures: codexToolFailureCount,
+        litellmUsage: codexLiteUsage,
+        litellmMetrics: codexLiteMetrics,
+      }));
+    }
+    if (isCodex && codexNeedsNonStreamRetry) {
+      console.warn('[agent] Codex tool-call anomaly remains after step-level non-stream retry. Continuing with best-effort output and reporting metrics.');
+    }
+    // Phase 9.12: No auto-retry guardrails. The agent runs once and is trusted
+    // to do the right thing. If it needs more work, the user can ask.
+
     // ─── Emit token usage (Phase 8.25) ──────────────────────────────────────
     try {
       const usage = await result.usage;
@@ -755,8 +981,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
     }
 
     try {
-      const response = await result.response;
-      const responseMessages = response.messages;
+      const response = await result?.response;
+      const responseMessages = response?.messages || [];
 
       if (responseMessages && responseMessages.length > 0) {
         // Persist all structured response messages (assistant + tool messages)
@@ -840,8 +1066,12 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
       }
       return;
     }
+    if (llmConfig.provider === 'openai-codex') {
+      logProviderRequestError('agent.outer', err);
+    }
     if (!errorSent) {
-      sendError(mainWindow, err?.data?.error?.message || err?.message || 'Unknown error', ariaWebContents);
+      const details = extractRequestErrorDetails(err, 1200);
+      sendError(mainWindow, details.responseBody || details.message || 'Unknown error', ariaWebContents);
     }
   } finally {
     if (activeRun === abortController) activeRun = null;
@@ -872,17 +1102,41 @@ async function generateLLMTitle(
   try {
     const secondaryConfig = getModelConfig('secondary', llmConfig);
     const model = createModel(secondaryConfig);
+    const providerOptions = buildProviderOptions(secondaryConfig);
+    const callProviderOptions: Record<string, any> = withCodexProviderOptions(
+      secondaryConfig.provider,
+      { ...providerOptions },
+      'Generate only a short conversation title.',
+      'Generate only a short conversation title.',
+    );
 
-    const { text } = await generateText({
-      model,
-      prompt: `Generate a short, descriptive title (3-6 words) for this conversation. Return ONLY the title text — no quotes, no punctuation at the end, no explanation.
+    const titlePrompt = `Generate a short, descriptive title (3-6 words) for this conversation. Return ONLY the title text — no quotes, no punctuation at the end, no explanation.
 
 User: ${userMessage.slice(0, 500)}
 Assistant: ${assistantResponse.slice(0, 500)}
 
-Title:`,
-      maxOutputTokens: 30,
-    });
+Title:`;
+
+    let text = '';
+    if (secondaryConfig.provider === 'openai-codex') {
+      // Codex backend is more stable with streamed Responses calls than generateText.
+      const result = streamText({
+        model,
+        messages: [{ role: 'user', content: titlePrompt }],
+        ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
+      });
+      for await (const chunk of result.textStream) {
+        text += chunk;
+      }
+    } else {
+      const generated = await generateText({
+        model,
+        prompt: titlePrompt,
+        maxOutputTokens: 30,
+        ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
+      });
+      text = generated.text;
+    }
 
     const title = (text || '').replace(/^["']|["']$/g, '').replace(/[.!?]+$/, '').trim();
     if (title && title.length > 2 && title.length < 80) {
@@ -899,7 +1153,12 @@ Title:`,
       generateAutoTitleFallback(conversationId, userMessage);
     }
   } catch (err: any) {
-    console.error('[agent] LLM title generation error:', err?.message);
+    const secondaryConfig = getModelConfig('secondary', llmConfig);
+    if (secondaryConfig.provider === 'openai-codex') {
+      logProviderRequestError('agent.title', err);
+    } else {
+      console.error('[agent] LLM title generation error:', err?.message);
+    }
     generateAutoTitleFallback(conversationId, userMessage);
   }
 }
@@ -921,11 +1180,33 @@ async function generateEvictionSummaryIfNeeded(sessionId: string, llmConfig: LLM
     // Use secondary model for eviction summaries — simple summarization task (Phase 8.85)
     const secondaryConfig = getModelConfig('secondary', llmConfig);
     const model = createModel(secondaryConfig);
-    const { text } = await generateText({
-      model,
-      prompt,
-      maxOutputTokens: 32768, // universal cap
-    });
+    const providerOptions = buildProviderOptions(secondaryConfig);
+    const callProviderOptions: Record<string, any> = withCodexProviderOptions(
+      secondaryConfig.provider,
+      { ...providerOptions },
+      'Summarize prior conversation turns faithfully and concisely.',
+      'Summarize prior conversation turns faithfully and concisely.',
+    );
+
+    let text = '';
+    if (secondaryConfig.provider === 'openai-codex') {
+      const result = streamText({
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
+      });
+      for await (const chunk of result.textStream) {
+        text += chunk;
+      }
+    } else {
+      const generated = await generateText({
+        model,
+        prompt,
+        maxOutputTokens: 32768, // universal cap
+        ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
+      });
+      text = generated.text;
+    }
 
     if (text && text.trim()) {
       const summary = `[Conversation summary — earlier turns evicted from context window. Use history({ grep: "..." }) to search the full uncompacted history if you need details.]\n${text.trim()}\n[End summary — current conversation continues below]`;
@@ -933,7 +1214,12 @@ async function generateEvictionSummaryIfNeeded(sessionId: string, llmConfig: LLM
       console.log('[agent] Eviction summary set:', text.trim().length, 'chars');
     }
   } catch (err: any) {
-    console.error('[agent] Failed to generate eviction summary:', err?.message);
+    const secondaryConfig = getModelConfig('secondary', llmConfig);
+    if (secondaryConfig.provider === 'openai-codex') {
+      logProviderRequestError('agent.eviction-summary', err);
+    } else {
+      console.error('[agent] Failed to generate eviction summary:', err?.message);
+    }
     // Non-fatal — the agent will work without the summary, just with less context
   }
 }

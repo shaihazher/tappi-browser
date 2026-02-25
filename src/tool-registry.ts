@@ -1393,26 +1393,34 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
     // ═══ SUB-AGENT (requires shell/dev mode) ═══
 
     spawn_agent: tool({
-      description: 'Spawn a sub-agent that runs to completion and returns its full results. Multiple spawn_agent calls in the same response run in parallel. Each sub-agent gets its own browser tab and task-specific scaffolding (research/coding/story-writing). Max 5 concurrent. Use model="primary" for critical sub-agents.',
+      description: 'Spawn a background sub-agent for a focused task. Returns immediately with agent ID — does NOT block. Use sub_agent_status to check results, kill_agent to stop. Each sub-agent gets its own browser tab. Max 5 concurrent.',
       inputSchema: z.object({
         task: z.string().describe('Clear, self-contained task description for the sub-agent'),
-        task_type: z.enum(['research', 'coding', 'story-writing', 'normal']).optional().describe('Task type determines the sub-agent contract and scaffolding. Auto-detected if omitted.'),
-        model: z.enum(['primary', 'secondary']).optional().describe('Model tier: "secondary" (default, faster/cheaper) or "primary" (full reasoning for critical tasks)'),
+        task_type: z.enum(['research', 'coding', 'story-writing', 'normal']).optional().describe('Task type — determines contract/scaffolding. Default: auto-detect.'),
+        model: z.enum(['primary', 'secondary']).optional().describe('Model tier: "secondary" (default, cheaper) or "primary" (stronger reasoning)'),
+        depth: z.enum(['quick', 'standard', 'deep']).optional().describe('Budget: "quick" (5 steps, 1 source), "standard" (15 steps, 3 sources, default), "deep" (30 steps, 5 sources). Quick is great for simple lookups.'),
       }),
-      execute: async ({ task, task_type, model }: { task: string; task_type?: 'research' | 'coding' | 'story-writing' | 'normal'; model?: 'primary' | 'secondary' }) => {
+      execute: async ({ task, task_type, model, depth }: { task: string; task_type?: 'research' | 'coding' | 'story-writing' | 'normal'; model?: 'primary' | 'secondary'; depth?: 'quick' | 'standard' | 'deep' }) => {
         if (!llmConfig) return '❌ No LLM config available for sub-agent.';
-        // Resolve task type: use provided, or auto-classify from task description
         const resolvedType = task_type || subAgent.classifyTask(task);
-        return subAgent.spawnSubAgent(task, browserCtx, llmConfig, sessionId, model || 'secondary', resolvedType, toolOptions?.onSubAgentProgress);
+        return subAgent.spawnSubAgent(task, browserCtx, llmConfig, sessionId, model || 'secondary', resolvedType, toolOptions?.onSubAgentProgress, depth || 'standard');
       },
     }),
 
     sub_agent_status: tool({
-      description: 'Check sub-agent status. No id = list all. With id = detailed status + result.',
+      description: 'Check sub-agent status and results. No id = list all. With id = detailed status + result (if completed).',
       inputSchema: z.object({
         id: z.string().optional().describe('Sub-agent ID (e.g. "sub-1")'),
       }),
       execute: async ({ id }: { id?: string }) => subAgent.getSubAgentStatus(id),
+    }),
+
+    kill_agent: tool({
+      description: 'Kill a running sub-agent immediately. Use when a sub-agent is taking too long or going off track.',
+      inputSchema: z.object({
+        id: z.string().describe('Sub-agent ID to kill (e.g. "sub-1")'),
+      }),
+      execute: async ({ id }: { id: string }) => subAgent.killSubAgent(id, browserCtx),
     }),
   };
 }
