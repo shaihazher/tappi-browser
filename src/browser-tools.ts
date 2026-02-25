@@ -82,7 +82,7 @@ const darkModeCSSKeys = new Map<string, string>(); // webContents id → CSS key
  * Wait for a WebContents to finish loading (did-finish-load or did-fail-load),
  * with a configurable timeout. Resolves once either event fires or timeout elapses.
  */
-function waitForLoad(wc: WebContents, timeoutMs = 4000): Promise<void> {
+export function waitForLoad(wc: WebContents, timeoutMs = 4000): Promise<void> {
   return new Promise<void>((resolve) => {
     let done = false;
     const finish = () => { if (!done) { done = true; resolve(); } };

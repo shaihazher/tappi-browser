@@ -301,8 +301,9 @@ async function runSubAgent(
 ): Promise<void> {
   const { sessionId, task, contract, assignedTabId } = agentTask;
 
-  // Lock the agent to its dedicated tab before creating tools
-  // This prevents it from touching any other tab
+  // Lock the agent to its dedicated tab before creating tools.
+  // Phase 9.11: Use lockedTabId option for hard enforcement at the tool level,
+  // in addition to the soft agentTargetId (which can be overwritten by bSearch/bNavigate).
   const savedAgentTarget = browserCtx.tabManager?.agentTargetId ?? null;
   if (assignedTabId && browserCtx.tabManager) {
     browserCtx.tabManager.setAgentTarget(assignedTabId);
@@ -310,7 +311,9 @@ async function runSubAgent(
 
   try {
     const model = createModel(llmConfig);
-    const tools = createTools(browserCtx, sessionId);
+    const tools = createTools(browserCtx, sessionId, {
+      lockedTabId: assignedTabId,  // Hard tab isolation: all browser tools locked to this tab
+    });
 
     // Add the task as the first user message
     addMessage(sessionId, { role: 'user', content: task });

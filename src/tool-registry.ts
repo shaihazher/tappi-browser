@@ -53,6 +53,7 @@ export interface ToolRegistryOptions {
   repoPath?: string;           // Phase 8.39: current repo path for worktree tools
   conversationId?: string;     // Bug 4 fix: current conversation ID for project auto-linking
   projectWorkingDir?: string;  // Phase 9.099: project-scoped CWD for exec/file tools
+  lockedTabId?: string;        // Sub-agent tab isolation: force all browser tools to this tab
 }
 
 export function createTools(browserCtx: BrowserContext, sessionId = 'default', options?: ToolRegistryOptions) {
@@ -77,7 +78,26 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     return path.join(projectCwd || FALLBACK_WORKSPACE, expanded);
   }
 
+  // Sub-agent tab isolation: when lockedTabId is set, ALL browser interactions
+  // are forced to that single tab. No tab index param can override it.
+  const _lockedTabId = options?.lockedTabId || null;
+
+  function _getLockedWC(): WebContents | null {
+    if (!_lockedTabId) return null;
+    const tab = (browserCtx.tabManager as any).tabs?.get(_lockedTabId);
+    if (tab?.view?.webContents && !tab.view.webContents.isDestroyed()) {
+      return tab.view.webContents;
+    }
+    return null;
+  }
+
   function getWC(tabIndex?: number): WebContents {
+    // Sub-agent tab lock: always return the locked tab, ignore tabIndex
+    if (_lockedTabId) {
+      const locked = _getLockedWC();
+      if (!locked) throw new Error(`Locked tab ${_lockedTabId} is no longer available.`);
+      return locked;
+    }
     // Phase 9: If a tab index is specified, resolve to that tab's webContents directly
     if (tabIndex !== undefined && tabIndex !== null) {
       const tabs = browserCtx.tabManager.getTabList();
@@ -275,6 +295,18 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         url: z.string().describe('URL to navigate to'),
       }),
       execute: async ({ url }: { url: string }) => {
+        // Sub-agent tab lock: navigate directly in the locked tab, skip duplicate detection
+        if (_lockedTabId) {
+          let finalUrl = url;
+          if (!/^https?:\/\//i.test(url) && !/^file:\/\//i.test(url)) {
+            if (/^[^\s]+\.[^\s]+$/.test(url)) finalUrl = 'https://' + url;
+            else return `Not a URL: "${url}". Use search to search.`;
+          }
+          const wc = getWC(); // returns locked tab's webContents
+          wc.loadURL(finalUrl);
+          await browserTools.waitForLoad(wc, 4000);
+          return `Navigated to: ${finalUrl}\n💡 Page loaded. Call elements() to see interactive elements.`;
+        }
         // Normalize the target URL the same way bNavigate does
         let finalUrl = url;
         if (!/^https?:\/\//i.test(url) && !/^file:\/\//i.test(url)) {
@@ -298,7 +330,25 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
       inputSchema: z.object({
         query: z.string().describe('Search query'),
       }),
-      execute: async ({ query }: { query: string }) => browserTools.bSearch(browserCtx, [query]),
+      execute: async ({ query }: { query: string }) => {
+        // Sub-agent tab lock: navigate the locked tab directly to the search URL
+        if (_lockedTabId) {
+          const engine = browserCtx.config?.searchEngine || 'google';
+          const engines: Record<string, string> = {
+            google: `https://www.google.com/search?q=${encodeURIComponent(query)}`,
+            duckduckgo: `https://duckduckgo.com/?q=${encodeURIComponent(query)}`,
+            ddg: `https://duckduckgo.com/?q=${encodeURIComponent(query)}`,
+            brave: `https://search.brave.com/search?q=${encodeURIComponent(query)}`,
+            bing: `https://www.bing.com/search?q=${encodeURIComponent(query)}`,
+          };
+          const searchUrl = engines[engine] || engines.google;
+          const wc = getWC();
+          wc.loadURL(searchUrl);
+          await browserTools.waitForLoad(wc, 4000);
+          return `Searching: "${query}" (${engine}) — loaded in locked tab`;
+        }
+        return browserTools.bSearch(browserCtx, [query]);
+      },
     }),
 
     back_forward: tool({
@@ -334,6 +384,13 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         index: z.union([z.number(), z.string()]).optional().describe('Tab index (0-based) or tab ID — required for switch'),
       }),
       execute: async ({ action, index }: { action: string; index?: number | string }) => {
+        // Sub-agent tab lock: only allow 'list', block everything else
+        if (_lockedTabId) {
+          if (action === 'list') {
+            return browserTools.bTab(browserCtx, ['list']);
+          }
+          return `⚠️ Tab ${action} is blocked — you are locked to your assigned tab. Use navigate/search to change the page in your tab.`;
+        }
         const args = [action];
         if (index !== undefined) args.push(String(index));
         return browserTools.bTab(browserCtx, args);

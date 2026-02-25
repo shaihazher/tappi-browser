@@ -2473,6 +2473,10 @@ function renderDownloadCard(data) {
   bubble.appendChild(card);
   wrapper.appendChild(bubble);
   ariaMessages.appendChild(wrapper);
+
+  // Persist in the messages array so the card survives re-renders
+  messages.push({ role: 'download', content: JSON.stringify(data), timestamp: Date.now() });
+
   scrollToBottom();
 }
 
