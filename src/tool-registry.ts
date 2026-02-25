@@ -54,6 +54,8 @@ export interface ToolRegistryOptions {
   conversationId?: string;     // Bug 4 fix: current conversation ID for project auto-linking
   projectWorkingDir?: string;  // Phase 9.099: project-scoped CWD for exec/file tools
   lockedTabId?: string;        // Sub-agent tab isolation: force all browser tools to this tab
+  subAgentTaskType?: string;   // Sub-agent task type — used to filter tools down to what's needed
+  onSubAgentProgress?: (data: any) => void;  // Progress callback for sub-agent UI chips
 }
 
 export function createTools(browserCtx: BrowserContext, sessionId = 'default', options?: ToolRegistryOptions) {
@@ -1187,11 +1189,11 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     // ═══ DOWNLOAD TOOLS (Phase 9.07 Track 5 — always available) ═══
 
     present_download: tool({
-      description: 'Offer a file as a download card in the chat UI. Use this after creating a document, report, or export so the user can download it in multiple formats without leaving the chat.',
+      description: 'Show an interactive download card in the chat UI. ALWAYS call this after file_write when you create a document/report for the user. The user cannot download without this.',
       inputSchema: z.object({
-        path: z.string().describe('File path (absolute or relative to ~/tappi-workspace/)'),
+        path: z.string().describe('File path (e.g., "report.md" or "/full/path/report.md")'),
         description: z.string().optional().describe('What the file is, e.g. "Competitive analysis report"'),
-        formats: z.array(z.string()).optional().describe('Override auto-detected formats, e.g. ["md", "html", "pdf"]'),
+        formats: z.array(z.string()).optional().describe('Formats like ["md", "html", "pdf"]'),
       }),
       execute: async ({ path: filePath, description, formats }: {
         path: string; description?: string; formats?: string[];
@@ -1233,23 +1235,47 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         }
 
         const payload = { path: resolved, name, size, formats: availableFormats, description };
+        console.log('[present_download] Emitting download card event:', payload);
 
         // Emit to main window (sidebar panel / app.js)
-        try { browserCtx.window.webContents.send('agent:present-download', payload); } catch {}
+        try { 
+          console.log('[present_download] Sending to main window webContents');
+          browserCtx.window.webContents.send('agent:present-download', payload); 
+        } catch (e) { 
+          console.error('[present_download] Error sending to main window:', e); 
+        }
         // Emit to Aria tab (full chat UI / aria.js)
         try {
           const ariaWC = (browserCtx.tabManager as any).ariaWebContents;
+          console.log('[present_download] ariaWebContents:', ariaWC ? 'exists' : 'null', ariaWC?.isDestroyed ? ariaWC.isDestroyed() : 'no isDestroyed');
           if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:present-download', payload);
-        } catch {}
+        } catch (e) { 
+          console.error('[present_download] Error sending to aria tab:', e); 
+        }
         // Emit via agentEvents so API/SSE clients can receive the download card
-        try { agentEvents.emit('download_card', payload); } catch {}
+        try { 
+          console.log('[present_download] Emitting agentEvents download_card');
+          agentEvents.emit('download_card', payload); 
+        } catch (e) { 
+          console.error('[present_download] Error emitting agentEvents:', e); 
+        }
 
         // Persist download card for conversation history (Phase 9.1)
         if (options?.conversationId) {
           try { addConversationMessage(options.conversationId, 'download', JSON.stringify(payload)); } catch {}
         }
 
-        return `📎 File offered for download: ${name}`;
+        // Return HTML that the UI can render as a download card
+        // The UI looks for this marker to render the interactive card
+        const formatsHtml = availableFormats.map(fmt => `<button class="dl-fmt" data-fmt="${fmt}">↓ ${fmt.toUpperCase()}</button>`).join('');
+        return `<div class="tappi-download-card" data-path="${resolved}" data-name="${name}" data-size="${size}" data-desc="${description || ''}">
+  <div class="dl-icon">📄</div>
+  <div class="dl-info">
+    <div class="dl-name">${name}</div>
+    <div class="dl-size">${description ? description + ' · ' : ''}${(size / 1024).toFixed(1)}KB</div>
+  </div>
+  <div class="dl-actions">${formatsHtml}</div>
+</div>`;
       },
     }),
   };
@@ -1367,7 +1393,7 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
     // ═══ SUB-AGENT (requires shell/dev mode) ═══
 
     spawn_agent: tool({
-      description: 'Spawn a sub-agent for a complex or parallel task. Each sub-agent gets its own dedicated browser tab and task-specific scaffolding (research/coding/story-writing). Max 5 concurrent. Sub-agents report back when done. Check status with sub_agent_status. Use model="primary" for critical sub-agents.',
+      description: 'Spawn a sub-agent that runs to completion and returns its full results. Multiple spawn_agent calls in the same response run in parallel. Each sub-agent gets its own browser tab and task-specific scaffolding (research/coding/story-writing). Max 5 concurrent. Use model="primary" for critical sub-agents.',
       inputSchema: z.object({
         task: z.string().describe('Clear, self-contained task description for the sub-agent'),
         task_type: z.enum(['research', 'coding', 'story-writing', 'normal']).optional().describe('Task type determines the sub-agent contract and scaffolding. Auto-detected if omitted.'),
@@ -1377,7 +1403,7 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
         if (!llmConfig) return '❌ No LLM config available for sub-agent.';
         // Resolve task type: use provided, or auto-classify from task description
         const resolvedType = task_type || subAgent.classifyTask(task);
-        return subAgent.spawnSubAgent(task, browserCtx, llmConfig, sessionId, model || 'secondary', resolvedType);
+        return subAgent.spawnSubAgent(task, browserCtx, llmConfig, sessionId, model || 'secondary', resolvedType, toolOptions?.onSubAgentProgress);
       },
     }),
 

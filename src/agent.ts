@@ -41,8 +41,9 @@ import {
 
 import {
   addConversationMessage,
-  generateAutoTitle,
+  generateAutoTitleFallback,
   getConversationMessageCount,
+  updateConversationTitle,
 } from './conversation-store';
 import { buildProjectContext } from './project-manager';
 import { getDb } from './database';
@@ -198,6 +199,15 @@ grep > scroll > read-all. Always.
 - Concise. Say what you did and what happened.
 - If something fails, try an alternative before giving up.
 - Always respond with text after tool calls.
+
+## File Download Rule
+**CRITICAL: When you create any file (report, document, export, etc.), you MUST call present_download IMMEDIATELY after file_write. Do not just mention the file in text.**
+
+Example workflow:
+1. file_write(path="~/tappi-workspace/report.md", content="...")
+2. present_download(path="report.md") <- THIS IS REQUIRED
+
+The user expects to see an interactive download card with buttons. Don't let them down.
 `;
 
 interface AgentRunOptions {
@@ -222,15 +232,20 @@ This is a research task. Use spawn_agent to delegate sub-research to up to 5 par
 
 **Protocol:**
 1. Classify the research into 2-5 sub-topics.
-2. spawn_agent for each sub-topic — each gets its own tab and contract.
-3. Wait for all agents to complete (check sub_agent_status).
-4. Synthesize findings into a final report.
-5. Use present_download to offer the report as a downloadable file.
+2. Call spawn_agent for ALL sub-topics in a single response. They run in parallel and each returns its full findings when done.
+3. Once you have all results, synthesize into a comprehensive final report.
+4. Write the report to a file and call present_download.
+
+**Important:** spawn_agent blocks until the sub-agent finishes and returns the complete result. You do NOT need to poll or wait — just call all spawn_agents at once, and the next time you speak you'll have all the findings ready to synthesize.
+
+**Handling thin/failed results:**
+- If a result starts with "⚠️ THIN RESULT", supplement with your own knowledge.
+- If a result starts with "❌", that agent failed — note the gap in your report.
 
 **Rules:**
 - Each sub-agent handles ONE topic. Don't overlap.
-- Sub-agents save findings to ~/tappi-workspace/ with their ID in the filename.
-- Synthesize AFTER all sub-agents are done, not before.
+- You MUST produce a final report even if sub-agent results are imperfect.
+- **IMPORTANT: After writing any report to a file, you MUST call present_download with the file path.**
 `,
 
   coding: `
@@ -362,7 +377,10 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
       }
     }
 
-    const tools = createTools(browserCtx, sessionId, { developerMode, llmConfig, worktreeIsolation, agentBrowsingDataAccess, conversationId, projectWorkingDir });
+    const tools = createTools(browserCtx, sessionId, {
+      developerMode, llmConfig, worktreeIsolation, agentBrowsingDataAccess, conversationId, projectWorkingDir,
+      onSubAgentProgress: (data) => broadcast('agent:subagent-progress', data),
+    });
 
     // ─── Coding Memory Bootstrap ───────────────────────────────────────────
     // For coding tasks, check if the project dir has .tappi-coding-memory/.
@@ -539,7 +557,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
               }
 
               // Status/info tools get full display; action tools get truncated
-              const isInfoTool = /^(team_status|team_task_list|list_|file_list|exec_list|sub_agent_status|browsing_history|downloads)/.test(toolName);
+              // present_download returns HTML that the UI parses — must not be truncated
+              const isInfoTool = /^(team_status|team_task_list|list_|file_list|exec_list|sub_agent_status|browsing_history|downloads|present_download)/.test(toolName);
               const maxDisplay = isInfoTool ? 1500 : 200;
               const display = `🔧 ${toolName}${resultStr.length > maxDisplay ? '\n' + resultStr.slice(0, maxDisplay) + '...' : resultStr.length > 50 ? '\n' + resultStr : ' → ' + resultStr}`;
               broadcast('agent:tool-result', { toolName, result: resultStr, display });
@@ -776,7 +795,10 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
           // Auto-title after first assistant response in a new conversation
           const msgCount = getConversationMessageCount(conversationId);
           if (msgCount <= 4) { // First 2 exchanges (user + assistant = 2 each)
-            generateAutoTitle(conversationId, fullResponse);
+            generateLLMTitle(conversationId, userMessage, fullResponse, llmConfig, ariaWebContents).catch(err => {
+              console.error('[agent] LLM title generation failed, using fallback:', err?.message);
+              generateAutoTitleFallback(conversationId, userMessage);
+            });
           }
         }
 
@@ -833,6 +855,52 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
     if (agentProgressData.running) {
       agentProgressData = { running: false, elapsed: agentProgressData.elapsed, toolCalls: agentProgressData.toolCalls, timeoutMs: agentProgressData.timeoutMs };
     }
+  }
+}
+
+/**
+ * Generate a concise conversation title using the secondary LLM.
+ * Fires async after first exchange — non-blocking.
+ */
+async function generateLLMTitle(
+  conversationId: string,
+  userMessage: string,
+  assistantResponse: string,
+  llmConfig: LLMConfig,
+  ariaWebContents?: WebContents | null,
+): Promise<void> {
+  try {
+    const secondaryConfig = getModelConfig('secondary', llmConfig);
+    const model = createModel(secondaryConfig);
+
+    const { text } = await generateText({
+      model,
+      prompt: `Generate a short, descriptive title (3-6 words) for this conversation. Return ONLY the title text — no quotes, no punctuation at the end, no explanation.
+
+User: ${userMessage.slice(0, 500)}
+Assistant: ${assistantResponse.slice(0, 500)}
+
+Title:`,
+      maxOutputTokens: 30,
+    });
+
+    const title = (text || '').replace(/^["']|["']$/g, '').replace(/[.!?]+$/, '').trim();
+    if (title && title.length > 2 && title.length < 80) {
+      updateConversationTitle(conversationId, title);
+      console.log('[agent] LLM auto-title set:', title);
+      // Notify Aria tab to refresh sidebar
+      try {
+        if (ariaWebContents && !ariaWebContents.isDestroyed()) {
+          ariaWebContents.send('aria:conversation-updated', { conversationId });
+        }
+      } catch {}
+    } else {
+      // LLM returned garbage — fall back
+      generateAutoTitleFallback(conversationId, userMessage);
+    }
+  } catch (err: any) {
+    console.error('[agent] LLM title generation error:', err?.message);
+    generateAutoTitleFallback(conversationId, userMessage);
   }
 }
 

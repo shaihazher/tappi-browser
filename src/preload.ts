@@ -53,6 +53,9 @@ contextBridge.exposeInMainWorld('tappi', {
   onAgentCleared: (callback: () => void) => {
     ipcRenderer.on('agent:cleared', () => callback());
   },
+  onSubAgentProgress: (callback: (data: { agentId: string; taskType: string; step: number; tools: string[]; url?: string; status: string; elapsed: number; done: boolean }) => void) => {
+    ipcRenderer.on('agent:subagent-progress', (_e, data) => callback(data));
+  },
   onAgentTokenUsage: (callback: (data: { inputTokens: number; outputTokens: number; totalTokens: number }) => void) => {
     ipcRenderer.on('agent:token-usage', (_e, data) => callback(data));
   },
@@ -297,7 +300,11 @@ contextBridge.exposeInMainWorld('tappi', {
 
   // ─── File Downloads (Phase 9.07 Track 5) ───
   onPresentDownload: (callback: (data: { path: string; name: string; size: number; formats: string[]; description?: string }) => void) => {
-    ipcRenderer.on('agent:present-download', (_e, data) => callback(data));
+    console.log('[preload.js] Registering onPresentDownload callback');
+    ipcRenderer.on('agent:present-download', (_e, data) => {
+      console.log('[preload.js] Received agent:present-download event:', data);
+      callback(data);
+    });
   },
 
   downloadFile: (sourcePath: string, format: string, defaultName?: string) =>

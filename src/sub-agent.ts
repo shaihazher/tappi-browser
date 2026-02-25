@@ -14,7 +14,7 @@
  * Output buffers are purged when the sub-agent session ends.
  */
 
-import { streamText, stepCountIs } from 'ai';
+import { generateText, stepCountIs } from 'ai';
 import { createModel, buildProviderOptions, getModelConfig, type LLMConfig } from './llm-client';
 import { createTools, TOOL_USAGE_GUIDE } from './tool-registry';
 import * as browserTools from './browser-tools';
@@ -125,20 +125,30 @@ const RESEARCH_CONTRACT = `## Sub-Agent Contract: Research
 
 You are a research sub-agent. Your ONE job is the specific research task assigned to you.
 
+### How to Research (follow this loop)
+1. **search("your query")** → Google search results appear
+2. **elements()** → see clickable search result links
+3. **click(N)** → click a promising result to open the page
+4. **text()** → read the full page content and extract key information
+5. **Repeat** steps 1-4 for 3-5 different sources
+6. **file_write** → save your compiled findings to ~/tappi-workspace/
+
+⚠️ **CRITICAL**: You MUST call text() after navigating to each page to actually READ it.
+Just navigating to a URL gives you nothing. The page is a black box until you call text().
+
 ### Rules
 1. **Scope**: Only research what you were assigned. Do not expand scope.
-2. **Sources**: Use web search, page reading, and HTTP tools. Prefer primary sources.
-3. **Depth**: Find 3-5 high-quality sources minimum. Extract key facts, quotes, and data.
-4. **Output**: Write a structured findings report with: Summary, Key Facts, Sources, Gaps.
-5. **Files**: Save your findings to a file in ~/tappi-workspace/ with your agent ID in the name.
-6. **Tab**: You have ONE dedicated browser tab. Use ONLY that tab. Do not open new tabs.
-7. **Done**: When finished, clearly state "RESEARCH COMPLETE:" followed by your summary.
+2. **Depth**: Find 3-5 high-quality sources. Extract specific facts, quotes, data points, and trends.
+3. **Do NOT stop early**. If you've only visited 1-2 pages, keep going. Aim for 3-5 sources minimum.
+4. **Tab**: You have ONE dedicated browser tab. Use ONLY that tab.
+5. **Done**: When finished, your final text output must contain all your findings in full.
 
 ### Output Format
-- Start with a 2-3 sentence executive summary
-- Bullet-point key findings
-- Include source URLs
-- Flag any gaps or conflicting information
+- 2-3 sentence executive summary
+- Detailed bullet-point findings organized by subtopic
+- Source URLs for every claim
+- Gaps or conflicting information flagged
+- MUST be at least 500 words. Thin outputs are useless.
 `;
 
 const CODING_CONTRACT = `## Sub-Agent Contract: Coding
@@ -188,7 +198,36 @@ export function getContractForTaskType(taskType: TaskType): string {
   }
 }
 
+// ─── Model capability check ───
+
+/**
+ * Detect if a model is "lightweight" (e.g. Haiku, Flash, Mini) — too weak for
+ * multi-step agentic browsing tasks like research.
+ * These models can navigate and call tools but produce thin, unreliable results.
+ */
+function isLightweightModel(config: LLMConfig): boolean {
+  const model = (config.model || '').toLowerCase();
+  const lightweightPatterns = [
+    'haiku', 'flash', 'mini', 'nano', 'tiny', 'small',
+    'gpt-4o-mini', 'gpt-3.5', 'llama-3.1-8b', 'llama-3.2',
+    'gemma', 'phi-', 'mistral-7b',
+  ];
+  return lightweightPatterns.some(p => model.includes(p));
+}
+
 // ─── Spawn ───
+
+/** Progress callback for UI chips — called on each sub-agent step finish. */
+export type SubAgentProgressCallback = (data: {
+  agentId: string;
+  taskType: TaskType;
+  step: number;
+  tools: string[];
+  url?: string;
+  status: 'running' | 'completed' | 'failed';
+  elapsed: number;
+  done: boolean;
+}) => void;
 
 export async function spawnSubAgent(
   task: string,
@@ -197,6 +236,7 @@ export async function spawnSubAgent(
   parentSessionId: string,
   modelPurpose: 'primary' | 'secondary' = 'secondary',
   taskType?: TaskType,
+  onProgress?: SubAgentProgressCallback,
 ): Promise<string> {
   // Check concurrency limit
   const running = Array.from(activeAgents.values()).filter(a => a.status === 'running');
@@ -208,6 +248,18 @@ export async function spawnSubAgent(
   const sessionId = `${parentSessionId}:${id}`;
   const resolvedType = taskType || 'normal';
   const contract = getContractForTaskType(resolvedType);
+
+  // Auto-promote lightweight models for research tasks.
+  // Models like Haiku can navigate but can't effectively plan multi-step browsing
+  // research — they burn through steps producing thin results.
+  let effectivePurpose = modelPurpose;
+  if (resolvedType === 'research' && modelPurpose === 'secondary') {
+    const secondaryConfig = getModelConfig('secondary', llmConfig);
+    if (isLightweightModel(secondaryConfig)) {
+      effectivePurpose = 'primary';
+      console.log(`[sub-agent] ${id} auto-promoted to primary model — ${secondaryConfig.model} too lightweight for research`);
+    }
+  }
 
   // Allocate a dedicated browser tab for this sub-agent
   let assignedTabId: string | undefined;
@@ -234,18 +286,41 @@ export async function spawnSubAgent(
   activeAgents.set(id, agentTask);
 
   // Resolve the appropriate model config
-  const resolvedConfig = getModelConfig(modelPurpose, llmConfig);
+  const resolvedConfig = getModelConfig(effectivePurpose, llmConfig);
 
-  // Run in background — don't await
-  runSubAgent(agentTask, browserCtx, resolvedConfig).catch(err => {
+  // Await the sub-agent to completion and return full results.
+  // The AI SDK executes parallel tool calls concurrently, so multiple
+  // spawn_agent calls in the same step all run in parallel automatically.
+  // Emit initial progress event — sub-agent spawned
+  if (onProgress) {
+    onProgress({ agentId: id, taskType: resolvedType, step: 0, tools: [], status: 'running', elapsed: 0, done: false });
+  }
+
+  try {
+    await runSubAgent(agentTask, browserCtx, resolvedConfig, onProgress);
+  } catch (err: any) {
     agentTask.status = 'failed';
     agentTask.error = err?.message || 'Unknown error';
     agentTask.finishedAt = Date.now();
-    // Release tab on error
     releaseSubAgentTab(agentTask, browserCtx);
-  });
+  }
 
-  return `✓ Spawned sub-agent ${id} [${resolvedType}]\n  Task: ${task}\n  Tab: ${assignedTabId || 'none'}\n  Check: sub_agent_status("${id}")\n  It will report back when done.`;
+  const duration = ((agentTask.finishedAt || Date.now()) - agentTask.startedAt) / 1000;
+
+  // Emit final progress event — sub-agent finished
+  if (onProgress) {
+    onProgress({
+      agentId: id, taskType: resolvedType, step: agentTask.toolsUsed.length,
+      tools: [...new Set(agentTask.toolsUsed)], status: agentTask.status as any,
+      elapsed: duration * 1000, done: true,
+    });
+  }
+
+  if (agentTask.status === 'completed') {
+    return `✅ ${id} [${resolvedType}] completed in ${duration.toFixed(1)}s\n\n${agentTask.result || '(no output)'}`;
+  } else {
+    return `❌ ${id} [${resolvedType}] failed after ${duration.toFixed(1)}s: ${agentTask.error || 'Unknown error'}`;
+  }
 }
 
 // ─── Status ───
@@ -262,7 +337,12 @@ export function getSubAgentStatus(id?: string): string {
       `Tab: ${agent.assignedTabId || 'none'}`,
     ];
     if (agent.toolsUsed.length > 0) lines.push(`Tools used: ${[...new Set(agent.toolsUsed)].join(', ')}`);
-    if (agent.result) lines.push(`Result: ${agent.result.length > 500 ? agent.result.slice(0, 500) + '...' : agent.result}`);
+    if (agent.result) {
+      // For completed agents, return full result (up to 4000 chars) so the
+      // main agent can synthesize properly. Running agents get truncated preview.
+      const maxLen = agent.status === 'completed' ? 4000 : 500;
+      lines.push(`Result: ${agent.result.length > maxLen ? agent.result.slice(0, maxLen) + `... (${agent.result.length} chars total)` : agent.result}`);
+    }
     if (agent.error) lines.push(`Error: ${agent.error}`);
     return lines.join('\n');
   }
@@ -298,6 +378,7 @@ async function runSubAgent(
   agentTask: SubAgentTask,
   browserCtx: BrowserContext,
   llmConfig: LLMConfig,
+  onProgress?: SubAgentProgressCallback,
 ): Promise<void> {
   const { sessionId, task, contract, assignedTabId } = agentTask;
 
@@ -310,67 +391,103 @@ async function runSubAgent(
   }
 
   try {
+    console.log(`[sub-agent] ${agentTask.id} running with model: ${llmConfig.provider}/${llmConfig.model}, thinking: ${llmConfig.thinking}`);
     const model = createModel(llmConfig);
     const tools = createTools(browserCtx, sessionId, {
-      lockedTabId: assignedTabId,  // Hard tab isolation: all browser tools locked to this tab
+      lockedTabId: assignedTabId,
     });
+    console.log(`[sub-agent] ${agentTask.id} tools: ${Object.keys(tools).length}`);
 
-    // Add the task as the first user message
     addMessage(sessionId, { role: 'user', content: task });
 
     const browserContext = assembleBrowserContext(browserCtx);
-
     const tabNote = assignedTabId
       ? `\n[Tab: You are locked to tab ID "${assignedTabId}". You MUST NOT open, switch to, or interact with any other tab.]`
       : '';
 
-    const messages = [
-      { role: 'user' as const, content: `[Browser: ${browserContext}]${tabNote}\n\n${task}` },
-    ];
-
-    // Build system prompt from contract + base instructions
     const systemPrompt = contract
       ? `${SUB_AGENT_BASE_PROMPT}\n\n${contract}`
       : SUB_AGENT_BASE_PROMPT;
 
-    // Use provider options derived from the resolved config
     const providerOptions = buildProviderOptions(llmConfig);
 
-    const result = await streamText({
+    // Use generateText (non-streaming) with maxSteps instead of streamText.
+    // streamText's multi-step loop via OpenRouter silently drops tool calls
+    // after the first round-trip, causing sub-agents to bail after 1 search.
+    // generateText parses complete responses and handles multi-step reliably.
+    const MAX_STEPS = 60;
+
+    const result = await generateText({
       model,
       system: systemPrompt,
-      messages,
+      messages: [
+        { role: 'user' as const, content: `[Browser: ${browserContext}]${tabNote}\n\n${task}` },
+      ],
       tools,
       maxOutputTokens: 32768,
       ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
-      stopWhen: stepCountIs(60),
+      stopWhen: stepCountIs(MAX_STEPS),
       onStepFinish: async (event: any) => {
         try {
+          const toolCalls = event.toolCalls || [];
           const toolResults = event.toolResults || [];
+          const stepNum = event.stepNumber ?? '?';
+          const finishReason = event.finishReason ?? 'n/a';
+          const textLen = event.text?.length ?? 0;
+          console.log(`[sub-agent] ${agentTask.id} step ${stepNum}: finish=${finishReason}, calls=${toolCalls.length}, results=${toolResults.length}, text=${textLen} chars`);
+
+          const stepToolNames: string[] = [];
+          let stepUrl: string | undefined;
+
           for (const tr of toolResults) {
             const toolName = tr.toolName || 'unknown';
             agentTask.toolsUsed.push(toolName);
-
-            // Enforce tab isolation: if agent tried to open a new tab or switch,
-            // log a warning (the tab tool itself doesn't check, so we warn here)
-            if (toolName === 'tab' && assignedTabId) {
-              console.warn(`[sub-agent] ${agentTask.id} called tab tool — check for isolation violations`);
-            }
+            stepToolNames.push(toolName);
           }
-        } catch {}
+
+          // Extract URL from tool calls (navigate, search, open, etc.)
+          for (const tc of toolCalls) {
+            const args = tc.args || {};
+            if (args.url) { stepUrl = args.url; break; }
+            if (args.query) { stepUrl = `🔍 ${args.query}`; break; }
+          }
+
+          // Broadcast progress to UI
+          if (onProgress) {
+            const elapsed = Date.now() - agentTask.startedAt;
+            onProgress({
+              agentId: agentTask.id,
+              taskType: agentTask.taskType,
+              step: typeof stepNum === 'number' ? stepNum : parseInt(stepNum, 10) || 0,
+              tools: stepToolNames,
+              url: stepUrl,
+              status: 'running',
+              elapsed,
+              done: false,
+            });
+          }
+        } catch (e) {
+          console.error(`[sub-agent] ${agentTask.id} onStepFinish error:`, e);
+        }
       },
     });
 
-    // Collect full response
-    let fullResponse = '';
-    for await (const chunk of result.textStream) {
-      fullResponse += chunk;
-    }
+    const fullResponse = result.text || '';
+    console.log(`[sub-agent] ${agentTask.id} complete: ${fullResponse.length} chars, ${agentTask.toolsUsed.length} tool calls, ${result.steps?.length ?? 0} steps`);
 
-    agentTask.result = fullResponse || `Used ${agentTask.toolsUsed.length} tools: ${[...new Set(agentTask.toolsUsed)].join(', ')}`;
+    // Validate result quality
+    const rawResult = fullResponse || `Used ${agentTask.toolsUsed.length} tools: ${[...new Set(agentTask.toolsUsed)].join(', ')}`;
+    const MIN_RESEARCH_CHARS = 200;
+    if (agentTask.taskType === 'research' && rawResult.length < MIN_RESEARCH_CHARS) {
+      agentTask.result = `⚠️ THIN RESULT (${rawResult.length} chars — expected ${MIN_RESEARCH_CHARS}+). The sub-agent may have failed to extract meaningful content.\n\n${rawResult}`;
+      console.warn(`[sub-agent] ${agentTask.id} produced thin research result: ${rawResult.length} chars`);
+    } else {
+      agentTask.result = rawResult;
+    }
     agentTask.status = 'completed';
 
   } catch (err: any) {
+    console.error(`[sub-agent] ${agentTask.id} FAILED:`, err?.message || err);
     agentTask.status = 'failed';
     agentTask.error = err?.message || 'Unknown error';
   } finally {
@@ -389,6 +506,46 @@ async function runSubAgent(
     purgeSession(sessionId);
     clearHistory(sessionId);
   }
+}
+
+// ─── Tool Filtering ───
+
+/**
+ * Filter tools to only what's needed for a given task type.
+ * Research sub-agents need: page tools + navigation + search + HTTP + file_write.
+ * They do NOT need: shell, cron, team, coding memory, worktrees, password vault,
+ * sub-agents (no inception), conversation search, ad-blocker, media, etc.
+ *
+ * Fewer tools = less context bloat = model focuses on actually doing the research.
+ */
+function filterToolsForTaskType(
+  tools: Record<string, any>,
+  taskType: TaskType,
+): Record<string, any> {
+  // Only filter for research — other types may need broader tool access
+  if (taskType !== 'research') return tools;
+
+  // Allowlist of tools a research sub-agent actually needs
+  const RESEARCH_TOOLS = new Set([
+    // Page interaction (core research loop: navigate → elements → text → extract)
+    'elements', 'click', 'type', 'text', 'screenshot', 'scroll', 'wait', 'paste',
+    'focus', 'check', 'eval_js', 'keys',
+    // Navigation
+    'navigate', 'search', 'back_forward', 'tab',
+    // HTTP (for fetching pages / APIs directly)
+    'http_request',
+    // File (to save findings)
+    'file_write', 'file_read', 'file_list',
+  ]);
+
+  const filtered: Record<string, any> = {};
+  for (const [name, tool] of Object.entries(tools)) {
+    if (RESEARCH_TOOLS.has(name)) {
+      filtered[name] = tool;
+    }
+  }
+
+  return filtered;
 }
 
 function assembleBrowserContext(browserCtx: BrowserContext): string {

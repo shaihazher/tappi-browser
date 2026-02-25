@@ -1122,7 +1122,44 @@ function appendMessageEl(msg) {
   } else if (role === 'tool') {
     // Render tool results with markdown for multi-line outputs (team_status etc.)
     const content = msg.content || '';
-    if (content.includes('\n') || content.includes('**')) {
+    // Check for download card HTML marker
+    if (content.includes('class="tappi-download-card"')) {
+      // Parse the download card and attach click handlers
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(content, 'text/html');
+      const dlCard = doc.querySelector('.tappi-download-card');
+      if (dlCard) {
+        const cardEl = document.createElement('div');
+        cardEl.className = 'file-download-card';
+        // Copy content
+        cardEl.innerHTML = dlCard.innerHTML;
+        // Add click handlers for download buttons
+        cardEl.querySelectorAll('.dl-fmt').forEach(btn => {
+          btn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            const fmt = btn.dataset.fmt;
+            const path = dlCard.dataset.path;
+            const name = dlCard.dataset.name;
+            btn.disabled = true;
+            btn.textContent = '⏳';
+            try {
+              const result = await window.aria.downloadFile(path, fmt, name);
+              if (result && result.success) {
+                btn.textContent = '✓';
+                btn.style.color = '#22c55e';
+              } else {
+                btn.textContent = '❌';
+                btn.disabled = false;
+              }
+            } catch (err) {
+              btn.textContent = '❌';
+              btn.disabled = false;
+            }
+          });
+        });
+        bubble.appendChild(cardEl);
+      }
+    } else if (content.includes('\n') || content.includes('**')) {
       const mdDiv = document.createElement('div');
       mdDiv.className = 'md-content tool-content';
       mdDiv.innerHTML = renderMarkdown(content);
@@ -1437,6 +1474,71 @@ window.aria.onReasoningChunk(({ text, done }) => {
     _thinkingChipEl = null; // reset for next turn
   }
 });
+
+// ─── Sub-agent progress chip ──────────────────────────────────────────────────
+const _ariaSubAgentChips = new Map(); // agentId → { el, lines }
+if (window.aria.onSubAgentProgress) {
+  window.aria.onSubAgentProgress((data) => {
+    const chatMessages = document.getElementById('aria-messages');
+    if (!chatMessages) return;
+
+    const { agentId, taskType, step, tools, url, status, elapsed, done } = data;
+
+    if (!_ariaSubAgentChips.has(agentId)) {
+      const chip = document.createElement('div');
+      chip.className = 'aria-subagent-chip';
+      chip.innerHTML = `
+        <div class="subagent-chip-header">
+          <span class="subagent-chip-icon">⚡</span>
+          <span class="subagent-chip-label">${agentId} [${taskType}]</span>
+          <span class="subagent-chip-timer"></span>
+        </div>
+        <div class="subagent-chip-body"></div>`;
+      chatMessages.appendChild(chip);
+      _ariaSubAgentChips.set(agentId, { el: chip, lines: [] });
+      chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: 'smooth' });
+    }
+
+    const state = _ariaSubAgentChips.get(agentId);
+    const chip = state.el;
+    const timerEl = chip.querySelector('.subagent-chip-timer');
+    const bodyEl = chip.querySelector('.subagent-chip-body');
+
+    // Update timer
+    const secs = Math.round(elapsed / 1000);
+    if (timerEl) timerEl.textContent = `${secs}s`;
+
+    // Build step line
+    if (tools.length > 0 || url) {
+      const toolStr = tools.join(', ') || '';
+      const urlStr = url ? ` → ${url.length > 60 ? url.slice(0, 57) + '…' : url}` : '';
+      const line = `Step ${step}: ${toolStr}${urlStr}`;
+      state.lines.push(line);
+      // Rolling: keep last 4 lines
+      if (state.lines.length > 4) state.lines = state.lines.slice(-4);
+      if (bodyEl) bodyEl.textContent = state.lines.join('\n');
+    }
+
+    chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: 'smooth' });
+
+    if (done) {
+      const labelEl = chip.querySelector('.subagent-chip-label');
+      const icon = chip.querySelector('.subagent-chip-icon');
+      if (status === 'completed') {
+        if (icon) icon.textContent = '✅';
+        if (labelEl) labelEl.textContent = `${agentId} [${taskType}] — done in ${secs}s`;
+      } else {
+        if (icon) icon.textContent = '❌';
+        if (labelEl) labelEl.textContent = `${agentId} [${taskType}] — failed (${secs}s)`;
+        chip.classList.add('failed');
+      }
+      chip.classList.add('done');
+      // Collapse body after a delay
+      setTimeout(() => { chip.classList.add('collapsed'); }, 3000);
+      _ariaSubAgentChips.delete(agentId);
+    }
+  });
+}
 
 // ─── Tool results ─────────────────────────
 
@@ -2480,12 +2582,25 @@ function renderDownloadCard(data) {
   scrollToBottom();
 }
 
-// Listen for download card events from the agent
+// Listen for download card events from the agent (with dedup — multiple IPC paths can fire)
+let _lastDownloadCardPath = null;
+let _lastDownloadCardTime = 0;
 if (window.aria && window.aria.onPresentDownload) {
   window.aria.onPresentDownload((data) => {
+    console.log('[aria.js] onPresentDownload callback triggered:', data);
+    // Dedup: ignore duplicate events for the same file within 2 seconds
+    const now = Date.now();
+    if (data && data.path === _lastDownloadCardPath && now - _lastDownloadCardTime < 2000) {
+      console.log('[aria.js] Skipping duplicate download card for:', data.path);
+      return;
+    }
+    _lastDownloadCardPath = data?.path || null;
+    _lastDownloadCardTime = now;
     hideWelcome();
     renderDownloadCard(data);
   });
+} else {
+  console.log('[aria.js] onPresentDownload not available on window.aria');
 }
 
 // Wait for DOM + preload to be ready

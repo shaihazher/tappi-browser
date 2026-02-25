@@ -1156,6 +1156,71 @@ window.tappi.onAgentReasoningChunk(({ text, done }) => {
   }
 });
 
+// ─── Sub-agent progress chip (sidebar) ───
+const _subAgentChips = new Map(); // agentId → DOM element
+if (window.tappi.onSubAgentProgress) {
+  window.tappi.onSubAgentProgress((data) => {
+    const container = document.getElementById('agent-messages');
+    if (!container) return;
+
+    const { agentId, taskType, step, tools, url, status, elapsed, done } = data;
+
+    if (!_subAgentChips.has(agentId)) {
+      const chip = document.createElement('div');
+      chip.className = 'subagent-progress-chip';
+      chip.innerHTML = `
+        <div class="subagent-chip-header">
+          <span class="subagent-chip-icon">⚡</span>
+          <span class="subagent-chip-label">${agentId} [${taskType}]</span>
+          <span class="subagent-chip-timer"></span>
+        </div>
+        <div class="subagent-chip-body"></div>`;
+      container.appendChild(chip);
+      _subAgentChips.set(agentId, { el: chip, lines: [] });
+      container.scrollTop = container.scrollHeight;
+    }
+
+    const state = _subAgentChips.get(agentId);
+    const chip = state.el;
+    const timerEl = chip.querySelector('.subagent-chip-timer');
+    const bodyEl = chip.querySelector('.subagent-chip-body');
+
+    // Update timer
+    const secs = Math.round(elapsed / 1000);
+    if (timerEl) timerEl.textContent = `${secs}s`;
+
+    // Build step line
+    if (tools.length > 0 || url) {
+      const toolStr = tools.join(', ') || '';
+      const urlStr = url ? ` → ${url.length > 60 ? url.slice(0, 57) + '…' : url}` : '';
+      const line = `Step ${step}: ${toolStr}${urlStr}`;
+      state.lines.push(line);
+      // Rolling: keep last 4 lines
+      if (state.lines.length > 4) state.lines = state.lines.slice(-4);
+      if (bodyEl) bodyEl.textContent = state.lines.join('\n');
+    }
+
+    container.scrollTop = container.scrollHeight;
+
+    if (done) {
+      const labelEl = chip.querySelector('.subagent-chip-label');
+      const icon = chip.querySelector('.subagent-chip-icon');
+      if (status === 'completed') {
+        if (icon) icon.textContent = '✅';
+        if (labelEl) labelEl.textContent = `${agentId} [${taskType}] — done in ${secs}s`;
+      } else {
+        if (icon) icon.textContent = '❌';
+        if (labelEl) labelEl.textContent = `${agentId} [${taskType}] — failed (${secs}s)`;
+        chip.classList.add('failed');
+      }
+      chip.classList.add('done');
+      // Collapse body after a delay
+      setTimeout(() => { chip.classList.add('collapsed'); }, 3000);
+      _subAgentChips.delete(agentId);
+    }
+  });
+}
+
 // Token usage update (Phase 8.25) — total tokens from last LLM call
 // inputTokens = context window size (what matters for the 200K limit)
 // totalTokens = input + output
@@ -1804,8 +1869,10 @@ settingsOverlay.addEventListener('click', (e) => {
   if (e.target === settingsOverlay) closeSettings();
 });
 
-// Toggle buttons
+// Toggle buttons — skip toggles that have their own specific handlers
+const customToggleIds = new Set(['toggle-secondary-model']);
 document.querySelectorAll('.toggle-btn').forEach(btn => {
+  if (customToggleIds.has(btn.id)) return; // handled separately below
   btn.addEventListener('click', () => {
     const isOn = btn.classList.toggle('on');
     btn.textContent = isOn ? 'ON' : 'OFF';
@@ -3514,10 +3581,13 @@ document.querySelectorAll('.settings-tab[data-tab="profiles"]').forEach(tab => {
   }
 
   function appendDownloadCard(data) {
+    console.log('[app.js] appendDownloadCard:', data);
     const agentMsgs = document.getElementById('agent-messages');
+    console.log('[app.js] agent-messages:', agentMsgs ? 'found' : 'NOT FOUND');
     if (!agentMsgs) return;
 
     const { path: filePath, name, size, formats, description } = data || {};
+    console.log('[app.js] filePath:', filePath, 'formats:', formats);
     if (!filePath || !formats || formats.length === 0) return;
 
     const ext = (name || '').split('.').pop()?.toLowerCase() || '';
@@ -3592,10 +3662,22 @@ document.querySelectorAll('.settings-tab[data-tab="profiles"]').forEach(tab => {
     msgEl.appendChild(card);
     agentMsgs.appendChild(msgEl);
     agentMsgs.scrollTop = agentMsgs.scrollHeight;
+    console.log('[app.js] Download card appended. Total children:', agentMsgs.children.length);
   }
 
+  // Download card IPC listener with dedup (multiple IPC paths can fire for the same file)
+  let _lastDlCardPath = null;
+  let _lastDlCardTime = 0;
   if (window.tappi && window.tappi.onPresentDownload) {
     window.tappi.onPresentDownload((data) => {
+      console.log('[app.js] onPresentDownload received:', data);
+      const now = Date.now();
+      if (data && data.path === _lastDlCardPath && now - _lastDlCardTime < 2000) {
+        console.log('[app.js] Skipping duplicate download card for:', data.path);
+        return;
+      }
+      _lastDlCardPath = data?.path || null;
+      _lastDlCardTime = now;
       appendDownloadCard(data);
     });
   }

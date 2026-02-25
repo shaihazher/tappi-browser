@@ -2922,6 +2922,89 @@ body.dark-mode #autocomplete-dropdown {
 }
 
 /* ═════════════════════════════════════════════════════════════
+   Sub-agent progress chip (sidebar + shared)
+   ═════════════════════════════════════════════════════════════ */
+.subagent-progress-chip {
+  margin: 6px 0 4px 0;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 12px;
+  background: rgba(59, 130, 246, 0.05);
+  transition: opacity 0.4s, max-height 0.4s;
+}
+
+.subagent-progress-chip .subagent-chip-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  color: var(--text-dim, #888);
+}
+
+.subagent-progress-chip .subagent-chip-icon {
+  font-size: 13px;
+  animation: subagent-pulse 1.5s ease-in-out infinite;
+}
+
+.subagent-progress-chip.done .subagent-chip-icon {
+  animation: none;
+}
+
+.subagent-progress-chip .subagent-chip-label {
+  flex: 1;
+  font-weight: 500;
+  font-size: 11px;
+}
+
+.subagent-progress-chip .subagent-chip-timer {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(59, 130, 246, 0.7);
+  font-weight: 600;
+}
+
+.subagent-progress-chip .subagent-chip-body {
+  padding: 4px 12px 8px;
+  color: var(--text-secondary, #aaa);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  max-height: 120px;
+  overflow-y: auto;
+  border-top: 1px solid rgba(59, 130, 246, 0.15);
+}
+
+.subagent-progress-chip.done {
+  border-color: rgba(34, 197, 94, 0.25);
+  background: rgba(34, 197, 94, 0.04);
+}
+
+.subagent-progress-chip.done .subagent-chip-timer {
+  color: rgba(34, 197, 94, 0.7);
+}
+
+.subagent-progress-chip.failed {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.04);
+}
+
+.subagent-progress-chip.failed .subagent-chip-timer {
+  color: rgba(239, 68, 68, 0.7);
+}
+
+.subagent-progress-chip.collapsed .subagent-chip-body {
+  display: none;
+}
+
+@keyframes subagent-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ═════════════════════════════════════════════════════════════
    Phase 9.096d: Sidebar Agent Panel — Stop/Redirect Split
    ═════════════════════════════════════════════════════════════ */
 

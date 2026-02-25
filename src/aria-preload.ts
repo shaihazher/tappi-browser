@@ -30,6 +30,10 @@ contextBridge.exposeInMainWorld('aria', {
     ipcRenderer.on('agent:reasoning-chunk', (_e, data) => cb(data));
   },
 
+  onSubAgentProgress: (cb: (data: { agentId: string; taskType: string; step: number; tools: string[]; url?: string; status: string; elapsed: number; done: boolean }) => void) => {
+    ipcRenderer.on('agent:subagent-progress', (_e, data) => cb(data));
+  },
+
   onTokenUsage: (cb: (data: { inputTokens: number; outputTokens: number; totalTokens: number }) => void) => {
     ipcRenderer.on('agent:token-usage', (_e, data) => cb(data));
   },
