@@ -1406,7 +1406,7 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
       inputSchema: z.object({
         task: z.string().describe('Clear, self-contained task description for the sub-agent'),
         task_type: z.enum(['research', 'coding', 'story-writing', 'normal']).optional().describe('Task type — determines contract/scaffolding. Default: auto-detect.'),
-        model: z.enum(['primary', 'secondary']).optional().describe('Model tier: "secondary" (default, cheaper) or "primary" (stronger reasoning)'),
+        model: z.enum(['primary', 'secondary']).optional().describe('Model tier: "primary" (default, same as main agent) or "secondary" (if configured, cheaper/faster)'),
         depth: z.enum(['quick', 'standard', 'deep']).optional().describe('Budget: "quick" (5 steps, 1 source), "standard" (15 steps, 3 sources, default), "deep" (30 steps, 5 sources). Quick is great for simple lookups.'),
         working_dir: z.string().optional().describe('Working directory for file operations. Default: <workspace>. Use same dir as project to access outputs later.'),
       }),
@@ -1415,7 +1415,7 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
         const resolvedType = task_type || subAgent.classifyTask(task);
         // Use provided working_dir, or project's working dir if available, or default
         const resolvedWorkingDir = working_dir || toolOptions?.projectWorkingDir || undefined;
-        return subAgent.spawnSubAgent(task, browserCtx, llmConfig, sessionId, model || 'secondary', resolvedType, toolOptions?.onSubAgentProgress, depth || 'standard', resolvedWorkingDir ? { workingDir: resolvedWorkingDir } : undefined);
+        return subAgent.spawnSubAgent(task, browserCtx, llmConfig, sessionId, model || 'primary', resolvedType, toolOptions?.onSubAgentProgress, depth || 'standard', resolvedWorkingDir ? { workingDir: resolvedWorkingDir } : undefined);
       },
     }),
 
