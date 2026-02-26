@@ -590,9 +590,18 @@ Stop early if you have a good answer — quality over volume.
 Files resolve relative to: **${effectiveWorkingDir}**
 Save outputs here with file_write({ path: "filename.md", content: "..." }).`;
 
+    // ─── Date Grounding (Phase 9.097) ───────────────────────────────────────
+    const now = new Date();
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const dateContext = `## Current Time
+Date: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+Time: ${now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+Timezone: ${tz}
+`;
+
     const systemPrompt = contract
-      ? `${SUB_AGENT_BASE_PROMPT}\n\n${budgetNote}\n\n${contract}`
-      : `${SUB_AGENT_BASE_PROMPT}\n\n${budgetNote}`;
+      ? `${dateContext}${SUB_AGENT_BASE_PROMPT}\n\n${budgetNote}\n\n${contract}`
+      : `${dateContext}${SUB_AGENT_BASE_PROMPT}\n\n${budgetNote}`;
 
     const providerOptions = buildProviderOptions(llmConfig);
     const callProviderOptions: Record<string, any> = withCodexProviderOptions(
@@ -965,6 +974,9 @@ When finished, provide:
 - 2-3 sentence summary of what you found/did
 - Key details with sources (for research) or files touched (for coding)
 - Then STOP — do not keep searching after you have a good answer
+
+## Problem-Solving
+If stuck: re-read your assignment → identify what's blocking → try 1-2 alternatives → summarize partial results if still stuck.
 
 ${TOOL_USAGE_GUIDE}
 `;

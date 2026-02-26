@@ -1896,7 +1896,16 @@ You have your own branch — make changes freely without affecting teammates.
 `
     : '';
 
-  return `You are ${name}, a member of a coding team (team ID: ${teamId}).
+  // Phase 9.097: Date grounding for LLMs without native time awareness
+  const now = new Date();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const dateContext = `## Current Time
+Date: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+Time: ${now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+Timezone: ${tz}
+`;
+
+  return `${dateContext}You are ${name}, a member of a coding team (team ID: ${teamId}).
 
 Your role: ${role}
 ${cwdSection}${contractsSection}
@@ -1916,6 +1925,9 @@ ${taskList}
 - Report what files you modified and what tests you ran.
 - If you discover new tasks needed, add them with team_task_add.
 - **Commit your work** with git when you finish (if in a git worktree).
+
+## Problem-Solving
+If stuck: re-read your task → identify what's blocking → try 1-2 alternatives → ask @lead if still blocked.
 
 ## Tools Available
 You have full access to: page tools, browser tools (you can browse docs!), HTTP tools, file tools, and shell tools.

@@ -183,6 +183,20 @@ function assembleContext(browserCtx: BrowserContext, llmConfig?: LLMConfig): str
   return parts.join('\n');
 }
 
+const PROBLEM_SOLVING_GUIDE = `
+## Problem-Solving Framework
+For non-trivial requests, follow this mental process:
+
+1. **Understand**: What does the user actually want? Re-read their request.
+2. **Analyze**: What's causing their problem? Consider 2-3 possible causes/solutions.
+3. **Decide**: Pick the best approach based on what they need.
+4. **Act**: Implement the solution efficiently.
+5. **Verify**: Did it work? Does it actually solve their problem?
+6. **Present**: Explain what you did and why.
+
+Skip this framework for simple lookups, fact-based questions, or straightforward tasks.
+`;
+
 const SYSTEM_PROMPT = `You are Aria 🪷, an AI agent built into a web browser. You control the browser through tools.
 
 ## Core Rule: The Page Is a Black Box
@@ -217,7 +231,7 @@ Example workflow:
 2. present_download(path="report.md") <- THIS IS REQUIRED
 
 The user expects to see an interactive download card with buttons. Don't let them down.
-
+${PROBLEM_SOLVING_GUIDE}
 ${TOOL_USAGE_GUIDE}
 `;
 
@@ -360,7 +374,17 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
       console.error('[agent] coding-memory bootstrap error:', memErr?.message);
     }
 
-    const activeSystemPrompt = SYSTEM_PROMPT + codingMemoryContext;
+    // ─── Date Grounding (Phase 9.097) ───────────────────────────────────────
+    // Inject current date/time for LLMs that don't have native time awareness.
+    const now = new Date();
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const dateContext = `## Current Time
+Date: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+Time: ${now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+Timezone: ${tz}
+`;
+
+    const activeSystemPrompt = dateContext + SYSTEM_PROMPT + codingMemoryContext;
     console.log('[agent] Run starting:', Object.keys(tools).length, 'tools,', browserContext.length, 'chars context, devMode:', developerMode, 'taskType:', taskType);
 
     // Add user message to history
