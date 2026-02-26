@@ -4,7 +4,11 @@
 
 Tappi is a Chrome-based desktop browser with a built-in AI agent that uses **3-10x fewer tokens** than competitors. No subscription. No cloud lock-in. Bring your own API key.
 
-![Tappi Browser Screenshot](screenshots/aria-tab.png)
+## Screenshots
+
+| Aria Agent | Real Conversation | Settings |
+|------------|-------------------|----------|
+| ![Aria Tab](screenshots/aria-tab.png) | ![Conversation](screenshots/conversation.png) | ![Settings](screenshots/settings.png) |
 
 ---
 
@@ -30,21 +34,21 @@ Tappi is a Chrome-based desktop browser with a built-in AI agent that uses **3-1
 
 ### Referenced Element Indexing
 
-Most AI browsers dump entire DOM trees into the LLM context. Tappi indexes elements once and refers to them by ID:
+Most AI browsers dump entire DOM trees into the LLM context — 50KB of HTML, 12,500+ tokens, just to "see" the page.
 
-```
-Agent: "I see element e42 is the search box"
-You: "Click e42 and type 'tappi browser'"
-```
+Tappi indexes elements once and the agent references them by ID internally. When you ask *"Find the best price for this product"*, the agent:
+1. Indexes interactive elements on the page
+2. Identifies search boxes, buttons, links by their indexed IDs
+3. Executes clicks and types using compact references like `click e42`
 
-No selector parsing. No 50KB HTML dumps. Just: `click e42`.
+**Result:** 3-10x fewer tokens than DOM-dumping approaches.
 
 ### Aggressive Context Management
 
 Long conversations get written to disk. The agent greps files instead of loading them:
 
 ```
-Agent: "I found the function you mentioned in conversation-turn-47.md"
+Agent: "I found the function in conversation-turn-47.md — grep shows it's on line 234"
 ```
 
 Load full files when needed (up to 10K tokens). Otherwise: grep first, load later.
@@ -59,16 +63,19 @@ Tappi uses Chrome DevTools Protocol (CDP) directly — not Selenium, not Puppete
 
 Everything Comet and Atlas can do — plus what they can't:
 
-✅ Research and summarize any page
-✅ Fill forms, complete workflows, book reservations
-✅ Shop, compare products, find best prices
-✅ Manage tabs, bookmarks, downloads
-✅ Schedule recurring tasks with cron
-✅ Take screenshots and record tabs
-✅ **Code with multi-agent teams**
-✅ **Run shell commands from the agent**
-✅ **Control via CLI or HTTP API**
-✅ **Self-host, zero cloud dependency**
+**Core Browsing:**
+- Research and summarize any page
+- Fill forms, complete workflows, book reservations
+- Shop, compare products, find best prices
+- Manage tabs, bookmarks, downloads
+- Schedule recurring tasks with cron
+- Take screenshots and record tabs
+
+**Developer Power:**
+- Code with multi-agent teams (parallel spawning)
+- Run shell commands from the agent
+- Control via CLI or HTTP API
+- Self-host, zero cloud dependency
 
 ---
 
