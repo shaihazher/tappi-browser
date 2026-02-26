@@ -499,15 +499,35 @@ if (bookmarkBtn) {
 const bookmarksBar = document.getElementById('bookmarks-bar');
 const bookmarksBarContent = document.getElementById('bookmarks-bar-content');
 let bookmarksBarItems = [];
+let bookmarksBarLoading = false;
+let bookmarksBarInitialized = false;
 
 async function loadBookmarksBar() {
-  const bookmarks = await window.tappi.getAllBookmarks();
-  bookmarksBarItems = bookmarks || [];
-  renderBookmarksBar();
+  if (bookmarksBarLoading) {
+    console.log('[ui] loadBookmarksBar already in progress, skipping...');
+    return;
+  }
+  bookmarksBarLoading = true;
+  const start = Date.now();
+  try {
+    const bookmarks = await window.tappi.getAllBookmarks();
+    bookmarksBarItems = bookmarks || [];
+    console.log(`[ui] loadBookmarksBar fetched ${bookmarksBarItems.length} items in ${Date.now() - start}ms`);
+    renderBookmarksBar();
+  } finally {
+    bookmarksBarLoading = false;
+    bookmarksBarInitialized = true;
+  }
 }
 
 function renderBookmarksBar() {
-  if (!bookmarksBarContent) return;
+  if (!bookmarksBarContent) {
+    console.log('[ui] renderBookmarksBar: no content element');
+    return;
+  }
+  
+  const activeTab = currentTabs.find(t => t.isActive);
+  console.log(`[ui] renderBookmarksBar: ${bookmarksBarItems.length} items, activeTab=${activeTab?.isAria ? 'Aria' : 'web'}`);
   
   if (bookmarksBarItems.length === 0) {
     bookmarksBar.style.visibility = 'hidden';
@@ -538,7 +558,6 @@ function renderBookmarksBar() {
   });
   
   // Set visibility based on active tab (hide for Aria)
-  const activeTab = currentTabs.find(t => t.isActive);
   if (activeTab?.isAria) {
     bookmarksBar.style.visibility = 'hidden';
   } else {
@@ -2241,6 +2260,7 @@ document.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'd') {
     e.preventDefault();
     const active = currentTabs.find(t => t.isActive);
+    console.log(`[ui] Cmd+D pressed, active tab: ${active?.isAria ? 'Aria' : 'web'}, url: ${active?.url}`);
     if (active && active.url) {
       window.tappi.toggleBookmark(active.url);
     }
