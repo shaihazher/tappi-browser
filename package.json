@@ -3,7 +3,10 @@
   "productName": "Tappi",
   "version": "0.1.0",
   "description": "AI-native browser with built-in agent",
-  "author": "SynthWorx",
+  "author": {
+    "name": "SynthWorx",
+    "email": "aria@synthworx.com"
+  },
   "main": "dist/main.js",
   "bin": {
     "tappi": "dist/cli.js"
@@ -22,6 +25,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "electron": "^35.0.0",
     "electron-builder": "^25.1.8",
+    "icon-gen": "^5.0.0",
     "typescript": "^5.7.0"
   },
   "dependencies": {
@@ -63,11 +67,17 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         },
         {
           "target": "zip",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ],
       "hardenedRuntime": true,
@@ -75,15 +85,34 @@
     },
     "dmg": {
       "contents": [
-        { "x": 130, "y": 220 },
-        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     },
     "win": {
       "icon": "build/icon.ico",
       "target": [
-        { "target": "nsis", "arch": ["x64", "arm64"] },
-        { "target": "portable", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "nsis": {
@@ -95,9 +124,26 @@
       "icon": "build/icons",
       "category": "Network;WebBrowser;Productivity",
       "target": [
-        { "target": "AppImage", "arch": ["x64", "arm64"] },
-        { "target": "deb", "arch": ["x64", "arm64"] },
-        { "target": "rpm", "arch": ["x64"] }
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "rpm",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "desktop": {
         "Name": "Tappi",
