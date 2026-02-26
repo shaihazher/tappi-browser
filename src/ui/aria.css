@@ -1493,6 +1493,7 @@ body.dark-mode .aria-msg.assistant .md-content a {
 ═══════════════════════════════════════════ */
 
 #aria-input-area {
+  position: relative;
   display: flex;
   align-items: flex-end;
   gap: 10px;
@@ -2777,8 +2778,10 @@ body.coding-mode .team-redirect-send {
 .model-dropdown {
   position: absolute;
   bottom: calc(100% + 8px);
-  left: 12px;
-  width: 320px;
+  left: 16px;
+  right: 16px;
+  width: auto;
+  max-width: 400px;
   max-height: 420px;
   background: var(--bg-primary);
   border: 1px solid var(--border);

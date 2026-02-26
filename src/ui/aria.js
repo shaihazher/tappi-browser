@@ -226,11 +226,15 @@ function updateThinkingButton() {
 }
 
 async function fetchModelsForProvider(provider) {
+  console.log('[aria] Fetching models for provider:', provider);
   try {
     const result = await window.aria.listModels(provider);
+    console.log('[aria] listModels result:', result);
     if (result.success && result.models && result.models.length > 0) {
       availableModels = result.models;
+      renderModelList();
     } else {
+      console.log('[aria] No models, showing custom input');
       availableModels = [];
       // Show custom input when no models available
       showCustomModelInput(result.error || 'Enter model ID manually');
@@ -242,7 +246,6 @@ async function fetchModelsForProvider(provider) {
     showCustomModelInput('Failed to fetch models. Enter model ID manually.');
     return;
   }
-  renderModelList();
 }
 
 function renderModelList() {
@@ -316,17 +319,21 @@ async function saveModelConfig() {
 }
 
 function showCustomModelInput(hint) {
+  console.log('[aria] Showing custom model input, hint:', hint);
   if (ariaCustomModelModal) {
     ariaCustomModelModal.classList.remove('hidden');
+    console.log('[aria] Custom modal visible');
+  }
+  if (ariaModelList) {
     ariaModelList.innerHTML = `
       <div class="model-list-empty">
         <p>${escHtml(hint || 'Enter model ID manually.')}</p>
       </div>
     `;
-    if (ariaCustomModelInput) {
-      ariaCustomModelInput.focus();
-      ariaCustomModelInput.value = currentModelConfig.model;
-    }
+  }
+  if (ariaCustomModelInput) {
+    ariaCustomModelInput.focus();
+    ariaCustomModelInput.value = currentModelConfig.model;
   }
 }
 
@@ -351,8 +358,15 @@ async function useCustomModel() {
 }
 
 function openModelDropdown() {
+  console.log('[aria] Opening model dropdown');
   modelDropdownOpen = true;
-  if (ariaModelDropdown) ariaModelDropdown.classList.remove('hidden');
+  if (ariaModelDropdown) {
+    ariaModelDropdown.classList.remove('hidden');
+    console.log('[aria] Dropdown classes:', ariaModelDropdown.className);
+    console.log('[aria] Dropdown display:', window.getComputedStyle(ariaModelDropdown).display);
+  } else {
+    console.error('[aria] ariaModelDropdown element not found!');
+  }
   if (ariaProviderSelect) ariaProviderSelect.value = currentModelConfig.provider;
   fetchModelsForProvider(currentModelConfig.provider);
   if (ariaModelSearch) ariaModelSearch.focus();
