@@ -59,7 +59,7 @@ Load full files when needed (up to 10K tokens). Otherwise: grep first, load late
 
 ### Native Browser Automation
 
-Tappi uses Chrome DevTools Protocol (CDP) directly - not Selenium, not Puppeteer. The automation *is* the browser. No fingerprinting possible because there's nothing to detect.
+Tappi **IS the browser** — not a CDP client, not a Chrome extension, not an automation layer on top of Chrome. The agent runs in the Electron main process and calls tools that are browser-native via preload scripts that inject into each tab.
 
 ---
 
@@ -83,24 +83,115 @@ Everything Comet and Atlas can do - plus what they can't:
 
 ---
 
-## Quick Start
+## Installation
 
-### 1. Clone and build
+### Pre-built Releases (Recommended)
+
+Download from [GitHub Releases](https://github.com/shaihazher/tappi-browser/releases):
+
+| Platform | File | Notes |
+|----------|------|-------|
+| **macOS** (Apple Silicon) | `Tappi-0.1.0-arm64.dmg` | See Gatekeeper note below |
+| **Windows** (x64) | `Tappi.Setup.0.1.0.exe` | Standard installer |
+| **Linux** (x64) | `tappi-0.1.0.x86_64.rpm` | Fedora/Nobara/RHEL |
+| **Linux** (x64) | `tappi_0.1.0_amd64.deb` | Debian/Ubuntu |
+| **Linux** (x64) | `Tappi-0.1.0.AppImage` | Universal, no install |
+
+#### macOS Gatekeeper Note
+
+The app is not code-signed with an Apple Developer certificate. On first launch, macOS may show "app is damaged":
 
 ```bash
+# Fix: Remove quarantine attribute
+xattr -cr /Applications/Tappi.app
+```
+
+Then launch normally.
+
+---
+
+### Build from Source
+
+#### Prerequisites
+
+- **Node.js** 18+ (20+ recommended)
+- **npm** 9+
+- **Git**
+
+#### macOS
+
+```bash
+# Install Xcode Command Line Tools (if not already)
+xcode-select --install
+
+# Clone and build
 git clone https://github.com/shaihazher/tappi-browser.git
 cd tappi-browser
 npm install
 npm run build
+
+# Run
+npm start
 ```
 
-### 2. Launch
+#### Windows
 
 ```bash
-npx electron dist/main.js
+# Install Visual Studio Build Tools (required for native modules)
+# Download from: https://visualstudio.microsoft.com/visual-cpp-build-tools/
+# Select "Desktop development with C++"
+
+# Clone and build
+git clone https://github.com/shaihazher/tappi-browser.git
+cd tappi-browser
+npm install
+npm run build
+
+# Run
+npm start
 ```
 
-### 3. Add your API key
+#### Linux (Debian/Ubuntu)
+
+```bash
+# Install build dependencies
+sudo apt update
+sudo apt install -y build-essential python3
+
+# Clone and build
+git clone https://github.com/shaihazher/tappi-browser.git
+cd tappi-browser
+npm install
+npm run build
+
+# Run
+npm start
+```
+
+#### Linux (Fedora/Nobara/RHEL)
+
+```bash
+# Install build dependencies
+sudo dnf install -y gcc-c++ make python3
+
+# Clone and build
+git clone https://github.com/shaihazher/tappi-browser.git
+cd tappi-browser
+npm install
+npm run build
+
+# Run
+npm start
+```
+
+---
+
+### First Run
+
+1. Launch Tappi
+2. Press `⌘,` (macOS) or `Ctrl+,` (Windows/Linux) to open Settings
+3. Choose your LLM provider, paste your API key, pick a model
+4. Save and start browsing
 
 Press `⌘,` (macOS) or `Ctrl+,` (Windows/Linux) to open Settings. Choose your provider, paste your API key, pick a model, and save.
 
@@ -243,14 +334,13 @@ This turns Tappi into something like OpenClaw running natively inside a browser.
 
 ## Platform Support
 
-| Platform | Status |
-|----------|--------|
-| macOS (Apple Silicon) | ✅ Available |
-| macOS (Intel) | ✅ Available |
-| Windows | 🔜 Coming soon |
-| Linux | 🔜 Coming soon |
+| Platform | Arch | Status |
+|----------|------|--------|
+| macOS | arm64 (Apple Silicon) | ✅ Available |
+| Windows | x64 | ✅ Available |
+| Linux | x64 (rpm/deb/AppImage) | ✅ Available |
 
-The CLI and API work identically across all platforms.
+macOS Intel and Windows ARM64 builds available upon request.
 
 ---
 
