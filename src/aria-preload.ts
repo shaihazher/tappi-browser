@@ -180,6 +180,13 @@ contextBridge.exposeInMainWorld('aria', {
 
   getTheme: () => ipcRenderer.invoke('theme:get'),
 
+  // ─── Model Picker (Phase 9.13) ───
+  listModels: (provider: string) => ipcRenderer.invoke('models:list', provider),
+
+  // ─── Config (Phase 9.13 — Model Picker) ───
+  getConfig: () => ipcRenderer.invoke('config:get'),
+  saveConfig: (updates: any) => ipcRenderer.invoke('config:save', updates),
+
   // ─── Deep Plan (Phase 9.096) ───
   onDeepPlan: (cb: (data: any) => void) => {
     ipcRenderer.on('agent:deep-plan', (_e, data) => cb(data));

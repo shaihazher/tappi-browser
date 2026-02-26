@@ -32,20 +32,12 @@ const settingsOverlay = document.getElementById('settings-overlay');
 const settingsClose = document.getElementById('settings-close');
 const settingsSave = document.getElementById('settings-save');
 const settingProvider = document.getElementById('setting-provider');
-const settingModel = document.getElementById('setting-model');
 const settingApikey = document.getElementById('setting-apikey');
 const toggleApikey = document.getElementById('toggle-apikey');
 const apikeyStatus = document.getElementById('apikey-status');
 const settingSearch = document.getElementById('setting-search');
 const openaiCodexOauthBtn = document.getElementById('openai-codex-oauth-btn');
 const openaiCodexOauthStatus = document.getElementById('openai-codex-oauth-status');
-
-// Secondary model elements (Phase 8.85)
-const secondaryModelFields = document.getElementById('secondary-model-fields');
-const settingSecondaryProvider = document.getElementById('setting-secondary-provider');
-const settingSecondaryModel = document.getElementById('setting-secondary-model');
-const settingSecondaryApikey = document.getElementById('setting-secondary-apikey');
-const toggleSecondaryApikey = document.getElementById('toggle-secondary-apikey');
 
 let currentTabs = [];
 let activeTabId = null;
@@ -1641,7 +1633,6 @@ function updateProviderFields(provider) {
   };
   const ph = placeholders[provider] || placeholders.anthropic;
   if (settingApikey) settingApikey.placeholder = ph.key || 'Enter API key';
-  if (settingModel) settingModel.placeholder = ph.model || '';
   if (settingBaseurl && ph.baseUrl) settingBaseurl.placeholder = ph.baseUrl;
   if (settingEndpoint && ph.endpoint) settingEndpoint.placeholder = ph.endpoint;
   if (settingRegion && ph.region) settingRegion.placeholder = ph.region;
@@ -1680,22 +1671,8 @@ async function runCredentialCheck(provider) {
       if (provider === 'ollama' && status.models && status.models.length > 0) {
         ollamaModels.classList.remove('hidden');
         ollamaModelList.innerHTML = status.models.map(m =>
-          `<span class="ollama-model-chip" data-model="${esc(m.name)}" title="${esc(m.size)}">${esc(m.name)}</span>`
+          `<span class="ollama-model-chip" title="${esc(m.size)}">${esc(m.name)}</span>`
         ).join('');
-        // Click to select model
-        ollamaModelList.querySelectorAll('.ollama-model-chip').forEach(chip => {
-          chip.addEventListener('click', () => {
-            settingModel.value = chip.dataset.model;
-            ollamaModelList.querySelectorAll('.ollama-model-chip').forEach(c => c.classList.remove('selected'));
-            chip.classList.add('selected');
-          });
-        });
-        // Mark current model as selected
-        const currentModel = settingModel.value;
-        if (currentModel) {
-          const match = ollamaModelList.querySelector(`[data-model="${currentModel}"]`);
-          if (match) match.classList.add('selected');
-        }
       }
     } else {
       credIcon.textContent = '❌';
@@ -1725,7 +1702,6 @@ async function runTestConnection() {
   try {
     const config = {
       apiKey: settingApikey.value.trim() || undefined,
-      model: settingModel.value.trim() || undefined,
       region: settingRegion ? settingRegion.value.trim() || undefined : undefined,
       projectId: settingProjectid ? settingProjectid.value.trim() || undefined : undefined,
       location: settingLocation ? settingLocation.value.trim() || undefined : undefined,
@@ -1812,15 +1788,10 @@ if (window.tappi.onOpenAICodexOAuthStatus) {
 if (btnCredRecheck) btnCredRecheck.addEventListener('click', () => runCredentialCheck(settingProvider.value));
 if (btnTestConnection) btnTestConnection.addEventListener('click', runTestConnection);
 
-// Provider change → update fields + auto-fill default model
+// Provider change → update fields + check for saved key
 settingProvider.addEventListener('change', async () => {
   const provider = settingProvider.value;
   updateProviderFields(provider);
-  // Auto-fill default model for the new provider
-  const defaultModel = await window.tappi.getDefaultModel(provider);
-  if (defaultModel && !settingModel.value.trim()) {
-    settingModel.value = defaultModel;
-  }
   // Check if the new provider has a saved API key
   const { hasKey } = await window.tappi.hasProviderKey(provider);
   settingApikey.value = hasKey ? '••••••••' : '';
@@ -1842,7 +1813,6 @@ function openSettings() {
   window.tappi.getConfig().then(config => {
     if (config.llm) {
       settingProvider.value = config.llm.provider || 'anthropic';
-      settingModel.value = config.llm.model || '';
       settingApikey.value = config.hasApiKey ? '••••••••' : '';
       settingApikey.placeholder = 'Enter API key';
       apikeyStatus.textContent = config.hasApiKey ? '✓ API key saved' : 'No API key set';
@@ -1854,21 +1824,8 @@ function openSettings() {
       if (settingRegion) settingRegion.value = config.llm.region || '';
       if (settingProjectid) settingProjectid.value = config.llm.projectId || '';
       if (settingLocation) settingLocation.value = config.llm.location || '';
-      // Thinking toggle
-      updateToggle('toggle-thinking', config.llm.thinking !== false); // default ON
       // Update provider-specific field visibility
       updateProviderFields(config.llm.provider || 'anthropic');
-
-      // Secondary model (Phase 8.85)
-      const hasSecondary = !!(config.llm.secondaryModel);
-      updateToggle('toggle-secondary-model', hasSecondary);
-      if (secondaryModelFields) secondaryModelFields.classList.toggle('hidden', !hasSecondary);
-      if (settingSecondaryProvider) settingSecondaryProvider.value = config.llm.secondaryProvider || '';
-      if (settingSecondaryModel) settingSecondaryModel.value = config.llm.secondaryModel || '';
-      if (settingSecondaryApikey) {
-        settingSecondaryApikey.value = '';
-        settingSecondaryApikey.placeholder = config.hasSecondaryApiKey ? '••••••••' : 'Same as primary';
-      }
     }
     if (config.searchEngine) settingSearch.value = config.searchEngine;
     if (config.features) {
@@ -1936,10 +1893,8 @@ settingsOverlay.addEventListener('click', (e) => {
   if (e.target === settingsOverlay) closeSettings();
 });
 
-// Toggle buttons — skip toggles that have their own specific handlers
-const customToggleIds = new Set(['toggle-secondary-model']);
+// Toggle buttons
 document.querySelectorAll('.toggle-btn').forEach(btn => {
-  if (customToggleIds.has(btn.id)) return; // handled separately below
   btn.addEventListener('click', () => {
     const isOn = btn.classList.toggle('on');
     btn.textContent = isOn ? 'ON' : 'OFF';
@@ -1961,37 +1916,13 @@ toggleApikey.addEventListener('click', async () => {
   }
 });
 
-// Secondary model toggle (Phase 8.85)
-document.getElementById('toggle-secondary-model')?.addEventListener('click', (e) => {
-  const btn = e.currentTarget;
-  const isOn = btn.classList.toggle('on');
-  btn.textContent = isOn ? 'ON' : 'OFF';
-  if (secondaryModelFields) {
-    secondaryModelFields.classList.toggle('hidden', !isOn);
-  }
-});
-
-// Show/hide secondary API key
-if (toggleSecondaryApikey && settingSecondaryApikey) {
-  toggleSecondaryApikey.addEventListener('click', () => {
-    settingSecondaryApikey.type = settingSecondaryApikey.type === 'password' ? 'text' : 'password';
-  });
-}
-
 // Save settings
 settingsSave.addEventListener('click', async () => {
   const provider = settingProvider.value;
 
-  // Secondary model (Phase 8.85)
-  const secondaryEnabled = document.getElementById('toggle-secondary-model')?.classList.contains('on') || false;
-  const secondaryModelValue = secondaryEnabled && settingSecondaryModel ? settingSecondaryModel.value.trim() : '';
-  const secondaryProviderValue = secondaryEnabled && settingSecondaryProvider ? settingSecondaryProvider.value.trim() : '';
-
   const updates = {
     llm: {
       provider,
-      model: settingModel.value,
-      thinking: document.getElementById('toggle-thinking').classList.contains('on'),
       // Fix 4: codingMode is no longer in Settings — it's toggled via </> button in Aria tab.
       // Don't include it here so settings save doesn't accidentally overwrite it.
       // Cloud provider fields — always send so they get cleared if empty
@@ -2000,9 +1931,6 @@ settingsSave.addEventListener('click', async () => {
       location: settingLocation ? settingLocation.value.trim() : undefined,
       endpoint: settingEndpoint ? settingEndpoint.value.trim() : undefined,
       baseUrl: settingBaseurl ? settingBaseurl.value.trim() : undefined,
-      // Secondary model fields (Phase 8.85) — cleared when checkbox is off
-      secondaryModel: secondaryModelValue || undefined,
-      secondaryProvider: secondaryProviderValue || undefined,
       // Timeout (Phase 8.40)
       agentTimeoutMs: parseInt(document.getElementById('agent-timeout-select')?.value) || 1800000,
     },
@@ -2021,17 +1949,6 @@ settingsSave.addEventListener('click', async () => {
   const rawKey = settingApikey.value.trim();
   if (rawKey && rawKey !== '••••••••') {
     updates.rawApiKey = rawKey;
-  }
-
-  // Secondary API key (Phase 8.85) — only send if user typed one; empty clears it (reverts to primary)
-  if (settingSecondaryApikey) {
-    const rawSecKey = settingSecondaryApikey.value.trim();
-    if (rawSecKey && rawSecKey !== '••••••••') {
-      updates.rawSecondaryApiKey = rawSecKey;
-    } else if (secondaryEnabled && rawSecKey === '') {
-      // Explicitly clear secondary key (use primary)
-      updates.rawSecondaryApiKey = '';
-    }
   }
 
   const result = await window.tappi.saveConfig(updates);

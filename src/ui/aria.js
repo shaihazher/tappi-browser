@@ -60,6 +60,18 @@ const ariaEnhanceSearchLabel = document.getElementById('aria-enhance-search-labe
 const ariaEnhanceSearch = document.getElementById('aria-enhance-search');
 const ariaEnhanceStatus = document.getElementById('aria-enhance-status');
 
+// Phase 9.13: Model picker elements
+const ariaModelBtn = document.getElementById('aria-model-btn');
+const ariaThinkingBtn = document.getElementById('aria-thinking-btn');
+const ariaModelDropdown = document.getElementById('aria-model-dropdown');
+const ariaProviderSelect = document.getElementById('aria-provider-select');
+const ariaModelSearch = document.getElementById('aria-model-search');
+const ariaModelList = document.getElementById('aria-model-list');
+const ariaCustomModelBtn = document.getElementById('aria-model-custom-btn');
+const ariaCustomModelModal = document.getElementById('aria-custom-model-modal');
+const ariaCustomModelInput = document.getElementById('aria-custom-model-input');
+const ariaCustomModelSave = document.getElementById('aria-custom-model-save');
+
 // Fix 4: Coding mode + team status elements
 const ariaCodingBtn   = document.getElementById('aria-coding-btn');
 const ariaTeamCard    = document.getElementById('aria-team-card');
@@ -77,6 +89,17 @@ let teamCardCollapsed = false;
 // Phase 9.098: Enhance prompt state
 let originalPromptText = null;  // Store original text when enhancing
 let isEnhancing = false;        // Prevent double-clicks
+
+// Phase 9.13: Model picker state
+let currentModelConfig = {
+  provider: 'anthropic',
+  model: 'claude-sonnet-4-6',
+  thinking: true,
+  secondaryModel: '',
+  secondaryProvider: '',
+};
+let availableModels = [];
+let modelDropdownOpen = false;
 
 // ═══════════════════════════════════════════
 //  MARKDOWN RENDERER
@@ -164,6 +187,240 @@ function scrollToBottom(smooth = true) {
   if (ariaMessages) {
     ariaMessages.scrollTo({ top: ariaMessages.scrollHeight, behavior: smooth ? 'smooth' : 'instant' });
   }
+}
+
+// ═══════════════════════════════════════════
+//  MODEL PICKER (Phase 9.13)
+// ═══════════════════════════════════════════
+
+async function loadModelConfig() {
+  try {
+    const config = await window.aria.getConfig();
+    if (config && config.llm) {
+      currentModelConfig.provider = config.llm.provider || 'anthropic';
+      currentModelConfig.model = config.llm.model || 'claude-sonnet-4-6';
+      currentModelConfig.thinking = config.llm.thinking !== false;
+      currentModelConfig.secondaryModel = config.llm.secondaryModel || '';
+      currentModelConfig.secondaryProvider = config.llm.secondaryProvider || '';
+    }
+    updateModelButton();
+    updateThinkingButton();
+  } catch (e) {
+    console.error('[aria] Failed to load model config:', e);
+  }
+}
+
+function updateModelButton() {
+  if (!ariaModelBtn) return;
+  const modelName = ariaModelBtn.querySelector('.model-name');
+  const providerIcon = ariaModelBtn.querySelector('.model-provider-icon');
+  
+  if (modelName) modelName.textContent = currentModelConfig.model;
+  if (providerIcon) providerIcon.dataset.provider = currentModelConfig.provider;
+}
+
+function updateThinkingButton() {
+  if (!ariaThinkingBtn) return;
+  ariaThinkingBtn.classList.toggle('on', currentModelConfig.thinking);
+  ariaThinkingBtn.title = `Thinking: ${currentModelConfig.thinking ? 'ON' : 'OFF'}`;
+}
+
+async function fetchModelsForProvider(provider) {
+  try {
+    const result = await window.aria.listModels(provider);
+    if (result.success && result.models && result.models.length > 0) {
+      availableModels = result.models;
+    } else {
+      availableModels = [];
+      // Show custom input when no models available
+      showCustomModelInput(result.error || 'Enter model ID manually');
+      return;
+    }
+  } catch (e) {
+    console.error('[aria] Failed to fetch models:', e);
+    availableModels = [];
+    showCustomModelInput('Failed to fetch models. Enter model ID manually.');
+    return;
+  }
+  renderModelList();
+}
+
+function renderModelList() {
+  if (!ariaModelList) return;
+  
+  const searchTerm = (ariaModelSearch?.value || '').toLowerCase();
+  const filtered = availableModels.filter(m => 
+    (m.name || '').toLowerCase().includes(searchTerm) || 
+    (m.id || '').toLowerCase().includes(searchTerm)
+  );
+  
+  if (filtered.length === 0) {
+    ariaModelList.innerHTML = `
+      <div class="model-list-empty">
+        <p>${availableModels.length === 0 ? 'No models available for this provider.' : 'No models match your search.'}</p>
+        <button id="show-custom-model-btn">Enter model manually</button>
+      </div>
+    `;
+    document.getElementById('show-custom-model-btn')?.addEventListener('click', () => {
+      showCustomModelInput();
+    });
+    return;
+  }
+  
+  ariaModelList.innerHTML = filtered.map(m => `
+    <div class="model-item ${m.id === currentModelConfig.model ? 'selected' : ''}" 
+         data-id="${escAttr(m.id)}">
+      <span class="model-item-name">${escHtml(m.name || m.id)}</span>
+      <span class="model-item-id">${escHtml(m.id)}</span>
+      ${m.supportsThinking ? '<span class="model-item-thinking">🧠</span>' : ''}
+    </div>
+  `).join('');
+  
+  // Bind click handlers
+  ariaModelList.querySelectorAll('.model-item').forEach(item => {
+    item.addEventListener('click', () => selectModel(item.dataset.id));
+  });
+}
+
+function escAttr(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+async function selectModel(modelId) {
+  currentModelConfig.model = modelId;
+  await saveModelConfig();
+  updateModelButton();
+  closeModelDropdown();
+}
+
+async function saveModelConfig() {
+  try {
+    await window.aria.saveConfig({
+      llm: {
+        provider: currentModelConfig.provider,
+        model: currentModelConfig.model,
+        thinking: currentModelConfig.thinking,
+        secondaryModel: currentModelConfig.secondaryModel || undefined,
+        secondaryProvider: currentModelConfig.secondaryProvider || undefined,
+      }
+    });
+  } catch (e) {
+    console.error('[aria] Failed to save model config:', e);
+  }
+}
+
+function showCustomModelInput(hint) {
+  if (ariaCustomModelModal) {
+    ariaCustomModelModal.classList.remove('hidden');
+    ariaModelList.innerHTML = `
+      <div class="model-list-empty">
+        <p>${escHtml(hint || 'Enter model ID manually.')}</p>
+      </div>
+    `;
+    if (ariaCustomModelInput) {
+      ariaCustomModelInput.focus();
+      ariaCustomModelInput.value = currentModelConfig.model;
+    }
+  }
+}
+
+function hideCustomModelInput() {
+  if (ariaCustomModelModal) {
+    ariaCustomModelModal.classList.add('hidden');
+  }
+  if (ariaCustomModelInput) {
+    ariaCustomModelInput.value = '';
+  }
+}
+
+async function useCustomModel() {
+  const modelId = (ariaCustomModelInput?.value || '').trim();
+  if (!modelId) return;
+  
+  currentModelConfig.model = modelId;
+  await saveModelConfig();
+  updateModelButton();
+  hideCustomModelInput();
+  closeModelDropdown();
+}
+
+function openModelDropdown() {
+  modelDropdownOpen = true;
+  if (ariaModelDropdown) ariaModelDropdown.classList.remove('hidden');
+  if (ariaProviderSelect) ariaProviderSelect.value = currentModelConfig.provider;
+  fetchModelsForProvider(currentModelConfig.provider);
+  if (ariaModelSearch) ariaModelSearch.focus();
+}
+
+function closeModelDropdown() {
+  modelDropdownOpen = false;
+  if (ariaModelDropdown) ariaModelDropdown.classList.add('hidden');
+  hideCustomModelInput();
+}
+
+function toggleModelDropdown() {
+  if (modelDropdownOpen) closeModelDropdown();
+  else openModelDropdown();
+}
+
+function bindModelPickerEvents() {
+  // Model button click
+  ariaModelBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleModelDropdown();
+  });
+  
+  // Thinking toggle
+  ariaThinkingBtn?.addEventListener('click', async () => {
+    currentModelConfig.thinking = !currentModelConfig.thinking;
+    await saveModelConfig();
+    updateThinkingButton();
+  });
+  
+  // Provider select change
+  ariaProviderSelect?.addEventListener('change', () => {
+    currentModelConfig.provider = ariaProviderSelect.value;
+    fetchModelsForProvider(ariaProviderSelect.value);
+  });
+  
+  // Model search
+  ariaModelSearch?.addEventListener('input', renderModelList);
+  
+  // Custom model button
+  ariaCustomModelBtn?.addEventListener('click', showCustomModelInput);
+  
+  // Custom model save
+  ariaCustomModelSave?.addEventListener('click', useCustomModel);
+  
+  // Custom model input enter
+  ariaCustomModelInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') useCustomModel();
+    if (e.key === 'Escape') hideCustomModelInput();
+  });
+  
+  // Close dropdown on outside click
+  document.addEventListener('click', (e) => {
+    if (modelDropdownOpen && 
+        ariaModelDropdown && 
+        !ariaModelDropdown.contains(e.target) && 
+        ariaModelBtn && 
+        !ariaModelBtn.contains(e.target)) {
+      closeModelDropdown();
+    }
+  });
+  
+  // Close dropdown on escape
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && modelDropdownOpen) {
+      closeModelDropdown();
+    }
+  });
 }
 
 // ═══════════════════════════════════════════
@@ -2509,6 +2766,12 @@ if (window.aria && window.aria.onTeammateInterrupt) {
 async function init() {
   // Focus input on load
   ariaInput.focus();
+
+  // Phase 9.13: Bind model picker events
+  bindModelPickerEvents();
+  
+  // Phase 9.13: Load model config
+  await loadModelConfig();
 
   // Apply dark mode from main process config
   try {

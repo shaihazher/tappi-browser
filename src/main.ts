@@ -36,6 +36,7 @@ import { storePassword, getPasswordsForDomain, getPasswordForAutofill, removePas
 import { setLoginHint, clearLoginHint } from './login-state';
 import { checkCredentials, testConnection } from './credential-checker';
 import { getDefaultModel } from './llm-client';
+import { listModelsForProvider } from './model-list';
 import { loadTools, verifyAllTools } from './tool-manager';
 import { setProjectUpdateCallback } from './tool-registry';
 import { cleanupAll as cleanupShell } from './shell-tools';
@@ -1587,6 +1588,19 @@ Rules:
   ipcMain.handle('config:has-provider-key', (_e, provider: string) => {
     if (provider === currentConfig.llm.provider) return { hasKey: !!currentConfig.llm.apiKey };
     return { hasKey: !!(currentConfig.llm.providerApiKeys?.[provider]) };
+  });
+
+  // List available models for a provider (Phase 9.13 — Model Picker)
+  ipcMain.handle('models:list', async (_e, provider: string) => {
+    const apiKey = decryptApiKey(currentConfig.llm.apiKey);
+    return await listModelsForProvider(provider, {
+      apiKey,
+      baseUrl: currentConfig.llm.baseUrl,
+      endpoint: currentConfig.llm.endpoint,
+      region: currentConfig.llm.region,
+      projectId: currentConfig.llm.projectId,
+      location: currentConfig.llm.location,
+    });
   });
 
   // Shared config update logic — used by both IPC handler and REST API

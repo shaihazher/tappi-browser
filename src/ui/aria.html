@@ -75,6 +75,17 @@
     <div id="aria-input-area">
       <textarea id="aria-input" placeholder="Ask Aria anything…" rows="1" spellcheck="true" autocomplete="off"></textarea>
       <div id="aria-controls">
+        <!-- Model Picker (Phase 9.13) -->
+        <div id="aria-model-picker-wrap">
+          <button id="aria-model-btn" class="model-picker-btn" title="Select model">
+            <span class="model-provider-icon" data-provider="anthropic">🤖</span>
+            <span class="model-name">claude-sonnet-4-6</span>
+            <span class="dropdown-arrow">▼</span>
+          </button>
+          <button id="aria-thinking-btn" class="thinking-toggle on" title="Thinking: ON">
+            <span class="thinking-icon">🧠</span>
+          </button>
+        </div>
         <!-- Enhance prompt controls (Phase 9.098) -->
         <div id="aria-enhance-wrap">
           <button id="aria-enhance-btn" title="Enhance prompt with AI">✨</button>
@@ -90,6 +101,36 @@
       </div>
       <div id="aria-enhance-status" class="hidden"></div>
     </div>
+  </div>
+
+  <!-- Model Dropdown (Phase 9.13) -->
+  <div id="aria-model-dropdown" class="model-dropdown hidden">
+    <div class="model-dropdown-header">
+      <select id="aria-provider-select">
+        <option value="anthropic">Anthropic</option>
+        <option value="openai-codex">OpenAI Codex</option>
+        <option value="openai">OpenAI</option>
+        <option value="google">Google</option>
+        <option value="openrouter">OpenRouter</option>
+        <option value="ollama">Ollama (Local)</option>
+        <option value="bedrock">AWS Bedrock</option>
+        <option value="vertex">Vertex AI</option>
+        <option value="azure">Azure OpenAI</option>
+      </select>
+      <input id="aria-model-search" type="text" placeholder="Search models...">
+    </div>
+    <div id="aria-model-list" class="model-list">
+      <!-- Populated dynamically -->
+    </div>
+    <div class="model-dropdown-footer">
+      <button id="aria-model-custom-btn" class="small-btn">+ Custom Model</button>
+    </div>
+  </div>
+
+  <!-- Custom Model Input (Phase 9.13) -->
+  <div id="aria-custom-model-modal" class="custom-model-modal hidden">
+    <input id="aria-custom-model-input" type="text" placeholder="Enter model ID...">
+    <button id="aria-custom-model-save" class="small-btn">Use</button>
   </div>
 
   <script src="vendor/dompurify.min.js"></script>

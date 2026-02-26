@@ -154,7 +154,8 @@
         <!-- General tab -->
       <div id="settings-body" class="settings-tab-content active" data-tab="general">
         <div class="settings-section">
-          <h3>LLM Provider</h3>
+          <h3>API Credentials</h3>
+          <p class="settings-hint">Model selection moved to Aria chat. Set API keys per provider here.</p>
           <div class="settings-row">
             <label for="setting-provider">Provider</label>
             <select id="setting-provider">
@@ -168,16 +169,6 @@
               <option value="vertex">Vertex AI</option>
               <option value="azure">Azure OpenAI</option>
             </select>
-          </div>
-          <div class="settings-row">
-            <label for="setting-model">Model</label>
-            <input id="setting-model" type="text" placeholder="claude-sonnet-4-20250514">
-          </div>
-
-          <!-- Thinking toggle -->
-          <div class="settings-row toggle-row">
-            <label title="Extended thinking / reasoning. ON = medium thinking budget (better for complex tasks, slower). OFF = no thinking (faster, cheaper).">Thinking</label>
-            <button class="toggle-btn" id="toggle-thinking">ON</button>
           </div>
 
           <!-- API Key row (shown for: anthropic, openai, google, openrouter, azure) -->
@@ -247,45 +238,6 @@
           </div>
 
           <div class="settings-hint" id="apikey-status"></div>
-        </div>
-
-        <!-- Secondary Model Section (Phase 8.85) -->
-        <div class="settings-section" id="secondary-model-section">
-          <h3>Secondary Model <span class="settings-badge">Background Tasks</span></h3>
-          <p class="settings-hint">Used for sub-agents, auto-title, user profile, eviction summaries, and teammate sessions. Defaults to primary when disabled.</p>
-          <div class="settings-row toggle-row">
-            <label title="Enable a separate, cheaper/faster model for background tasks.">Use different model for background tasks</label>
-            <button class="toggle-btn" id="toggle-secondary-model">OFF</button>
-          </div>
-          <div id="secondary-model-fields" class="secondary-model-fields hidden">
-            <div class="settings-row">
-              <label for="setting-secondary-provider">Provider</label>
-              <select id="setting-secondary-provider">
-                <option value="">Same as primary</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="openai-codex">OpenAI Codex</option>
-                <option value="openai">OpenAI</option>
-                <option value="google">Google (Gemini)</option>
-                <option value="openrouter">OpenRouter</option>
-                <option value="ollama">Ollama (Local)</option>
-                <option value="bedrock">AWS Bedrock</option>
-                <option value="vertex">Vertex AI</option>
-                <option value="azure">Azure OpenAI</option>
-              </select>
-            </div>
-            <div class="settings-row">
-              <label for="setting-secondary-model">Model</label>
-              <input id="setting-secondary-model" type="text" placeholder="claude-sonnet-4-6">
-            </div>
-            <div class="settings-row">
-              <label for="setting-secondary-apikey">API Key</label>
-              <div class="input-group">
-                <input id="setting-secondary-apikey" type="password" placeholder="Same as primary">
-                <button id="toggle-secondary-apikey" class="input-addon" title="Show/hide">👁</button>
-              </div>
-            </div>
-            <div class="settings-hint" id="secondary-apikey-hint">Leave API key blank to use the primary key.</div>
-          </div>
         </div>
 
         <div class="settings-section">
