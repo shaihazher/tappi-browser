@@ -33,7 +33,7 @@ import { createTools, TOOL_USAGE_GUIDE } from './tool-registry';
 import * as browserTools from './browser-tools';
 import * as httpTools from './http-tools';
 import type { BrowserContext } from './browser-tools';
-import { addMessage, getWindow, getFullHistory, clearHistory, type ChatMessage } from './conversation';
+import { addMessage, addMessages, getWindow, getFullHistory, clearHistory, type ChatMessage } from './conversation';
 import { purgeSession } from './output-buffer';
 import { cleanupSession } from './shell-tools';
 
@@ -650,6 +650,20 @@ Timezone: ${tz}
       systemPrompt,
     );
 
+    // Build sub-agent messages from full session history so follow-up redirects
+    // can retain complete context turn-over-turn.
+    const history = getWindow(sessionId);
+    const llmMessages = history.map((msg, idx) => {
+      const isLast = idx === history.length - 1;
+      if (isLast && msg.role === 'user' && typeof msg.content === 'string') {
+        return {
+          role: 'user' as const,
+          content: `[Browser: ${browserContext}]${tabNote}\n\n${msg.content}`,
+        };
+      }
+      return msg as any;
+    });
+
     // Phase 9.12: MAX_STEPS comes from depth preset (set above)
 
     // Capture synthesis + file outputs from step callbacks so we can share a
@@ -754,15 +768,14 @@ Timezone: ${tz}
     // Codex path: LiteLLM runtime with robust streamed tool-call assembly.
     let finalText = '';
     let fallbackSteps: any[] = [];
+    let structuredResponseMessages: ChatMessage[] = [];
 
     if (llmConfig.provider === 'openai-codex') {
       executionMode = 'streamText';
       const codexRun = await runLiteLLMCodexToolLoop({
         config: llmConfig,
         system: systemPrompt,
-        messages: [
-          { role: 'user', content: `[Browser: ${browserContext}]${tabNote}\n\n${task}` },
-        ],
+        messages: llmMessages,
         tools,
         maxSteps: MAX_STEPS,
         providerOptions: callProviderOptions,
@@ -780,6 +793,7 @@ Timezone: ${tz}
 
       codexToolFailures = codexRun.metrics.toolCallFailures + codexRun.metrics.unresolvedEmptyToolIntentSteps;
       codexRecoveredByNonStreamRetry = codexRun.metrics.emptyToolIntentRetries > 0;
+      structuredResponseMessages = (codexRun.responseMessages || []) as ChatMessage[];
 
       console.log(`[sub-agent] ${agentTask.id} codex litellm metrics:`, JSON.stringify(codexRun.metrics));
     } else {
@@ -787,9 +801,7 @@ Timezone: ${tz}
       const result = await generateText({
         model,
         system: systemPrompt,
-        messages: [
-          { role: 'user' as const, content: `[Browser: ${browserContext}]${tabNote}\n\n${task}` },
-        ],
+        messages: llmMessages as any,
         tools,
         maxOutputTokens: 30000,
         ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
@@ -800,6 +812,15 @@ Timezone: ${tz}
 
       finalText = (result.text || '').trim();
       fallbackSteps = result.steps || [];
+      try {
+        const response = await (result as any).response;
+        const responseMessages = response?.messages || [];
+        if (Array.isArray(responseMessages) && responseMessages.length > 0) {
+          structuredResponseMessages = responseMessages as ChatMessage[];
+        }
+      } catch {
+        // Best-effort only
+      }
     }
 
     // Fallback: if step callbacks didn't provide text/results, use generateText steps.
@@ -873,6 +894,14 @@ Timezone: ${tz}
         agentTask.result += ` Files written: ${uniqueFiles.join(', ')}`;
       }
       console.warn(`[sub-agent] ${agentTask.id} produced no text output across ${stepCount} steps`);
+    }
+
+    // Persist structured turns so future sub-agent redirects/reruns can carry
+    // full tool-call and tool-result context in-session.
+    if (structuredResponseMessages.length > 0) {
+      addMessages(sessionId, structuredResponseMessages);
+    } else if (fullResponse.length > 0) {
+      addMessage(sessionId, { role: 'assistant', content: fullResponse });
     }
 
     // Surface suspicious runs loudly, but don't hard-fail healthy-looking outputs.

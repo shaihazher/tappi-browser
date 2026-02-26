@@ -27,7 +27,15 @@ interface ConversationState {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-/** Target token budget for the rolling window sent to the LLM. */
+/**
+ * Experimental mode: feed full conversation history on every turn (no truncation).
+ *
+ * This intentionally balloons context turn-over-turn to maximize continuity.
+ * Cost/latency can grow significantly in long sessions.
+ */
+const UNBOUNDED_HISTORY_MODE = true;
+
+/** Target token budget for the rolling window sent to the LLM (when bounded mode is used). */
 const WINDOW_TOKEN_BUDGET = 100_000;
 
 /** Rough token estimation: chars / 4. */
@@ -62,6 +70,11 @@ export function getWindow(sessionId: string): ChatMessage[] {
   const state = getState(sessionId);
   const full = state.messages;
   if (full.length === 0) return [];
+
+  if (UNBOUNDED_HISTORY_MODE) {
+    // Intentional experiment: return every message for maximal turn-to-turn continuity.
+    return full;
+  }
 
   // Find first user message
   const firstUserIdx = full.findIndex(m => m.role === 'user');
@@ -150,6 +163,8 @@ export function setEvictionSummary(sessionId: string, summary: string, boundary:
  * Returns null if no new eviction has occurred.
  */
 export function getUnsummarizedEvictedMessages(sessionId: string): { messages: ChatMessage[]; boundary: number } | null {
+  if (UNBOUNDED_HISTORY_MODE) return null;
+
   const state = getState(sessionId);
   const full = state.messages;
   if (full.length === 0) return null;
