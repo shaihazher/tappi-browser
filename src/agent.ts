@@ -628,7 +628,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
           system: activeSystemPrompt,
           messages: messages as any,
           tools,
-          maxOutputTokens: 32768,
+          maxOutputTokens: 30000,
           ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
           stopWhen: stepCountIs(200),
           abortSignal: abortController.signal,
@@ -1274,7 +1274,7 @@ async function generateEvictionSummaryIfNeeded(sessionId: string, llmConfig: LLM
       const generated = await generateText({
         model,
         prompt,
-        maxOutputTokens: 32768, // universal cap
+        maxOutputTokens: 30000, // universal cap
         ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
       });
       text = generated.text;

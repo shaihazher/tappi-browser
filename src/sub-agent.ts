@@ -743,7 +743,7 @@ Save outputs here with file_write({ path: "filename.md", content: "..." }).`;
           { role: 'user' as const, content: `[Browser: ${browserContext}]${tabNote}\n\n${task}` },
         ],
         tools,
-        maxOutputTokens: 16384,
+        maxOutputTokens: 30000,
         ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
         stopWhen: stepCountIs(MAX_STEPS),
         abortSignal,

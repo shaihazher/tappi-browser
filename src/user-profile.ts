@@ -276,7 +276,7 @@ ${browsingData}`;
       const generated = await generateText({
         model,
         prompt,
-        maxOutputTokens: 32768, // universal cap
+        maxOutputTokens: 30000, // universal cap
         ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
       });
       return generated.text;

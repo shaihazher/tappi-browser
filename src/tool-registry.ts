@@ -2343,6 +2343,92 @@ Each teammate gets an isolated git worktree — separate branch, separate files.
 - \`worktree_merge({ name: "@backend" })\` → merge a teammate's work back to main
 - **Tip:** After merging, use \`file_list()\` to verify files are in the main working dir
 
+### CRON TOOLS (SCHEDULED TASKS)
+USE WHEN: User wants recurring tasks, reminders, periodic checks.
+DO NOT USE FOR: One-time tasks (use sub-agent instead).
+
+**Workflow:**
+1. \`cron_list()\` → see existing jobs first
+2. \`cron_add({ name: "...", task: "...", schedule: {...} })\` → create job
+3. \`cron_list()\` → verify job was created
+
+**Schedule kinds (examples):**
+- **interval**: \`{ kind: "interval", intervalMs: 3600000 }\` → every hour
+- **daily**: \`{ kind: "daily", timeOfDay: "09:00" }\` → daily at 9 AM local time
+- **cron**: \`{ kind: "cron", cronExpr: "0 9 * * 1-5" }\` → weekdays at 9 AM (5-field: min hour dom month dow)
+
+**Task prompt tips:**
+- Write as if speaking to the agent directly — the job runs as an isolated agent turn
+- Include context (the agent starts fresh each run, no conversation history)
+- Be specific about what to check/report
+
+**Example:**
+\`\`\`
+cron_add({
+  name: "Daily competitor check",
+  task: "Visit competitor.com/pricing and summarize any changes. Report findings to user.",
+  schedule: { kind: "daily", timeOfDay: "09:00" }
+})
+\`\`\`
+
+**Managing jobs:**
+- \`cron_update({ id: "...", enabled: false })\` → pause a job
+- \`cron_update({ id: "...", task: "new prompt" })\` → change what it does
+- \`cron_delete({ id: "..." })\` → remove permanently
+
+### API TOOLS (EXTERNAL SERVICES)
+USE WHEN: Calling external APIs that require authentication.
+DO NOT USE FOR: Public URLs without auth (just use \`http_request\` directly).
+
+**Setup workflow (one-time per service):**
+1. \`register_api({ name: "openai", baseUrl: "https://api.openai.com/v1", authHeader: "Bearer", description: "OpenAI GPT, DALL-E, Whisper" })\`
+2. \`api_key_store({ service: "openai", key: "sk-..." })\`
+3. \`list_apis()\` → verify both service + key are configured
+
+**Making authenticated requests:**
+\`\`\`
+http_request({
+  url: "https://api.openai.com/v1/chat/completions",
+  method: "POST",
+  jsonBody: '{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}',
+  auth: "@openai"
+})
+\`\`\`
+
+**Documenting APIs (learn once, use forever):**
+After reading API docs, save endpoint schemas so you remember them later:
+\`\`\`
+document_endpoint({
+  service: "openai",
+  endpointPath: "/v1/chat/completions",
+  method: "POST",
+  summary: "Create chat completion",
+  requestSchema: '{"model":"gpt-4","messages":[{"role":"user","content":"..."}]}',
+  responseSchema: '{"choices":[{"message":{"content":"..."}}]}'
+})
+\`\`\`
+Later: \`get_endpoint_docs({ service: "openai" })\` to recall stored schemas.
+
+**Pro tips:**
+- Use \`saveToFile\` in http_request for large responses, then \`file_read({ grep: "..." })\` to extract
+- \`api_key_list()\` shows which services have keys stored
+- \`remove_api({ name: "..." })\` removes service registration (keeps key if stored separately)
+
+### USER PROFILE (PERSISTENT MEMORY)
+USE WHEN: User says "remember that...", "I prefer...", "my [X] is...", "add to my profile..."
+DO NOT USE FOR: Temporary context (just mention in conversation).
+
+**Workflow:**
+1. \`update_user_profile({ action: "read" })\` → see current profile FIRST (avoids duplicates)
+2. \`update_user_profile({ action: "append", text: "- Prefers dark mode" })\` → add new info
+3. Or \`update_user_profile({ action: "update", text: "..." })\` → rewrite entirely (for restructuring)
+
+**Tips:**
+- Always read before updating to avoid duplicating existing info
+- Use "append" for new facts; use "update" only for restructuring/condensing
+- Profile is included in EVERY conversation — keep it concise and relevant
+- Good for: preferences, contact info, recurring context the user doesn't want to repeat
+
 ### ERROR RECOVERY
 - "Element not found" or wrong index → call \`elements()\` again (indexes shift after page changes)
 - "Tab not found" → call \`tab({ action: "list" })\` to see available tabs
