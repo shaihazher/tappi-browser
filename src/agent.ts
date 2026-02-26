@@ -1166,6 +1166,76 @@ Title:`;
 }
 
 /**
+ * Generate a quick conversation title from user message alone.
+ * Fires immediately when user sends first message — parallel to agent execution.
+ * This is faster and more reliable than waiting for assistant response.
+ * (Phase 9.13: Parallel title generation)
+ */
+export async function generateQuickTitle(
+  conversationId: string,
+  userMessage: string,
+  llmConfig: LLMConfig,
+  ariaWebContents?: WebContents | null,
+): Promise<void> {
+  try {
+    const secondaryConfig = getModelConfig('secondary', llmConfig);
+    const model = createModel(secondaryConfig);
+    const providerOptions = buildProviderOptions(secondaryConfig);
+    const callProviderOptions: Record<string, any> = withCodexProviderOptions(
+      secondaryConfig.provider,
+      { ...providerOptions },
+      'Generate only a short conversation title.',
+      'Generate only a short conversation title.',
+    );
+
+    // Simple prompt — just the user's message, no assistant response needed
+    const titlePrompt = `Generate a short, descriptive title (3-6 words) for a conversation that starts with this message. Return ONLY the title text — no quotes, no punctuation at the end, no explanation.
+
+Message: ${userMessage.slice(0, 300)}
+
+Title:`;
+
+    let text = '';
+    if (secondaryConfig.provider === 'openai-codex') {
+      const result = streamText({
+        model,
+        messages: [{ role: 'user', content: titlePrompt }],
+        ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
+      });
+      for await (const chunk of result.textStream) {
+        text += chunk;
+      }
+    } else {
+      const generated = await generateText({
+        model,
+        prompt: titlePrompt,
+        maxOutputTokens: 30,
+        ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
+      });
+      text = generated.text;
+    }
+
+    const title = (text || '').replace(/^["']|["']$/g, '').replace(/[.!?]+$/, '').trim();
+    if (title && title.length > 2 && title.length < 80) {
+      updateConversationTitle(conversationId, title);
+      console.log('[agent] Quick title set:', title);
+      // Notify Aria tab to refresh sidebar
+      try {
+        if (ariaWebContents && !ariaWebContents.isDestroyed()) {
+          ariaWebContents.send('aria:conversation-updated', { conversationId });
+        }
+      } catch {}
+    } else {
+      // LLM returned garbage — fall back
+      generateAutoTitleFallback(conversationId, userMessage);
+    }
+  } catch (err: any) {
+    console.error('[agent] Quick title generation error:', err?.message);
+    generateAutoTitleFallback(conversationId, userMessage);
+  }
+}
+
+/**
  * Generate an eviction summary for messages that have fallen out of the rolling window.
  * Uses secondary model (cheap LLM call) to summarize evicted content (Phase 8.85).
  * Non-blocking — failures are logged but don't break the agent.

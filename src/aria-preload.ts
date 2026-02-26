@@ -174,4 +174,30 @@ contextBridge.exposeInMainWorld('aria', {
   },
 
   getTheme: () => ipcRenderer.invoke('theme:get'),
+
+  // ─── Deep Plan (Phase 9.096) ───
+  onDeepPlan: (cb: (data: any) => void) => {
+    ipcRenderer.on('agent:deep-plan', (_e, data) => cb(data));
+  },
+  onDeepPlanStep: (cb: (data: any) => void) => {
+    ipcRenderer.on('agent:deep-plan-step', (_e, data) => cb(data));
+  },
+  onDeepSubtaskStart: (cb: (data: any) => void) => {
+    ipcRenderer.on('agent:deep-subtask-start', (_e, data) => cb(data));
+  },
+  onDeepSubtaskDone: (cb: (data: any) => void) => {
+    ipcRenderer.on('agent:deep-subtask-done', (_e, data) => cb(data));
+  },
+  onDeepStreamChunk: (cb: (data: any) => void) => {
+    ipcRenderer.on('agent:deep-stream-chunk', (_e, data) => cb(data));
+  },
+  onDeepReasoningChunk: (cb: (data: any) => void) => {
+    ipcRenderer.on('agent:deep-reasoning-chunk', (_e, data) => cb(data));
+  },
+  onDeepToolResult: (cb: (data: any) => void) => {
+    ipcRenderer.on('agent:deep-tool-result', (_e, data) => cb(data));
+  },
+  onDeepComplete: (cb: (data: any) => void) => {
+    ipcRenderer.on('agent:deep-complete', (_e, data) => cb(data));
+  },
 });

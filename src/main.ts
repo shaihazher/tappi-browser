@@ -24,7 +24,7 @@ import { createHash, randomBytes } from 'crypto';
 import { TabManager } from './tab-manager';
 import { executeCommand, getMenu, type ExecutorContext } from './command-executor';
 import type { BrowserContext } from './browser-tools';
-import { runAgent, stopAgent, clearHistory, agentProgressData, interruptMainSession } from './agent';
+import { runAgent, stopAgent, clearHistory, agentProgressData, interruptMainSession, generateQuickTitle } from './agent';
 import { agentEvents } from './agent-bus';
 import { loadServices, registerService, removeService, storeApiKey, getApiKey, listApiKeys, deleteApiKey } from './http-tools';
 import { initDatabase, getDb, closeDatabase, reinitDatabase, addHistory, searchHistory, getRecentHistory, clearHistory as clearDbHistory, migrateBookmarksFromJson, getPermission, setPermission, getAllBookmarks, searchBookmarks, removeBookmark } from './database';
@@ -51,6 +51,7 @@ import {
   updateConversationTitle,
   getConversationMessages,
   searchConversations,
+  getConversation,
 } from './conversation-store';
 import {
   createProject,
@@ -1000,15 +1001,35 @@ function createWindow() {
 
     // Use provided conversationId or active one
     const convId = conversationId || activeConversationId;
+    let isNewConversation = false;
     if (!convId) {
       const existing = listConversations(50);
       const emptyConv = existing.find(c => c.message_count === 0);
       if (emptyConv) {
         activeConversationId = emptyConv.id;
+        isNewConversation = emptyConv.message_count === 0;
       } else {
         const conv = createConversation();
         activeConversationId = conv.id;
+        isNewConversation = true;
       }
+    } else {
+      // Check if this conversation has no messages yet
+      const conv = getConversation(convId);
+      isNewConversation = !conv || conv.message_count === 0;
+    }
+
+    // Phase 9.13: Generate title in parallel for new conversations
+    if (isNewConversation && activeConversationId) {
+      const llmConfigForTitle = {
+        provider: currentConfig.llm.provider,
+        model: currentConfig.llm.model,
+        apiKey,
+        secondaryProvider: currentConfig.llm.secondaryProvider,
+        secondaryModel: currentConfig.llm.secondaryModel,
+        secondaryApiKey: currentConfig.llm.secondaryApiKey ? decryptApiKey(currentConfig.llm.secondaryApiKey) : undefined,
+      };
+      generateQuickTitle(activeConversationId, message, llmConfigForTitle, tabManager?.ariaWebContents).catch(() => {});
     }
 
     const browserCtx: BrowserContext = { window: mainWindow, tabManager, config: currentConfig };
