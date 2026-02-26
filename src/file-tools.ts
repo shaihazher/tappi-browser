@@ -65,8 +65,8 @@ export function fileWrite(filePath: string, content: string): string {
 
 // Token estimation: ~4 chars per token (conservative for code/prose mix)
 const CHARS_PER_TOKEN = 4;
-const TOKEN_THRESHOLD = 2_000; // Phase 9.096f: 2K tokens — use grep/head/tail for targeted reading
-const BYTE_THRESHOLD = TOKEN_THRESHOLD * CHARS_PER_TOKEN; // ~8KB
+const TOKEN_THRESHOLD = 10_000; // Phase 9.13: 10K tokens — reasonable context window for modern models
+const BYTE_THRESHOLD = TOKEN_THRESHOLD * CHARS_PER_TOKEN; // ~40KB
 
 export interface FileReadOptions {
   grep?: string;
@@ -125,7 +125,7 @@ export function fileRead(filePath: string, options?: FileReadOptions): string {
       ``,
       `Options (re-call file_read with these params):`,
       `  • grep: "search term" — find specific content (recommended)`,
-      `  • offset: 0, limit: 8000 — read first ~2K tokens`,
+      `  • offset: 0, limit: 40000 — read first ~10K tokens`,
       `  • Or use file_head / file_tail / file_grep`,
     ].join('\n');
   }

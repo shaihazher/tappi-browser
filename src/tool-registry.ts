@@ -691,12 +691,12 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     file_read: tool({
-      description: `Read a file's contents. Large files (>2K tokens) return truncated output with options. FOR LARGE FILES: Use \`grep: "keyword"\` to search without loading everything. FOR CHUNKED READING: Use offset/limit parameters. Relative paths resolve to project working dir or <workspace>/. Example: file_read({ path: "notes.md" }) or file_read({ path: "large.log", grep: "error" })`,
+      description: `Read a file's contents. Large files (>10K tokens) return truncated output with options. FOR LARGE FILES: Use \`grep: "keyword"\` to search without loading everything. FOR CHUNKED READING: Use offset/limit parameters. Relative paths resolve to project working dir or <workspace>/. Example: file_read({ path: "notes.md" }) or file_read({ path: "large.log", grep: "error" })`,
       inputSchema: z.object({
         path: z.string().describe('File path'),
         grep: z.string().optional().describe('Search the file for this text — returns matching lines with ±2 context lines (recommended for large files)'),
         offset: z.number().optional().describe('Byte offset to start reading from (for chunked reading by sub-agents)'),
-        limit: z.number().optional().describe('Max bytes to read (default/max ~8KB ≈ 2K tokens)'),
+        limit: z.number().optional().describe('Max bytes to read (default/max ~40KB ≈ 10K tokens)'),
       }),
       execute: async ({ path, grep, offset, limit }: { path: string; grep?: string; offset?: number; limit?: number }) => {
         const opts: fileTools.FileReadOptions = {};
@@ -708,7 +708,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     file_read_range: tool({
-      description: 'Read a specific line range from a file (1-indexed). Use after file_read reports a large file. Capped at ~2K tokens per call.',
+      description: 'Read a specific line range from a file (1-indexed). Use after file_read reports a large file. Capped at ~10K tokens per call.',
       inputSchema: z.object({
         path: z.string().describe('File path'),
         from: z.number().describe('Start line (1-indexed, inclusive)'),
