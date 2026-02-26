@@ -6,9 +6,13 @@ Tappi is a Chrome-based desktop browser with a built-in AI agent that uses **3-1
 
 ## Screenshots
 
-| Aria Agent | Real Conversation | Settings |
-|------------|-------------------|----------|
-| ![Aria Tab](screenshots/aria-tab.png) | ![Conversation](screenshots/conversation.png) | ![Settings](screenshots/settings.png) |
+| Aria Agent | Real Conversation |
+|------------|-------------------|
+| ![Aria Tab](screenshots/aria-tab.png) | ![Conversation](screenshots/conversation.png) |
+
+| Normal Browsing | Settings |
+|-----------------|----------|
+| ![YouTube](screenshots/normal-browsing.png) | ![Settings](screenshots/settings.png) |
 
 ---
 
