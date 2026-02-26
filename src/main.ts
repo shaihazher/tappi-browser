@@ -1151,33 +1151,32 @@ Rules:
 
     const DEEP_ENHANCEMENT_PROMPT = `You are a prompt enhancement assistant. Rewrite the user's prompt to be clearer AND more robust by considering multiple perspectives.
 
-Before writing the enhanced prompt, consider:
-1. **Caveats**: What could go wrong? What edge cases exist?
-2. **Opposing views**: How would a skeptic challenge this?
-3. **Blind spots**: What did the user probably forget?
-4. **Alternatives**: Are there better ways to frame this?
+Think through:
+- Caveats and edge cases
+- Opposing viewpoints
+- Blind spots the user may have missed
+- Alternative approaches
 
-Structure your response as:
+Then output ONLY this format:
 
 **Goal**: [One-sentence intent]
 
-**Context**: [What you understand about the situation]
+**Prompt**:
+[The rewritten, enhanced prompt with all considerations baked in]
 
-**Considerations**:
-- Caveat: [Potential issues or edge cases, if any]
-- Counterpoint: [Opposing view, if applicable]
-- Blind spot: [Something likely missed, if any]
+**Additional Considerations**:
+- [Key caveat or edge case to be aware of]
+- [Another consideration, if relevant]
 
-**Deliverable**: [What success looks like]
-
-**Constraints**: [Limits, preferences, requirements]
+**New Angles**:
+- [Perspective or approach the user didn't consider]
+- [Another angle, if relevant]
 
 Rules:
 - Preserve the user's intent exactly
-- Only add considerations that genuinely matter (don't pad with trivial issues)
-- If no meaningful opposing view exists, skip that consideration
-- Keep under 400 words
-- Don't invent requirements they didn't mention
+- Bake all improvements into the Prompt section
+- Only list considerations that genuinely matter
+- Keep the enhanced prompt under 300 words
 - Be specific, not generic`;
 
     // Quick web search helper (uses DuckDuckGo instant answers - no API key needed)
