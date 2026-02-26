@@ -56,6 +56,7 @@ const tokenLabel     = document.getElementById('aria-token-label');
 
 // Phase 9.098: Enhance prompt elements
 const ariaEnhanceBtn = document.getElementById('aria-enhance-btn');
+const ariaEnhanceDropdown = document.getElementById('aria-enhance-dropdown');
 const ariaEnhanceSearchLabel = document.getElementById('aria-enhance-search-label');
 const ariaEnhanceSearch = document.getElementById('aria-enhance-search');
 const ariaEnhanceStatus = document.getElementById('aria-enhance-status');
@@ -89,6 +90,8 @@ let teamCardCollapsed = false;
 // Phase 9.098: Enhance prompt state
 let originalPromptText = null;  // Store original text when enhancing
 let isEnhancing = false;        // Prevent double-clicks
+let enhanceMode = 'quick';      // 'quick' | 'deep'
+let enhanceDropdownOpen = false;
 
 // Phase 9.13: Model picker state
 let currentModelConfig = {
@@ -1589,6 +1592,31 @@ ariaInput.addEventListener('input', () => {
 
 // ─── Enhance Prompt (Phase 9.098) ──────────────────────
 
+function toggleEnhanceDropdown() {
+  enhanceDropdownOpen = !enhanceDropdownOpen;
+  if (ariaEnhanceDropdown) {
+    ariaEnhanceDropdown.classList.toggle('hidden', !enhanceDropdownOpen);
+  }
+}
+
+function closeEnhanceDropdown() {
+  enhanceDropdownOpen = false;
+  if (ariaEnhanceDropdown) {
+    ariaEnhanceDropdown.classList.add('hidden');
+  }
+}
+
+function selectEnhanceMode(mode) {
+  enhanceMode = mode;
+  // Update UI
+  document.querySelectorAll('.enhance-option').forEach(opt => {
+    opt.classList.toggle('selected', opt.dataset.mode === mode);
+  });
+  // Immediately enhance with new mode
+  closeEnhanceDropdown();
+  enhancePrompt();
+}
+
 async function enhancePrompt() {
   const text = ariaInput.value.trim();
   if (!text || isEnhancing) return;
@@ -1596,7 +1624,7 @@ async function enhancePrompt() {
   isEnhancing = true;
   ariaEnhanceBtn.classList.add('loading');
   ariaEnhanceBtn.disabled = true;
-  ariaEnhanceStatus.textContent = 'Enhancing...';
+  ariaEnhanceStatus.textContent = enhanceMode === 'deep' ? 'Analyzing deeply...' : 'Enhancing...';
   ariaEnhanceStatus.classList.remove('hidden', 'error');
 
   // Store original text in case user wants to revert
@@ -1604,7 +1632,7 @@ async function enhancePrompt() {
 
   try {
     const webSearch = ariaEnhanceSearch?.checked || false;
-    const result = await window.aria.enhancePrompt(text, webSearch);
+    const result = await window.aria.enhancePrompt(text, webSearch, enhanceMode);
 
     if (result.error) {
       throw new Error(result.error);
@@ -1615,7 +1643,8 @@ async function enhancePrompt() {
       ariaInput.classList.add('enhanced');
       ariaInput.style.height = 'auto';
       ariaInput.style.height = Math.min(ariaInput.scrollHeight, 140) + 'px';
-      ariaEnhanceStatus.textContent = '✨ Enhanced! Review and send, or edit further.';
+      const modeLabel = enhanceMode === 'deep' ? '🔮 Deep analysis complete!' : '✨ Enhanced!';
+      ariaEnhanceStatus.textContent = `${modeLabel} Review and send, or edit further.`;
     }
   } catch (err) {
     console.error('[aria] enhance error:', err);
@@ -1628,26 +1657,36 @@ async function enhancePrompt() {
   }
 }
 
-// Show enhance search checkbox on hover over enhance button
-ariaEnhanceBtn?.addEventListener('mouseenter', () => {
-  if (ariaEnhanceSearchLabel) {
-    ariaEnhanceSearchLabel.classList.remove('hidden');
+// Enhance button click: toggle dropdown or quick enhance if already quick mode
+ariaEnhanceBtn?.addEventListener('click', () => {
+  if (enhanceMode === 'quick' && !enhanceDropdownOpen) {
+    // Quick mode: just enhance directly
+    enhancePrompt();
+  } else {
+    // Deep mode or dropdown already open: show dropdown
+    toggleEnhanceDropdown();
   }
 });
 
-// Keep checkbox visible while interacting
-ariaEnhanceSearchLabel?.addEventListener('mouseenter', () => {
-  ariaEnhanceSearchLabel.classList.remove('hidden');
+// Handle dropdown option clicks
+document.querySelectorAll('.enhance-option').forEach(opt => {
+  opt.addEventListener('click', (e) => {
+    e.stopPropagation();
+    selectEnhanceMode(opt.dataset.mode);
+  });
 });
 
-// Hide checkbox when mouse leaves the enhance area
-document.getElementById('aria-enhance-wrap')?.addEventListener('mouseleave', () => {
-  if (!ariaEnhanceSearch?.checked) {
-    ariaEnhanceSearchLabel?.classList.add('hidden');
+// Web search checkbox
+ariaEnhanceSearchLabel?.addEventListener('click', (e) => {
+  e.stopPropagation();
+});
+
+// Close dropdown when clicking outside
+document.addEventListener('click', (e) => {
+  if (enhanceDropdownOpen && !document.getElementById('aria-enhance-wrap')?.contains(e.target)) {
+    closeEnhanceDropdown();
   }
 });
-
-ariaEnhanceBtn?.addEventListener('click', enhancePrompt);
 
 // Revert to original prompt on Escape when enhanced
 ariaInput.addEventListener('keydown', (e) => {

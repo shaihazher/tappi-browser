@@ -89,10 +89,23 @@
         <!-- Enhance prompt controls (Phase 9.098) -->
         <div id="aria-enhance-wrap">
           <button id="aria-enhance-btn" title="Enhance prompt with AI">✨</button>
-          <label id="aria-enhance-search-label" class="hidden">
-            <input type="checkbox" id="aria-enhance-search">
-            <span>🔍 Web</span>
-          </label>
+          <div id="aria-enhance-dropdown" class="hidden">
+            <button data-mode="quick" class="enhance-option selected">
+              <span class="enhance-icon">⚡</span>
+              <span class="enhance-label">Quick</span>
+              <span class="enhance-desc">Structure & clarity</span>
+            </button>
+            <button data-mode="deep" class="enhance-option">
+              <span class="enhance-icon">🔮</span>
+              <span class="enhance-label">Deep</span>
+              <span class="enhance-desc">Adversarial analysis</span>
+            </button>
+            <div class="enhance-divider"></div>
+            <label id="aria-enhance-search-label">
+              <input type="checkbox" id="aria-enhance-search">
+              <span>🔍 Web context</span>
+            </label>
+          </div>
         </div>
         <!-- Fix 4: Coding mode toggle — only visible when Developer Mode is ON -->
         <button id="aria-coding-btn" class="aria-mode-btn hidden" title="Coding Mode: OFF — enables agent team orchestration">&lt;/&gt;</button>

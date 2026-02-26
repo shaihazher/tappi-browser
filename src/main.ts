@@ -1120,7 +1120,7 @@ function createWindow() {
   });
 
   // ─── Prompt Enhancement (Phase 9.098) ───────────────────────────────────────
-  ipcMain.handle('aria:enhance-prompt', async (_e, prompt: string, webSearch: boolean) => {
+  ipcMain.handle('aria:enhance-prompt', async (_e, prompt: string, webSearch: boolean, mode: 'quick' | 'deep' = 'quick') => {
     const { generateText } = await import('ai');
     const { createModel, buildProviderOptions } = await import('./llm-client');
 
@@ -1130,7 +1130,7 @@ function createWindow() {
 
     const apiKey = decryptApiKey(currentConfig.llm.apiKey);
 
-    const ENHANCEMENT_SYSTEM_PROMPT = `You are a prompt enhancement assistant. Your job is to rewrite user prompts to be clearer and more actionable for an AI agent.
+    const QUICK_ENHANCEMENT_PROMPT = `You are a prompt enhancement assistant. Your job is to rewrite user prompts to be clearer and more actionable for an AI agent.
 
 Rewrite the user's prompt using this structure:
 
@@ -1148,6 +1148,37 @@ Rules:
 - If searching the web, include relevant context you found
 - Keep it concise (under 300 words)
 - Don't add requirements they didn't mention`;
+
+    const DEEP_ENHANCEMENT_PROMPT = `You are a prompt enhancement assistant. Rewrite the user's prompt to be clearer AND more robust by considering multiple perspectives.
+
+Before writing the enhanced prompt, consider:
+1. **Caveats**: What could go wrong? What edge cases exist?
+2. **Opposing views**: How would a skeptic challenge this?
+3. **Blind spots**: What did the user probably forget?
+4. **Alternatives**: Are there better ways to frame this?
+
+Structure your response as:
+
+**Goal**: [One-sentence intent]
+
+**Context**: [What you understand about the situation]
+
+**Considerations**:
+- Caveat: [Potential issues or edge cases, if any]
+- Counterpoint: [Opposing view, if applicable]
+- Blind spot: [Something likely missed, if any]
+
+**Deliverable**: [What success looks like]
+
+**Constraints**: [Limits, preferences, requirements]
+
+Rules:
+- Preserve the user's intent exactly
+- Only add considerations that genuinely matter (don't pad with trivial issues)
+- If no meaningful opposing view exists, skip that consideration
+- Keep under 400 words
+- Don't invent requirements they didn't mention
+- Be specific, not generic`;
 
     // Quick web search helper (uses DuckDuckGo instant answers - no API key needed)
     async function quickWebSearch(query: string): Promise<string> {
@@ -1201,14 +1232,17 @@ Rules:
         }
       }
 
+      const systemPrompt = mode === 'deep' ? DEEP_ENHANCEMENT_PROMPT : QUICK_ENHANCEMENT_PROMPT;
+      const maxTokens = mode === 'deep' ? 600 : 500;
+
       const result = await generateText({
         model,
-        system: ENHANCEMENT_SYSTEM_PROMPT,
+        system: systemPrompt,
         messages: [{ role: 'user', content: prompt + contextBlock }],
-        maxOutputTokens: 500,
+        maxOutputTokens: maxTokens,
       });
 
-      return { enhanced: result.text };
+      return { enhanced: result.text, mode };
     } catch (err: any) {
       console.error('[main] enhance-prompt error:', err);
       return { error: err.message || 'Enhancement failed' };

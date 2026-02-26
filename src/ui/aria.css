@@ -1593,6 +1593,88 @@ body.dark-mode .aria-msg.assistant .md-content a {
   display: flex;
   align-items: center;
   gap: 4px;
+  position: relative;
+}
+
+/* Enhance dropdown (Phase 9.098b) */
+#aria-enhance-dropdown {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  padding: 6px;
+  min-width: 180px;
+  z-index: 100;
+}
+
+#aria-enhance-dropdown.hidden {
+  display: none;
+}
+
+.enhance-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.15s;
+  text-align: left;
+}
+
+.enhance-option:hover {
+  background: var(--accent-soft);
+}
+
+.enhance-option.selected {
+  background: rgba(139, 92, 246, 0.15);
+  color: #8b5cf6;
+}
+
+.enhance-option .enhance-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.enhance-option .enhance-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.enhance-option .enhance-desc {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-left: auto;
+}
+
+.enhance-divider {
+  height: 1px;
+  background: var(--border-color);
+  margin: 6px 4px;
+}
+
+#aria-enhance-search-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+
+#aria-enhance-search-label:hover {
+  background: rgba(139, 92, 246, 0.1);
 }
 
 #aria-enhance-btn {
@@ -1633,22 +1715,6 @@ body.dark-mode .aria-msg.assistant .md-content a {
 @keyframes enhance-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
-}
-
-#aria-enhance-search-label {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 11px;
-  color: var(--text-dim);
-  cursor: pointer;
-  padding: 4px 6px;
-  border-radius: 10px;
-  transition: background 0.15s;
-}
-
-#aria-enhance-search-label:hover {
-  background: rgba(139, 92, 246, 0.1);
 }
 
 #aria-enhance-search {

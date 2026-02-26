@@ -101,8 +101,8 @@ contextBridge.exposeInMainWorld('aria', {
   },
 
   // ─── Prompt Enhancement (Phase 9.098) ───
-  enhancePrompt: (prompt: string, webSearch: boolean) =>
-    ipcRenderer.invoke('aria:enhance-prompt', prompt, webSearch),
+  enhancePrompt: (prompt: string, webSearch: boolean, mode?: 'quick' | 'deep') =>
+    ipcRenderer.invoke('aria:enhance-prompt', prompt, webSearch, mode),
 
   onTeammateTool: (cb: (data: { name: string; toolName: string; display: string }) => void) => {
     ipcRenderer.on('team:teammate-tool', (_e, data) => cb(data));
