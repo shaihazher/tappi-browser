@@ -282,7 +282,8 @@ function updateAddressBar(tab) {
     if (tab.isAria) {
       bookmarksBar.style.visibility = 'hidden';
     } else {
-      bookmarksBar.style.visibility = bookmarksBarItems.length > 0 ? 'visible' : 'hidden';
+      // renderBookmarksBar() handles visibility based on items count
+      renderBookmarksBar();
     }
   }
 }
@@ -508,21 +509,14 @@ async function loadBookmarksBar() {
 function renderBookmarksBar() {
   if (!bookmarksBarContent) return;
   
-  // Don't show bookmarks bar content when Aria tab is active
-  const activeTab = currentTabs.find(t => t.isActive);
-  if (activeTab?.isAria) {
-    bookmarksBar.style.visibility = 'hidden';
-    bookmarksBarContent.innerHTML = '';
-    return;
-  }
-  
   if (bookmarksBarItems.length === 0) {
     bookmarksBar.style.visibility = 'hidden';
     bookmarksBarContent.innerHTML = '';
     return;
   }
   
-  bookmarksBar.style.visibility = 'visible';
+  // Always render content even if bar might be hidden (for Aria tab)
+  // This ensures content is ready when user switches tabs
   bookmarksBarContent.innerHTML = bookmarksBarItems.map(item => {
     const domain = new URL(item.url).hostname;
     const favicon = `https://www.google.com/s2/favicons?domain=${domain}&sz=16`;
@@ -542,6 +536,14 @@ function renderBookmarksBar() {
       window.tappi.openUrl(url);
     });
   });
+  
+  // Set visibility based on active tab (hide for Aria)
+  const activeTab = currentTabs.find(t => t.isActive);
+  if (activeTab?.isAria) {
+    bookmarksBar.style.visibility = 'hidden';
+  } else {
+    bookmarksBar.style.visibility = 'visible';
+  }
 }
 
 // Initial load
