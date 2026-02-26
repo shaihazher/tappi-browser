@@ -219,14 +219,22 @@ export class TabManager {
       this.bookmarks.delete(normalized);
       this.saveBookmarks();
       // Also remove from database
-      try { removeBookmarkFromDb(normalized); } catch {}
+      try { 
+        removeBookmarkFromDb(normalized); 
+      } catch (e) {
+        console.error('[tab-manager] Failed to remove bookmark from DB:', e);
+      }
       this.notifyChrome();
       return false;
     } else {
       this.bookmarks.add(normalized);
       this.saveBookmarks();
       // Also add to database
-      try { addBookmark(normalized); } catch {}
+      try { 
+        addBookmark(normalized); 
+      } catch (e) {
+        console.error('[tab-manager] Failed to add bookmark to DB:', e);
+      }
       this.notifyChrome();
       return true;
     }

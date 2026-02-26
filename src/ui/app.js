@@ -276,6 +276,15 @@ function updateAddressBar(tab) {
     const isNewTab = !tab.url || tab.url === 'about:blank' || (tab.url.startsWith('file://') && tab.url.includes('newtab.html'));
     bookmarkBtn.style.display = isNewTab ? 'none' : '';
   }
+  
+  // Update bookmarks bar visibility based on tab type
+  if (bookmarksBar) {
+    if (tab.isAria) {
+      bookmarksBar.style.visibility = 'hidden';
+    } else {
+      bookmarksBar.style.visibility = bookmarksBarItems.length > 0 ? 'visible' : 'hidden';
+    }
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -498,6 +507,14 @@ async function loadBookmarksBar() {
 
 function renderBookmarksBar() {
   if (!bookmarksBarContent) return;
+  
+  // Don't show bookmarks bar content when Aria tab is active
+  const activeTab = currentTabs.find(t => t.isActive);
+  if (activeTab?.isAria) {
+    bookmarksBar.style.visibility = 'hidden';
+    bookmarksBarContent.innerHTML = '';
+    return;
+  }
   
   if (bookmarksBarItems.length === 0) {
     bookmarksBar.style.visibility = 'hidden';
@@ -1094,9 +1111,13 @@ if (window.tappi.onAgentVisible) {
       // Aria tab active — hide both strip and panel regardless of isAgentOpen
       if (agentStrip) agentStrip.classList.add('hidden');
       if (agentPanel) agentPanel.classList.add('hidden');
+      // Hide bookmarks bar in Aria tab (use visibility to preserve layout)
+      if (bookmarksBar) bookmarksBar.style.visibility = 'hidden';
     } else {
       // Regular tab — restore appropriate state based on isAgentOpen
       setAgentOpen(isAgentOpen);
+      // Show bookmarks bar in regular tabs
+      if (bookmarksBar) bookmarksBar.style.visibility = bookmarksBarItems.length > 0 ? 'visible' : 'hidden';
     }
   });
 }
@@ -2279,8 +2300,12 @@ window.tappi.onConfigLoaded((config) => {
 });
 
 // Bookmarks bar refresh on update
-window.tappi.onBookmarksUpdated(() => {
-  loadBookmarksBar();
+window.tappi.onBookmarksUpdated(async () => {
+  console.log('[ui] Bookmarks updated, refreshing bar...');
+  // Small delay to ensure database write completes
+  await new Promise(r => setTimeout(r, 50));
+  await loadBookmarksBar();
+  console.log('[ui] Bookmarks bar refreshed, items:', bookmarksBarItems.length);
 });
 
 // ═══════════════════════════════════════════
