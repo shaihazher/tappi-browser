@@ -1422,7 +1422,7 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
     }),
 
     sub_agent_status: tool({
-      description: `Check sub-agent status and results. Call after spawn_agent to see if complete. No id = list all agents. With id = detailed status + result (if completed). Result includes files written and working directory. Statuses: "running" (still working), "done" (complete), "failed" (error). Example: sub_agent_status({ id: "sub-1" }) or sub_agent_status() to list all.`,
+      description: `Check sub-agent status and results. Call after spawn_agent to see if complete. Shows: steps used/remaining, recent tools, and **work in progress snippet** (first 400 chars of what sub-agent found so far). No id = list all agents. With id = detailed status + result. Statuses: "running" (still working), "completed" (done), "killed" (stopped, partial preserved). Example: sub_agent_status({ id: "sub-1" })`,
       inputSchema: z.object({
         id: z.string().optional().describe('Sub-agent ID (e.g. "sub-1")'),
       }),
@@ -2290,11 +2290,19 @@ USE WHEN: Task can run independently, you need to do multiple things at once.
 DO NOT USE FOR: Simple lookups, single-page tasks, anything you can do in 2-3 tool calls.
 
 **Workflow:**
-1. \`spawn_agent({ task: "...", working_dir: "~/my-project", depth: "standard" })\` → returns agent ID
+1. \`spawn_agent({ task: "...", working_dir: "~/my-project", depth: "standard" })\` → returns agent ID + timing hint
 2. **BE PATIENT** — sub-agent has its own step budget and will run until done or timeout
-3. \`sub_agent_status({ id: "sub-1" })\` → check progress (shows steps used, budget remaining)
-4. When \`status: "completed"\` → access outputs from \`working_dir\`
-5. When \`status: "killed"\` → partial result is preserved in status output
+3. **Wait the suggested time** (quick=15s, standard=30s, deep=60s) before checking
+4. \`sub_agent_status({ id: "sub-1" })\` → see progress + **work in progress snippet**
+5. If still running: check again in ~30s or when steps exhausted
+6. When \`status: "completed"\` → access outputs from \`working_dir\`
+7. When \`status: "killed"\` → partial result is preserved in status output
+
+**What You See When Checking Status:**
+- Steps used/remaining (budget progress)
+- Recent tools (activity indicator)
+- **Work in progress snippet** — first 400 chars of what sub-agent found so far
+- When to check again
 
 **Patience Guidelines:**
 - **Wait for completion** — sub-agents have strict budgets and WILL finish

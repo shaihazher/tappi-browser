@@ -402,8 +402,11 @@ export async function spawnSubAgent(
 
   console.log(`[sub-agent] ${id} spawned (depth=${depth}, maxSteps=${preset.maxSteps}, model=${subAgentConfig.model}, thinking=${preset.thinkingEnabled}, workingDir=${workingDir || 'default'})`);
   const workDirHint = workingDir ? ` Files saved to: ${workingDir}` : '';
+  // Phase 9.14: Suggest when to check back based on depth
+  const checkBackHint = depth === 'quick' ? 'Check in ~15s' : depth === 'deep' ? 'Check in ~60s' : 'Check in ~30s';
   return `🚀 Spawned ${id} [${resolvedType}, depth=${depth}] — running in background.${workDirHint}
-Use sub_agent_status({ id: "${id}" }) to check progress. Use kill_agent({ id: "${id}" }) to stop it.`;
+⏱ ${checkBackHint} with: sub_agent_status({ id: "${id}" })
+💡 Sub-agent has ${preset.maxSteps} steps — it will finish. Wait for completion unless stuck.`;
 }
 
 /**
@@ -467,6 +470,19 @@ export function getSubAgentStatus(id?: string): string {
       if (recentTools.length > 0) {
         lines.push(`Recent tools: ${recentTools.join(', ')}`);
       }
+
+      // Phase 9.14: Show snippet of ongoing work (first 400 chars of result so far)
+      // This gives main agent visibility into what sub-agent is finding without killing it
+      if (agent.result && agent.result.length > 0) {
+        const snippet = agent.result.length > 400 
+          ? agent.result.slice(0, 400) + '...' 
+          : agent.result;
+        lines.push(`Work in progress:\n${snippet}`);
+      }
+
+      // Timing hint: suggest when to check again based on remaining steps
+      const estimatedSeconds = Math.max(5, stepsLeft * 3); // ~3s per step remaining
+      lines.push(`⏱ Check again in ~${Math.min(30, estimatedSeconds)}s or when steps exhausted.`);
     }
 
     if (agent.workingDir) lines.push(`Working Dir: ${agent.workingDir}`);
@@ -482,12 +498,10 @@ export function getSubAgentStatus(id?: string): string {
     // Contextual hints based on status
     if (agent.status === 'running') {
       const preset = DEPTH_PRESETS[agent.depth];
-      lines.push(`💡 Wait for completion. Budget: ${preset.maxSteps} steps max. Use kill_agent({ id: "${agent.id}" }) only if stuck.`);
+      lines.push(`💡 Wait for completion. Budget: ${preset.maxSteps} steps max. Kill only if stuck (no progress for 60s).`);
     } else if (agent.status === 'killed') {
-      lines.push(`💡 Sub-agent was killed. Check result above for partial findings.`);
-    }
-    // Add hint for accessing sub-agent outputs
-    if (agent.status === 'completed' && agent.workingDir) {
+      lines.push(`💡 Sub-agent was killed. Partial result above — reuse findings instead of starting fresh.`);
+    } else if (agent.status === 'completed' && agent.workingDir) {
       lines.push(`📁 Access outputs: file_list({ path: "${agent.workingDir}" }) or file_read({ path: "${agent.workingDir}/<filename>" })`);
     }
     return lines.join('\n');
