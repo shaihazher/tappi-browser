@@ -683,27 +683,101 @@ function flattenStructuredContent(content: any): string {
   return parts.join('\n');
 }
 
-function toLiteLLMMessages(messages: Array<{ role: string; content: any }>): LiteLLMMessage[] {
+function extractAssistantToolCalls(content: any): Array<{ id: string; name: string; args: Record<string, any> }> {
+  if (!Array.isArray(content)) return [];
+
+  const calls: Array<{ id: string; name: string; args: Record<string, any> }> = [];
+  for (const rawPart of content) {
+    if (!rawPart || typeof rawPart !== 'object') continue;
+    const part = rawPart as Record<string, any>;
+    if (part.type !== 'tool-call') continue;
+
+    const id = String(part.toolCallId ?? part.tool_call_id ?? '').trim();
+    const name = String(part.toolName ?? part.tool_name ?? '').trim();
+    const argsRaw = part.args ?? part.arguments ?? {};
+    const args = argsRaw && typeof argsRaw === 'object' ? argsRaw as Record<string, any> : { value: argsRaw };
+
+    if (!id || !name) continue;
+    calls.push({ id, name, args });
+  }
+
+  return calls;
+}
+
+function extractToolResults(content: any): Array<{ toolCallId: string; outputText: string }> {
+  const parts = Array.isArray(content) ? content : [content];
+  const results: Array<{ toolCallId: string; outputText: string }> = [];
+
+  for (const rawPart of parts) {
+    if (!rawPart || typeof rawPart !== 'object') continue;
+    const part = rawPart as Record<string, any>;
+    const type = String(part.type ?? '').trim();
+    if (type && type !== 'tool-result') continue;
+
+    const toolCallId = String(part.toolCallId ?? part.tool_call_id ?? '').trim();
+    if (!toolCallId) continue;
+
+    const outputRaw = part.result ?? part.output ?? part.content ?? '';
+    const outputText = typeof outputRaw === 'string' ? outputRaw : safeJsonStringify(outputRaw);
+    results.push({ toolCallId, outputText });
+  }
+
+  return results;
+}
+
+export function toLiteLLMMessages(messages: Array<{ role: string; content: any }>): LiteLLMMessage[] {
   const mapped: LiteLLMMessage[] = [];
 
   for (const msg of messages) {
     const role = msg?.role;
-    const content = flattenStructuredContent(msg?.content);
 
-    if (role === 'system' || role === 'user' || role === 'assistant') {
-      mapped.push({ role, content });
+    if (role === 'system' || role === 'user') {
+      mapped.push({ role, content: flattenStructuredContent(msg?.content) });
+      continue;
+    }
+
+    if (role === 'assistant') {
+      const textContent = flattenStructuredContent(msg?.content);
+      const calls = extractAssistantToolCalls(msg?.content);
+      if (calls.length > 0) {
+        mapped.push({
+          role: 'assistant',
+          content: textContent || null,
+          tool_calls: calls.map((call) => ({
+            id: call.id,
+            type: 'function' as const,
+            function: {
+              name: call.name,
+              arguments: safeJsonStringify(call.args),
+            },
+          })),
+        });
+      } else {
+        mapped.push({ role: 'assistant', content: textContent });
+      }
       continue;
     }
 
     if (role === 'tool') {
-      // Historical tool messages from AI SDK sessions may not include tool_call_id in a
-      // shape LiteLLM accepts. Preserve context as assistant text to avoid invalid payloads.
-      mapped.push({ role: 'assistant', content: content ? `[tool-history] ${content}` : '[tool-history]' });
+      const results = extractToolResults(msg?.content);
+      if (results.length > 0) {
+        for (const result of results) {
+          mapped.push({
+            role: 'tool',
+            tool_call_id: result.toolCallId,
+            content: result.outputText,
+          });
+        }
+      } else {
+        // Fallback for legacy/non-structured tool history.
+        const content = flattenStructuredContent(msg?.content);
+        mapped.push({ role: 'assistant', content: content ? `[tool-history] ${content}` : '[tool-history]' });
+      }
       continue;
     }
 
     // Unknown role: degrade safely to user text.
-    mapped.push({ role: 'user', content });
+    mapped.push({ role: 'user', content: flattenStructuredContent(msg?.content) });
   }
 
   return mapped;
@@ -1194,7 +1268,7 @@ async function executeLiteLLMToolCall(
   }
 }
 
-function buildStructuredResponseMessages(steps: LiteLLMStepEvent[]): Array<{ role: string; content: any }> {
+export function buildStructuredResponseMessages(steps: LiteLLMStepEvent[]): Array<{ role: string; content: any }> {
   const messages: Array<{ role: string; content: any }> = [];
 
   for (const step of steps) {
