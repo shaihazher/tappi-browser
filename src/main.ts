@@ -1148,6 +1148,36 @@ Rules:
 - Keep it concise (under 300 words)
 - Don't add requirements they didn't mention`;
 
+    // Quick web search helper (uses DuckDuckGo instant answers - no API key needed)
+    async function quickWebSearch(query: string): Promise<string> {
+      try {
+        const https = await import('https');
+        const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1`;
+        
+        return new Promise((resolve) => {
+          https.get(url, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+              try {
+                const json = JSON.parse(data);
+                const abstract = json.AbstractText || '';
+                const related = (json.RelatedTopics || []).slice(0, 3)
+                  .map((t: any) => t.Text)
+                  .filter(Boolean)
+                  .join('; ');
+                resolve(abstract || related || '');
+              } catch {
+                resolve('');
+              }
+            });
+          }).on('error', () => resolve(''));
+        });
+      } catch {
+        return '';
+      }
+    }
+
     try {
       const model = createModel({
         provider: currentConfig.llm.provider,
@@ -1160,12 +1190,20 @@ Rules:
         baseUrl: currentConfig.llm.baseUrl,
       });
 
-      // If web search is enabled, we'd need to add tools - but for simplicity, just enhance without search
-      // A full implementation would add a web_search tool here
+      let contextBlock = '';
+      
+      // If web search is enabled, fetch context
+      if (webSearch) {
+        const searchContext = await quickWebSearch(prompt);
+        if (searchContext) {
+          contextBlock = `\n\n[Web Context]\n${searchContext}`;
+        }
+      }
+
       const result = await generateText({
         model,
         system: ENHANCEMENT_SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: prompt }],
+        messages: [{ role: 'user', content: prompt + contextBlock }],
         maxOutputTokens: 500,
       });
 
