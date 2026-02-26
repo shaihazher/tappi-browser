@@ -15,6 +15,8 @@
  */
 
 import { generateText, streamText, stepCountIs } from 'ai';
+import * as os from 'os';
+import * as path from 'path';
 import {
   createModel,
   buildProviderOptions,
@@ -41,6 +43,7 @@ export interface SubAgentTask {
   taskType: TaskType;       // classified task type
   contract: string;         // system prompt scaffolding for this task type
   depth: SubAgentDepth;     // Phase 9.12: budget control
+  workingDir?: string;      // Working directory for file operations
   status: 'running' | 'completed' | 'failed' | 'killed';
   sessionId: string;
   assignedTabId?: string;   // dedicated browser tab for this sub-agent
@@ -303,6 +306,10 @@ function allocateSubAgentTab(id: string, browserCtx: BrowserContext): string | u
  * The main agent checks status with sub_agent_status and kills with kill_agent.
  * No retries, no auto-promotion — the agent controls the workflow.
  */
+export interface SubAgentSpawnOptions {
+  workingDir?: string;  // Working directory for file operations (defaults to ~/tappi-workspace/)
+}
+
 export async function spawnSubAgent(
   task: string,
   browserCtx: BrowserContext,
@@ -312,6 +319,7 @@ export async function spawnSubAgent(
   taskType?: TaskType,
   onProgress?: SubAgentProgressCallback,
   depth: SubAgentDepth = 'standard',
+  spawnOptions?: SubAgentSpawnOptions,
 ): Promise<string> {
   // Check concurrency limit
   const running = Array.from(activeAgents.values()).filter(a => a.status === 'running');
@@ -325,6 +333,9 @@ export async function spawnSubAgent(
   const contract = getContractForTaskType(resolvedType);
   const preset = DEPTH_PRESETS[depth];
 
+  // Resolve working directory for file operations
+  const workingDir = spawnOptions?.workingDir;
+
   // Allocate a dedicated browser tab for this sub-agent
   const assignedTabId = allocateSubAgentTab(id, browserCtx);
 
@@ -336,6 +347,7 @@ export async function spawnSubAgent(
     taskType: resolvedType,
     contract,
     depth,
+    workingDir,
     status: 'running',
     sessionId,
     assignedTabId,
@@ -377,8 +389,10 @@ export async function spawnSubAgent(
     }
   });
 
-  console.log(`[sub-agent] ${id} spawned (depth=${depth}, maxSteps=${preset.maxSteps}, model=${subAgentConfig.model}, thinking=${preset.thinkingEnabled})`);
-  return `🚀 Spawned ${id} [${resolvedType}, depth=${depth}] — running in background.\nUse sub_agent_status to check progress. Use kill_agent("${id}") to stop it.`;
+  console.log(`[sub-agent] ${id} spawned (depth=${depth}, maxSteps=${preset.maxSteps}, model=${subAgentConfig.model}, thinking=${preset.thinkingEnabled}, workingDir=${workingDir || 'default'})`);
+  const workDirHint = workingDir ? ` Files saved to: ${workingDir}` : '';
+  return `🚀 Spawned ${id} [${resolvedType}, depth=${depth}] — running in background.${workDirHint}
+Use sub_agent_status({ id: "${id}" }) to check progress. Use kill_agent({ id: "${id}" }) to stop it.`;
 }
 
 /**
@@ -415,6 +429,7 @@ export function getSubAgentStatus(id?: string): string {
       `${statusEmoji} ${agent.id} [${agent.taskType}, depth=${agent.depth}] — ${agent.status} (${duration.toFixed(1)}s)`,
       `Task: ${agent.task.slice(0, 120)}`,
     ];
+    if (agent.workingDir) lines.push(`Working Dir: ${agent.workingDir}`);
     if (agent.toolsUsed.length > 0) lines.push(`Tools: ${agent.toolsUsed.length} calls (${[...new Set(agent.toolsUsed)].join(', ')})`);
     if (agent.result) {
       // Phase 9.12: Cap result output based on depth preset
@@ -424,6 +439,10 @@ export function getSubAgentStatus(id?: string): string {
     }
     if (agent.error) lines.push(`Error: ${agent.error}`);
     if (agent.status === 'running') lines.push(`💡 Use kill_agent("${agent.id}") to stop.`);
+    // Add hint for accessing sub-agent outputs
+    if (agent.status === 'completed' && agent.workingDir) {
+      lines.push(`📁 Access outputs: file_list({ path: "${agent.workingDir}" }) or file_read({ path: "${agent.workingDir}/<filename>" })`);
+    }
     return lines.join('\n');
   }
 
@@ -498,9 +517,21 @@ async function runSubAgent(
       ? `\n[Tab: You are locked to tab ID "${assignedTabId}". You MUST NOT open, switch to, or interact with any other tab.]`
       : '';
 
+    // Build budget and working directory context
+    const defaultWorkspace = path.join(os.homedir(), 'tappi-workspace');
+    const effectiveWorkingDir = agentTask.workingDir || defaultWorkspace;
+    const budgetNote = `## Your Budget
+You have **${depthPreset.maxSteps} steps** maximum. Each tool call counts as one step.
+You may use up to **${depthPreset.maxSources} sources**. Use them wisely.
+Stop early if you have a good answer — quality over volume.
+
+## Working Directory
+Files resolve relative to: **${effectiveWorkingDir}**
+Save outputs here with file_write({ path: "filename.md", content: "..." }).`;
+
     const systemPrompt = contract
-      ? `${SUB_AGENT_BASE_PROMPT}\n\n${contract}`
-      : SUB_AGENT_BASE_PROMPT;
+      ? `${SUB_AGENT_BASE_PROMPT}\n\n${budgetNote}\n\n${contract}`
+      : `${SUB_AGENT_BASE_PROMPT}\n\n${budgetNote}`;
 
     const providerOptions = buildProviderOptions(llmConfig);
     const callProviderOptions: Record<string, any> = withCodexProviderOptions(
@@ -840,15 +871,30 @@ function assembleBrowserContext(browserCtx: BrowserContext): string {
 
 const SUB_AGENT_BASE_PROMPT = `You are a Tappi sub-agent — a focused worker with a LIMITED step budget.
 
-Core rules:
-1. Focus ONLY on the task you were given. Do not expand scope.
-2. Be efficient — grep > scroll > read-all. Every tool call costs a step.
-3. You have ONE dedicated browser tab. Work only in that tab.
-4. When done, output your findings clearly and concisely. Then stop.
-5. Do NOT visit more pages than necessary. 1-3 good sources beats 5 shallow ones.
-6. If you can answer from search result snippets alone, do that.
+## Core Rules
+1. **Scope**: Only do what you were assigned. Do not expand scope.
+2. **Efficiency**: grep > scroll > read-all. Every tool call costs a step.
+3. **Tab**: You have ONE dedicated browser tab. Use ONLY that tab.
+4. **Done**: When you have a good answer, stop. Quality over volume.
 
-The page is a black box — use elements/text tools to see it.
+## Page Interaction
+The page is a black box until you query it:
+- \`elements()\` → see clickable items (returns numbered indexes)
+- \`click({ index: N })\` or \`type({ index: N, text: "..." })\` → interact
+- \`text({ grep: "keyword" })\` → read content without screenshots
+- **After navigation or page changes, indexes shift — call elements() again**
+
+## Error Recovery
+- "Element not found" or wrong index → call elements() again (indexes shift after page changes)
+- "Tab not found" → you only have ONE tab, stay in it
+- Tool failed? Try a different approach — don't repeat the same action 3 times
+- Stuck? Summarize what you found and stop — partial results are valuable
+
+## Output
+When finished, provide:
+- 2-3 sentence summary of what you found/did
+- Key details with sources (for research) or files touched (for coding)
+- Then STOP — do not keep searching after you have a good answer
 
 ${TOOL_USAGE_GUIDE}
 `;

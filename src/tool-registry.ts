@@ -638,7 +638,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     // ═══ FILE TOOLS ═══
 
     file_write: tool({
-      description: `Write content to a file. CAUTION: Overwrites existing files without warning! FOR EXISTING FILES: Call file_read() first to see current content, then file_write() to update. Relative paths resolve to ~/tappi-workspace/. Example: file_write({ path: "notes.md", content: "# Notes\\nMy notes here..." }).`,
+      description: `Write content to a file. CAUTION: Overwrites existing files without warning! WORKFLOW: (1) file_read() to see current content, (2) file_write() to update. Relative paths resolve to project working dir or ~/tappi-workspace/. For large content, file_write is more reliable than paste(). Example: file_write({ path: "notes.md", content: "# Notes\\nMy notes here..." })`,
       inputSchema: z.object({
         path: z.string().describe('File path'),
         content: z.string().describe('File content'),
@@ -693,7 +693,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     file_read: tool({
-      description: `Read a file's contents. Large files (>2K tokens) return a summary with options. FOR LARGE FILES: Use grep: "keyword" to search without loading everything, or file_grep() for more control. FOR CHUNKED READING: Use offset/limit parameters. Example: file_read({ path: "notes.md" }) or file_read({ path: "large.log", grep: "error" }).`,
+      description: `Read a file's contents. Large files (>2K tokens) return truncated output with options. FOR LARGE FILES: Use \`grep: "keyword"\` to search without loading everything. FOR CHUNKED READING: Use offset/limit parameters. Relative paths resolve to project working dir or ~/tappi-workspace/. Example: file_read({ path: "notes.md" }) or file_read({ path: "large.log", grep: "error" })`,
       inputSchema: z.object({
         path: z.string().describe('File path'),
         grep: z.string().optional().describe('Search the file for this text — returns matching lines with ±2 context lines (recommended for large files)'),
@@ -1404,22 +1404,25 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
     // ═══ SUB-AGENT (requires shell/dev mode) ═══
 
     spawn_agent: tool({
-      description: `Spawn a background sub-agent for parallel work. USE WHEN: (1) Task can run independently without your help, (2) You need to do multiple things at once, (3) Task benefits from isolated browser tab. DO NOT USE FOR: Simple lookups, single-page tasks, anything you can do in 2-3 tool calls yourself. Returns immediately with agent ID — check results with sub_agent_status(). Max 5 concurrent. Example: spawn_agent({ task: "Research competitor pricing for 5 HVAC companies in Houston", depth: "quick" })`,
+      description: `Spawn a background sub-agent for parallel work. USE WHEN: (1) Task can run independently without your help, (2) You need to do multiple things at once, (3) Task benefits from isolated browser tab. DO NOT USE FOR: Simple lookups, single-page tasks, anything you can do in 2-3 tool calls yourself. Returns immediately with agent ID — check results with sub_agent_status(). Max 5 concurrent. Sub-agent saves files to working_dir (default: ~/tappi-workspace/). Example: spawn_agent({ task: "Research competitor pricing for 5 HVAC companies", depth: "quick" })`,
       inputSchema: z.object({
         task: z.string().describe('Clear, self-contained task description for the sub-agent'),
         task_type: z.enum(['research', 'coding', 'story-writing', 'normal']).optional().describe('Task type — determines contract/scaffolding. Default: auto-detect.'),
         model: z.enum(['primary', 'secondary']).optional().describe('Model tier: "secondary" (default, cheaper) or "primary" (stronger reasoning)'),
         depth: z.enum(['quick', 'standard', 'deep']).optional().describe('Budget: "quick" (5 steps, 1 source), "standard" (15 steps, 3 sources, default), "deep" (30 steps, 5 sources). Quick is great for simple lookups.'),
+        working_dir: z.string().optional().describe('Working directory for file operations. Default: ~/tappi-workspace/. Use same dir as project to access outputs later.'),
       }),
-      execute: async ({ task, task_type, model, depth }: { task: string; task_type?: 'research' | 'coding' | 'story-writing' | 'normal'; model?: 'primary' | 'secondary'; depth?: 'quick' | 'standard' | 'deep' }) => {
+      execute: async ({ task, task_type, model, depth, working_dir }: { task: string; task_type?: 'research' | 'coding' | 'story-writing' | 'normal'; model?: 'primary' | 'secondary'; depth?: 'quick' | 'standard' | 'deep'; working_dir?: string }) => {
         if (!llmConfig) return '❌ No LLM config available for sub-agent.';
         const resolvedType = task_type || subAgent.classifyTask(task);
-        return subAgent.spawnSubAgent(task, browserCtx, llmConfig, sessionId, model || 'secondary', resolvedType, toolOptions?.onSubAgentProgress, depth || 'standard');
+        // Use provided working_dir, or project's working dir if available, or default
+        const resolvedWorkingDir = working_dir || toolOptions?.projectWorkingDir || undefined;
+        return subAgent.spawnSubAgent(task, browserCtx, llmConfig, sessionId, model || 'secondary', resolvedType, toolOptions?.onSubAgentProgress, depth || 'standard', resolvedWorkingDir ? { workingDir: resolvedWorkingDir } : undefined);
       },
     }),
 
     sub_agent_status: tool({
-      description: `Check sub-agent status and results. Call after spawn_agent to see if complete. No id = list all agents. With id = detailed status + result (if completed). Statuses: "running" (still working), "done" (complete), "failed" (error). Example: sub_agent_status({ id: "sub-1" }) or sub_agent_status() to list all.`,
+      description: `Check sub-agent status and results. Call after spawn_agent to see if complete. No id = list all agents. With id = detailed status + result (if completed). Result includes files written and working directory. Statuses: "running" (still working), "done" (complete), "failed" (error). Example: sub_agent_status({ id: "sub-1" }) or sub_agent_status() to list all.`,
       inputSchema: z.object({
         id: z.string().optional().describe('Sub-agent ID (e.g. "sub-1")'),
       }),
@@ -2265,13 +2268,18 @@ export const TOOL_USAGE_GUIDE = `
 - **eval_js()**: LAST RESORT — only for complex interactions impossible with other tools
 
 ### FILE OPERATIONS
-1. \`file_read()\` or \`file_list()\` → see what exists
-2. \`file_write()\` → create/overwrite (CAUTION: overwrites!)
+1. \`file_list()\` → see what exists in working directory
+2. \`file_read({ path: "..." })\` → read a file (use \`grep\` for large files)
+3. \`file_write({ path: "...", content: "..." })\` → create/overwrite
+   - **CAUTION**: Overwrites without warning! Read first if updating.
+   - Relative paths resolve to project working dir or \`~/tappi-workspace/\`
+4. \`file_append({ path: "...", content: "..." })\` → add to end of file (safer than write)
+5. \`file_delete({ path: "..." })\` → remove file or directory
 
-### ERROR RECOVERY
-- "Element not found" or wrong index → call \`elements()\` again (indexes shift after page changes)
-- "Tab not found" → call \`tab({ action: "list" })\` to see available tabs
-- "File not found" → use absolute path or check with \`file_list()\`
+**Pro tips:**
+- Use \`file_read({ grep: "error" })\` to search large files without loading everything
+- Use \`file_head()\` / \`file_tail()\` to preview large files
+- Always call \`present_download()\` after creating files the user wants to keep
 
 ### GREP PARAMETER (works in multiple tools)
 Case-insensitive text search. Available in: elements, text, links, file_read, file_grep, history.
@@ -2280,12 +2288,19 @@ All work the same: \`grep: "search term"\` returns matching results.
 ### SUB-AGENT WORKFLOW (PARALLEL TASKS)
 USE WHEN: Task can run independently, you need to do multiple things at once.
 DO NOT USE FOR: Simple lookups, single-page tasks, anything you can do in 2-3 tool calls.
-Workflow: \`spawn_agent({ task: "..." })\` → \`sub_agent_status({ id: "sub-1" })\` → get results
-Depth options: "quick" (5 steps), "standard" (15 steps), "deep" (30 steps).
+
+**Workflow:**
+1. \`spawn_agent({ task: "...", working_dir: "~/my-project" })\` → spawn with working dir
+2. \`sub_agent_status({ id: "sub-1" })\` → check progress
+3. When complete: \`file_list()\` or \`file_read()\` to access outputs from \`working_dir\`
+
+**Depth options:** "quick" (5 steps), "standard" (15 steps), "deep" (30 steps).
+**Tip:** Use same \`working_dir\` as your project so you can read sub-agent outputs with \`file_read()\`.
 
 ### TEAM WORKFLOW (PARALLEL CODING)
 USE WHEN: Large coding task with independent modules, multiple files need simultaneous changes.
 DO NOT USE FOR: Small fixes, single-file changes, quick prototypes.
+
 Workflow:
 1. \`team_create({ task: "...", working_dir: "..." })\` → create team
 2. \`team_write_contracts({ path: "...", content: "..." })\` → define shared interfaces (CRITICAL)
@@ -2293,4 +2308,16 @@ Workflow:
 4. \`team_status()\` → monitor progress
 5. \`worktree_merge({ name: "@backend" })\` → merge completed work
 6. \`team_validate({ command: "npm run build" })\` → verify integration
+
+### GIT WORKTREE (PARALLEL DEVELOPMENT)
+Each teammate gets an isolated git worktree — separate branch, separate files.
+- \`worktree_list()\` → see all worktrees
+- \`worktree_merge({ name: "@backend" })\` → merge a teammate's work back to main
+- **Tip:** After merging, use \`file_list()\` to verify files are in the main working dir
+
+### ERROR RECOVERY
+- "Element not found" or wrong index → call \`elements()\` again (indexes shift after page changes)
+- "Tab not found" → call \`tab({ action: "list" })\` to see available tabs
+- "File not found" → use absolute path or check with \`file_list()\`
+- "Permission denied" → check if file is in a teammate's worktree (lead can't write there directly)
 `.trim();
