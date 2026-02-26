@@ -135,6 +135,9 @@ contextBridge.exposeInMainWorld('tappi', {
   getAllBookmarks: () => ipcRenderer.invoke('bookmarks:all'),
   searchBookmarks: (query: string) => ipcRenderer.invoke('bookmarks:search', query),
   removeBookmark: (url: string) => ipcRenderer.invoke('bookmarks:remove', url),
+  onBookmarksUpdated: (callback: (data: { url: string; added: boolean }) => void) => {
+    ipcRenderer.on('bookmarks:updated', (_e, data) => callback(data));
+  },
 
   // Find on Page
   findOnPage: (text: string, options?: { forward?: boolean }) => ipcRenderer.send('find:start', text, options),

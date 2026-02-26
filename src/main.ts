@@ -75,7 +75,7 @@ let mainWindow: BrowserWindow;
 let tabManager: TabManager;
 let activeConversationId: string | null = null;  // Phase 8.35
 
-const CHROME_HEIGHT = 74; // tab bar (38) + address bar (36)
+const CHROME_HEIGHT = 102; // tab bar (38) + address bar (36) + bookmarks bar (28)
 const STATUS_BAR_HEIGHT = 34;
 const AGENT_STRIP_WIDTH = 40;
 const AGENT_PANEL_WIDTH = 380;
@@ -879,7 +879,9 @@ function createWindow() {
 
   // ─── Bookmark IPC ───
   ipcMain.on('bookmark:toggle', (_e, url: string) => {
-    tabManager.toggleBookmark(url);
+    const added = tabManager.toggleBookmark(url);
+    // Notify UI to refresh bookmarks bar
+    mainWindow?.webContents.send('bookmarks:updated', { url, added });
   });
 
   // ─── Navigation IPC ───

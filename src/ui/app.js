@@ -482,6 +482,54 @@ if (bookmarkBtn) {
   });
 }
 
+// ═══════════════════════════════════════════
+//  BOOKMARKS BAR
+// ═══════════════════════════════════════════
+
+const bookmarksBar = document.getElementById('bookmarks-bar');
+const bookmarksBarContent = document.getElementById('bookmarks-bar-content');
+let bookmarksBarItems = [];
+
+async function loadBookmarksBar() {
+  const bookmarks = await window.tappi.getAllBookmarks();
+  bookmarksBarItems = bookmarks || [];
+  renderBookmarksBar();
+}
+
+function renderBookmarksBar() {
+  if (!bookmarksBarContent) return;
+  
+  if (bookmarksBarItems.length === 0) {
+    bookmarksBar.style.visibility = 'hidden';
+    bookmarksBarContent.innerHTML = '';
+    return;
+  }
+  
+  bookmarksBar.style.visibility = 'visible';
+  bookmarksBarContent.innerHTML = bookmarksBarItems.map(item => {
+    const domain = new URL(item.url).hostname;
+    const favicon = `https://www.google.com/s2/favicons?domain=${domain}&sz=16`;
+    const title = item.title || domain || item.url;
+    return `
+      <button class="bookmarks-bar-item" data-url="${escapeAttr(item.url)}" title="${escapeHtml(title)}">
+        <img src="${favicon}" onerror="this.style.display='none'" alt="">
+        <span>${escapeHtml(title)}</span>
+      </button>
+    `;
+  }).join('');
+  
+  // Add click handlers
+  bookmarksBarContent.querySelectorAll('.bookmarks-bar-item').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const url = btn.dataset.url;
+      window.tappi.openUrl(url);
+    });
+  });
+}
+
+// Initial load
+loadBookmarksBar();
+
 btnBack.addEventListener('click', () => window.tappi.goBack());
 btnForward.addEventListener('click', () => window.tappi.goForward());
 btnReload.addEventListener('click', () => window.tappi.reload());
@@ -2166,6 +2214,16 @@ window.tappi.onApiServicesUpdated(() => {
 // ═══════════════════════════════════════════
 
 document.addEventListener('keydown', (e) => {
+  // Cmd+D / Ctrl+D — Toggle Bookmark
+  if ((e.metaKey || e.ctrlKey) && e.key === 'd') {
+    e.preventDefault();
+    const active = currentTabs.find(t => t.isActive);
+    if (active && active.url) {
+      window.tappi.toggleBookmark(active.url);
+    }
+    return;
+  }
+  
   // Escape — close panels
   if (e.key === 'Escape') {
     if (!settingsOverlay.classList.contains('hidden')) {
@@ -2218,6 +2276,11 @@ window.tappi.onConfigLoaded((config) => {
   }
   // Developer mode status bar indicator
   updateDevModeIndicator(config.developerMode || false);
+});
+
+// Bookmarks bar refresh on update
+window.tappi.onBookmarksUpdated(() => {
+  loadBookmarksBar();
 });
 
 // ═══════════════════════════════════════════

@@ -2,7 +2,7 @@ import { BrowserWindow, WebContentsView, session, ipcMain } from 'electron';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
-import { addHistory } from './database';
+import { addHistory, addBookmark, removeBookmark as removeBookmarkFromDb } from './database';
 
 export interface Tab {
   id: string;
@@ -218,11 +218,15 @@ export class TabManager {
     if (this.bookmarks.has(normalized)) {
       this.bookmarks.delete(normalized);
       this.saveBookmarks();
+      // Also remove from database
+      try { removeBookmarkFromDb(normalized); } catch {}
       this.notifyChrome();
       return false;
     } else {
       this.bookmarks.add(normalized);
       this.saveBookmarks();
+      // Also add to database
+      try { addBookmark(normalized); } catch {}
       this.notifyChrome();
       return true;
     }

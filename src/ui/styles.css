@@ -341,6 +341,62 @@ body.dark-mode .tab.aria-tab.active {
   color: #f5c518;
 }
 
+/* ─── Bookmarks Bar ─── */
+#bookmarks-bar {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 8px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+#bookmarks-bar::-webkit-scrollbar { display: none; }
+#bookmarks-bar:empty,
+#bookmarks-bar.hidden { 
+  visibility: hidden; /* Reserve space but don't show */
+}
+
+#bookmarks-bar-content {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.bookmarks-bar-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.15s, color 0.15s;
+}
+.bookmarks-bar-item:hover {
+  background: var(--bg-tab-hover);
+  color: var(--text-primary);
+}
+.bookmarks-bar-item img {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.bookmarks-bar-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ─── Agent strip ─── */
 #agent-strip {
   position: fixed;
