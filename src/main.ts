@@ -879,9 +879,7 @@ function createWindow() {
 
   // ─── Bookmark IPC ───
   ipcMain.on('bookmark:toggle', (_e, url: string) => {
-    console.log(`[main] bookmark:toggle received for ${url}`);
     const added = tabManager.toggleBookmark(url);
-    console.log(`[main] bookmark toggled, added=${added}, sending bookmarks:updated`);
     // Notify UI to refresh bookmarks bar
     mainWindow?.webContents.send('bookmarks:updated', { url, added });
   });
@@ -2222,10 +2220,7 @@ Rules:
 
   // ─── Bookmarks (panel) IPC ───
   ipcMain.handle('bookmarks:all', () => {
-    const start = Date.now();
-    const result = getAllBookmarks();
-    console.log(`[main] getAllBookmarks returned ${result.length} items in ${Date.now() - start}ms`);
-    return result;
+    return getAllBookmarks();
   });
 
   ipcMain.handle('bookmarks:search', (_e, query: string) => {

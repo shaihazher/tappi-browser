@@ -278,13 +278,9 @@ function updateAddressBar(tab) {
   }
   
   // Update bookmarks bar visibility based on tab type
-  if (bookmarksBar) {
-    if (tab.isAria) {
-      bookmarksBar.style.visibility = 'hidden';
-    } else {
-      // renderBookmarksBar() handles visibility based on items count
-      renderBookmarksBar();
-    }
+  // Only toggle visibility here - don't rebuild content on every state change
+  if (bookmarksBar && bookmarksBarItems.length > 0) {
+    bookmarksBar.style.visibility = tab.isAria ? 'hidden' : 'visible';
   }
 }
 
@@ -503,16 +499,11 @@ let bookmarksBarLoading = false;
 let bookmarksBarInitialized = false;
 
 async function loadBookmarksBar() {
-  if (bookmarksBarLoading) {
-    console.log('[ui] loadBookmarksBar already in progress, skipping...');
-    return;
-  }
+  if (bookmarksBarLoading) return;
   bookmarksBarLoading = true;
-  const start = Date.now();
   try {
     const bookmarks = await window.tappi.getAllBookmarks();
     bookmarksBarItems = bookmarks || [];
-    console.log(`[ui] loadBookmarksBar fetched ${bookmarksBarItems.length} items in ${Date.now() - start}ms`);
     renderBookmarksBar();
   } finally {
     bookmarksBarLoading = false;
@@ -521,13 +512,9 @@ async function loadBookmarksBar() {
 }
 
 function renderBookmarksBar() {
-  if (!bookmarksBarContent) {
-    console.log('[ui] renderBookmarksBar: no content element');
-    return;
-  }
+  if (!bookmarksBarContent) return;
   
   const activeTab = currentTabs.find(t => t.isActive);
-  console.log(`[ui] renderBookmarksBar: ${bookmarksBarItems.length} items, activeTab=${activeTab?.isAria ? 'Aria' : 'web'}`);
   
   if (bookmarksBarItems.length === 0) {
     bookmarksBar.style.visibility = 'hidden';
@@ -2260,7 +2247,6 @@ document.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'd') {
     e.preventDefault();
     const active = currentTabs.find(t => t.isActive);
-    console.log(`[ui] Cmd+D pressed, active tab: ${active?.isAria ? 'Aria' : 'web'}, url: ${active?.url}`);
     if (active && active.url) {
       window.tappi.toggleBookmark(active.url);
     }
@@ -2323,11 +2309,8 @@ window.tappi.onConfigLoaded((config) => {
 
 // Bookmarks bar refresh on update
 window.tappi.onBookmarksUpdated(async () => {
-  console.log('[ui] Bookmarks updated, refreshing bar...');
-  // Small delay to ensure database write completes
   await new Promise(r => setTimeout(r, 50));
   await loadBookmarksBar();
-  console.log('[ui] Bookmarks bar refreshed, items:', bookmarksBarItems.length);
 });
 
 // ═══════════════════════════════════════════
