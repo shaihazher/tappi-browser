@@ -1430,7 +1430,7 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
     }),
 
     kill_agent: tool({
-      description: `Kill a running sub-agent immediately. USE WHEN: Sub-agent is taking too long, going off track, or user wants to cancel. Prerequisite: Agent must be running (check with sub_agent_status first). Result: Agent stops, tab closes, resources freed. Example: kill_agent({ id: "sub-2" })`,
+      description: `Kill a running sub-agent immediately. Partial result is preserved — check sub_agent_status after killing to see what the sub-agent found. USE WHEN: (1) Sub-agent stuck/no progress for 60+ seconds, (2) Off-track (wrong site, wrong task), (3) User cancellation. DO NOT KILL just because impatient — wait for sub-agent to use its budget. Prerequisite: Agent must be running. Example: kill_agent({ id: "sub-2" }) then sub_agent_status({ id: "sub-2" }) for partial result`,
       inputSchema: z.object({
         id: z.string().describe('Sub-agent ID to kill (e.g. "sub-1")'),
       }),
@@ -2290,12 +2290,32 @@ USE WHEN: Task can run independently, you need to do multiple things at once.
 DO NOT USE FOR: Simple lookups, single-page tasks, anything you can do in 2-3 tool calls.
 
 **Workflow:**
-1. \`spawn_agent({ task: "...", working_dir: "~/my-project" })\` → spawn with working dir
-2. \`sub_agent_status({ id: "sub-1" })\` → check progress
-3. When complete: \`file_list()\` or \`file_read()\` to access outputs from \`working_dir\`
+1. \`spawn_agent({ task: "...", working_dir: "~/my-project", depth: "standard" })\` → returns agent ID
+2. **BE PATIENT** — sub-agent has its own step budget and will run until done or timeout
+3. \`sub_agent_status({ id: "sub-1" })\` → check progress (shows steps used, budget remaining)
+4. When \`status: "completed"\` → access outputs from \`working_dir\`
+5. When \`status: "killed"\` → partial result is preserved in status output
 
-**Depth options:** "quick" (5 steps), "standard" (15 steps), "deep" (30 steps).
-**Tip:** Use same \`working_dir\` as your project so you can read sub-agent outputs with \`file_read()\`.
+**Patience Guidelines:**
+- **Wait for completion** — sub-agents have strict budgets and WILL finish
+- Depth budgets: "quick"=5 steps, "standard"=15 steps, "deep"=30 steps
+- Each tool call = 1 step. Research tasks typically use 5-10 steps.
+- Only kill if: (1) No progress for 60+ seconds, (2) Steps exhausted but still running, (3) User requests cancel
+
+**When to Kill:**
+- \`sub_agent_status\` shows same step count for 3+ consecutive checks
+- Steps used >= budget but agent still running
+- Sub-agent is clearly off-track (wrong site, wrong task)
+
+**Partial Results:**
+- If you kill a sub-agent, the partial result is preserved in status
+- Read it before starting fresh — you may have useful findings already
+- Example: \`sub_agent_status({ id: "sub-1" })\` → check "Result:" section
+
+**Accessing Outputs:**
+- Use same \`working_dir\` as sub-agent: \`file_list({ path: "~/my-project" })\`
+- Sub-agent saves files to its working directory
+- Example: \`file_read({ path: "~/my-project/research-findings.md" })\`
 
 ### TEAM WORKFLOW (PARALLEL CODING)
 USE WHEN: Large coding task with independent modules, multiple files need simultaneous changes.

@@ -198,6 +198,11 @@ You have a LIMITED step budget — be efficient. Do NOT visit every link. Pick t
 3. **text({ grep: "key term" })** → extract what you need. Do NOT read entire pages.
 4. If you have enough info, stop and synthesize. Don't keep searching.
 
+### Incremental Output Rule
+**IMPORTANT:** Provide synthesis incrementally. After each major finding, summarize what you learned.
+If you are interrupted/killed, your last synthesis will be preserved for the parent agent.
+Do NOT wait until the end to write your findings — summarize as you go.
+
 ### Rules
 1. **Scope**: Only research what you were assigned. Do not expand scope.
 2. **Efficiency**: Prefer grep over full-page reads. 1-3 good sources > 5 shallow ones.
@@ -215,14 +220,20 @@ const CODING_CONTRACT = `## Sub-Agent Contract: Coding
 
 You are a coding sub-agent. Your ONE job is the specific coding task assigned to you.
 
+### Incremental Output Rule
+**IMPORTANT:** Write files incrementally. Save working code frequently, not just at the end.
+If you are interrupted/killed, your saved files will be preserved for the parent agent.
+Do NOT wait until you're "done" to write files — save progress as you go.
+
 ### Rules
 1. **Scope**: Implement only what you were assigned. Do not modify unrelated files.
 2. **Contracts First**: Read any shared contracts/interfaces before writing code.
 3. **Quality**: Write clean, typed, testable code. Match existing code style.
 4. **Files**: Work in your assigned working directory. List files before reading.
-5. **Tests**: If the task involves testable code, include basic tests.
-6. **Tab**: You have ONE dedicated browser tab (for docs lookup only). Stay on task.
-7. **Done**: When finished, state "CODING COMPLETE:" and list every file you touched.
+5. **Save Often**: Write partial implementations — they're valuable even if incomplete.
+6. **Tests**: If the task involves testable code, include basic tests.
+7. **Tab**: You have ONE dedicated browser tab (for docs lookup only). Stay on task.
+8. **Done**: When finished, state "CODING COMPLETE:" and list every file you touched.
 
 ### Output Format
 - List files created/modified
@@ -403,17 +414,31 @@ export function killSubAgent(id: string, browserCtx: BrowserContext): string {
   if (!agent) return `❌ Sub-agent "${id}" not found.`;
   if (agent.status !== 'running') return `ℹ️ ${id} is already ${agent.status}.`;
 
+  // Phase 9.13: Preserve partial result before aborting
+  // The result field is updated incrementally during runSubAgent, so we capture it here
+  const partialResult = agent.result;
+  const partialToolsUsed = [...agent.toolsUsed];
+
   agent.abortController?.abort();
   agent.status = 'killed';
   agent.error = 'Killed by parent agent';
   agent.finishedAt = Date.now();
+
+  // Preserve partial result if available (shows what sub-agent found before being killed)
+  if (partialResult && partialResult.length > 0) {
+    agent.result = `[KILLED — Partial Result]\n${partialResult}`;
+  } else if (partialToolsUsed.length > 0) {
+    agent.result = `[KILLED — No synthesis yet] Used ${partialToolsUsed.length} tools: ${[...new Set(partialToolsUsed)].join(', ')}`;
+  }
+
   releaseSubAgentTab(agent, browserCtx);
   cleanupSession(agent.sessionId);
   purgeSession(agent.sessionId);
   clearHistory(agent.sessionId);
 
   const duration = ((agent.finishedAt - agent.startedAt) / 1000).toFixed(1);
-  return `🛑 Killed ${id} after ${duration}s. ${agent.toolsUsed.length} tool calls completed.`;
+  const partialHint = agent.result ? ' Partial result preserved — check status for details.' : '';
+  return `🛑 Killed ${id} after ${duration}s. ${partialToolsUsed.length} tool calls completed.${partialHint}`;
 }
 
 // ─── Status ───
@@ -429,6 +454,21 @@ export function getSubAgentStatus(id?: string): string {
       `${statusEmoji} ${agent.id} [${agent.taskType}, depth=${agent.depth}] — ${agent.status} (${duration.toFixed(1)}s)`,
       `Task: ${agent.task.slice(0, 120)}`,
     ];
+
+    // Phase 9.13: Show budget usage for running agents
+    if (agent.status === 'running') {
+      const preset = DEPTH_PRESETS[agent.depth];
+      const stepsUsed = agent.metrics?.steps ?? agent.toolsUsed.length;
+      const stepsLeft = preset.maxSteps - stepsUsed;
+      lines.push(`Budget: ${stepsUsed}/${preset.maxSteps} steps used, ${Math.max(0, stepsLeft)} remaining`);
+
+      // Show recent tools as activity indicator
+      const recentTools = [...new Set(agent.toolsUsed)].slice(-5);
+      if (recentTools.length > 0) {
+        lines.push(`Recent tools: ${recentTools.join(', ')}`);
+      }
+    }
+
     if (agent.workingDir) lines.push(`Working Dir: ${agent.workingDir}`);
     if (agent.toolsUsed.length > 0) lines.push(`Tools: ${agent.toolsUsed.length} calls (${[...new Set(agent.toolsUsed)].join(', ')})`);
     if (agent.result) {
@@ -438,7 +478,14 @@ export function getSubAgentStatus(id?: string): string {
       lines.push(`Result:\n${agent.result.length > maxLen ? agent.result.slice(0, maxLen) + `\n... (${agent.result.length} chars total — full result saved to file if applicable)` : agent.result}`);
     }
     if (agent.error) lines.push(`Error: ${agent.error}`);
-    if (agent.status === 'running') lines.push(`💡 Use kill_agent("${agent.id}") to stop.`);
+
+    // Contextual hints based on status
+    if (agent.status === 'running') {
+      const preset = DEPTH_PRESETS[agent.depth];
+      lines.push(`💡 Wait for completion. Budget: ${preset.maxSteps} steps max. Use kill_agent({ id: "${agent.id}" }) only if stuck.`);
+    } else if (agent.status === 'killed') {
+      lines.push(`💡 Sub-agent was killed. Check result above for partial findings.`);
+    }
     // Add hint for accessing sub-agent outputs
     if (agent.status === 'completed' && agent.workingDir) {
       lines.push(`📁 Access outputs: file_list({ path: "${agent.workingDir}" }) or file_read({ path: "${agent.workingDir}/<filename>" })`);
@@ -605,6 +652,15 @@ Save outputs here with file_write({ path: "filename.md", content: "..." }).`;
         const stepText = (event.text || '').trim();
         if (stepText.length > 0) {
           stepTexts.push(stepText);
+        }
+
+        // Phase 9.13: Preserve partial result incrementally so it survives if killed mid-run
+        // Build partial result from accumulated step texts + tools used
+        const partialResult = stepTexts.join('\n\n').trim();
+        if (partialResult.length > 0) {
+          agentTask.result = partialResult;
+        } else if (agentTask.toolsUsed.length > 0) {
+          agentTask.result = `[Partial] Used ${agentTask.toolsUsed.length} tools: ${[...new Set(agentTask.toolsUsed)].slice(-5).join(', ')}`;
         }
 
         // Extract URL from tool calls (navigate, search, open, etc.)
