@@ -49,16 +49,15 @@ We designed Tappi differently from the ground up.
 
 ### 1. Referenced Element Indexing
 
-Most AI browsers dump entire DOM trees into context. We index elements once and refer to them by ID:
+Most AI browsers dump entire DOM trees into context — 50KB of HTML, 12,500+ tokens, just to "see" the page.
 
-```
-Agent: "I see element e42 is the search box"
-You: "Click e42 and type 'tappi browser'"
-```
+Tappi indexes elements once and the agent references them by ID internally. When you ask *"Find the best price for this product"*, the agent:
 
-A click command becomes `click e42` — 3 tokens. Not 500. Not 12,000.
+1. Indexes interactive elements on the page
+2. Identifies search boxes, buttons, links by their indexed IDs
+3. Executes clicks and types using compact references like `click e42`
 
-This alone saves 80-90% of tokens on page interaction tasks.
+**Result:** 3-10x fewer tokens than DOM-dumping approaches.
 
 ### 2. Aggressive Context Management
 
@@ -88,23 +87,23 @@ Same task. Same result. **7x cheaper.**
 
 And because Tappi doesn't need to parse giant DOM dumps, it's genuinely faster — often faster than doing it manually.
 
-## What You Can Actually Do
+## What Can You Do?
 
-Everything Comet and Atlas can do:
+Everything Comet and Atlas can do — plus what they can't:
 
-✅ Research and summarize any page
-✅ Fill forms, complete workflows, book reservations
-✅ Shop, compare products, find best prices
-✅ Manage tabs, bookmarks, downloads
-✅ Schedule recurring tasks with cron
-✅ Take screenshots and record tabs
+**Core Browsing:**
+- Research and summarize any page
+- Fill forms, complete workflows, book reservations
+- Shop, compare products, find best prices
+- Manage tabs, bookmarks, downloads
+- Schedule recurring tasks with cron
+- Take screenshots and record tabs
 
-Plus what they can't:
-
-✅ **Code with multi-agent teams** — parallel spawning with Git worktree isolation
-✅ **Run shell commands** — full terminal access from the agent
-✅ **Control via CLI or HTTP API** — automate from scripts, integrate with your tools
-✅ **Self-host** — zero cloud dependency, everything runs locally
+**Developer Power:**
+- Code with multi-agent teams (parallel spawning)
+- Run shell commands from the agent
+- Control via CLI or HTTP API
+- Self-host, zero cloud dependency
 
 ### Developer Mode
 
