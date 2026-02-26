@@ -28,7 +28,7 @@ Tappi is a Chrome-based desktop browser with a built-in AI agent that uses **3-1
 | **Shell Access** | ✅ Full | ❌ No | ❌ No |
 | **Parallel Agents** | ✅ Yes | ❌ No | ❌ Limited |
 
-**The Comet problem:** The Verge found that Perplexity's Comet took *two minutes* to unsubscribe from emails — a task a human could do in 30 seconds. That's not automation. That's theater.
+**The Comet problem:** The Verge found that Perplexity's Comet took *two minutes* to unsubscribe from emails - a task a human could do in 30 seconds. That's not automation. That's theater.
 
 **Tappi is different.** Our referenced element indexing means click commands like `click e42` instead of 500-token DOM selectors. We aggressively write context to disk and let you grep it on demand. The result: genuinely faster automation that costs less to run.
 
@@ -38,7 +38,7 @@ Tappi is a Chrome-based desktop browser with a built-in AI agent that uses **3-1
 
 ### Referenced Element Indexing
 
-Most AI browsers dump entire DOM trees into the LLM context — 50KB of HTML, 12,500+ tokens, just to "see" the page.
+Most AI browsers dump entire DOM trees into the LLM context - 50KB of HTML, 12,500+ tokens, just to "see" the page.
 
 Tappi indexes elements once and the agent references them by ID internally. When you ask *"Find the best price for this product"*, the agent:
 1. Indexes interactive elements on the page
@@ -52,20 +52,20 @@ Tappi indexes elements once and the agent references them by ID internally. When
 Long conversations get written to disk. The agent greps files instead of loading them:
 
 ```
-Agent: "I found the function in conversation-turn-47.md — grep shows it's on line 234"
+Agent: "I found the function in conversation-turn-47.md - grep shows it's on line 234"
 ```
 
 Load full files when needed (up to 10K tokens). Otherwise: grep first, load later.
 
 ### Native Browser Automation
 
-Tappi uses Chrome DevTools Protocol (CDP) directly — not Selenium, not Puppeteer. The automation *is* the browser. No fingerprinting possible because there's nothing to detect.
+Tappi uses Chrome DevTools Protocol (CDP) directly - not Selenium, not Puppeteer. The automation *is* the browser. No fingerprinting possible because there's nothing to detect.
 
 ---
 
 ## What Can You Do?
 
-Everything Comet and Atlas can do — plus what they can't:
+Everything Comet and Atlas can do - plus what they can't:
 
 **Core Browsing:**
 - Research and summarize any page
@@ -139,7 +139,7 @@ Bring your own key. No lock-in.
 | **Coding** | Codex 5.3 | Optimized for code generation |
 | **Free** | Ollama (local) | Runs on your hardware, zero cost |
 
-The agent harness works well with inexpensive models — you don't need Opus for most tasks.
+The agent harness works well with inexpensive models - you don't need Opus for most tasks.
 
 ---
 
@@ -233,9 +233,9 @@ curl -N \
 
 Toggle **Developer Mode** in Settings to unlock:
 
-- **Shell access** — agent can run `exec` commands
-- **Full filesystem** — read/write any file on your machine
-- **Unrestricted tools** — all 47+ tools available
+- **Shell access** - agent can run `exec` commands
+- **Full filesystem** - read/write any file on your machine
+- **Unrestricted tools** - all 47+ tools available
 
 This turns Tappi into something like OpenClaw running natively inside a browser. Use responsibly.
 
@@ -271,7 +271,7 @@ The CLI and API work identically across all platforms.
 
 We have no VC funding. No board demanding growth metrics. No advertising business model to protect.
 
-This is a **work of passion** — built because we wanted an AI browser that actually works, doesn't spy on us, and doesn't cost a fortune.
+This is a **work of passion** - built because we wanted an AI browser that actually works, doesn't spy on us, and doesn't cost a fortune.
 
 **Contributions welcome.** File issues, submit PRs, join the conversation.
 
