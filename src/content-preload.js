@@ -410,6 +410,45 @@ function extractText(selector, grep) {
   return fullText.slice(0, maxLen - 50) + '\n... (' + allLines.length + ' lines total — use grep or selector)';
 }
 
+/**
+ * indexLinks: Extract ALL links from the page with full hrefs.
+ * Unlike text() which shows visual URLs (truncated by Google SERP),
+ * this returns the actual href attributes — complete with paths, query params, fragments.
+ * 
+ * @param grep Optional filter - only return links where href or text matches
+ * @returns JSON string with array of {href, text}
+ */
+function indexLinks(grep) {
+  const links = Array.from(document.links)
+    .filter(l => l.href && l.href.startsWith('http'))
+    .map(l => ({
+      href: l.href,
+      text: (l.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 100)
+    }))
+    // De-dup by href
+    .filter((l, i, arr) => arr.findIndex(x => x.href === l.href) === i)
+    .slice(0, 50);
+
+  if (links.length === 0) {
+    return JSON.stringify({ error: 'No HTTP links found on this page.' });
+  }
+
+  // Grep filter
+  if (grep) {
+    const grepLower = grep.toLowerCase();
+    const filtered = links.filter(l => 
+      l.href.toLowerCase().includes(grepLower) || 
+      l.text.toLowerCase().includes(grepLower)
+    );
+    if (filtered.length === 0) {
+      return JSON.stringify({ error: 'No links matching "' + grep + '".' });
+    }
+    return JSON.stringify({ links: filtered, total: links.length });
+  }
+
+  return JSON.stringify({ links: links, total: links.length });
+}
+
 function clickElement(idx) {
   const el = deepQueryStamp(document, idx);
   if (!el) return JSON.stringify({ error: 'Element [' + idx + '] not found. Run elements to re-index.' });
@@ -862,6 +901,7 @@ function hoverAtPoint(x, y) {
 
 contextBridge.exposeInMainWorld('__tappi', {
   indexElements: function(filter, grep) { return indexElements(filter, grep); },
+  indexLinks: function(grep) { return indexLinks(grep); },
   getElementPosition: getElementPosition,
   focusElement: focusElement,
   checkElement: checkElement,

@@ -318,6 +318,17 @@ async function handleRequest(
     }
   }
 
+  // ── GET /api/tabs/:id/links ──────────────────────────────────────────────────
+  {
+    const m = matchRoute('/api/tabs/:id/links', urlPath);
+    if (method === 'GET' && m) {
+      const wc = tabManager.getWebContentsForTab(m.id);
+      if (!wc) return err(res, 404, 'Tab not found');
+      const result = await pageTools.pageLinks(wc, query.grep || undefined);
+      return json(res, 200, { result });
+    }
+  }
+
   // ── POST /api/tabs/:id/click ──────────────────────────────────────────────────
   {
     const m = matchRoute('/api/tabs/:id/click', urlPath);

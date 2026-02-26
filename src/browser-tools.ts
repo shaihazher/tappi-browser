@@ -522,13 +522,13 @@ export async function bSearch(ctx: BrowserContext, args: string[]): Promise<stri
   if (activeId && activeId === ctx.tabManager.ariaTabId) {
     const tabId = ctx.tabManager.createTab(searchUrl, undefined, { background: true });
     ctx.tabManager.setAgentTarget(tabId); // Auto-target the new tab
-    return `Searching: "${query}" (${engine}) — opened in background tab`;
+    return `Searching: "${query}" (${engine}) — opened in background tab\n\n💡 On SERPs, use elements({ grep: 'keyword' }) → click(index) for links. text() shows visual URLs (missing paths/params). elements() has full hrefs.`;
   }
 
   const wc = ctx.tabManager.activeWebTabWebContents;
   if (!wc) return 'No active tab.';
   wc.loadURL(searchUrl);
-  return `Searching: "${query}" (${engine})`;
+  return `Searching: "${query}" (${engine})\n\n💡 On SERPs, use elements({ grep: 'keyword' }) → click(index) for links. text() shows visual URLs (missing paths/params). elements() has full hrefs.`;
 }
 
 export async function bBackForward(ctx: BrowserContext, args: string[]): Promise<string> {

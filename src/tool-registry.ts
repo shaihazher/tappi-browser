@@ -144,6 +144,17 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
       },
     }),
 
+    links: tool({
+      description: 'List ALL page links with full hrefs. Unlike text() which shows visual URLs (truncated on Google SERPs), this returns actual href attributes with complete paths, query params, and fragments. Use grep to filter by URL or link text.',
+      inputSchema: z.object({
+        grep: z.string().optional().describe('Filter links where href or text contains this string'),
+        tab: z.number().optional().describe('Tab index (0-based) to target — omit for current/agent-targeted tab'),
+      }),
+      execute: async ({ grep, tab }: { grep?: string; tab?: number }) => {
+        return pageTools.pageLinks(getWC(tab), grep);
+      },
+    }),
+
     click: tool({
       description: 'Click an element by its index number from the elements list.',
       inputSchema: z.object({
@@ -347,7 +358,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
           const wc = getWC();
           wc.loadURL(searchUrl);
           await browserTools.waitForLoad(wc, 4000);
-          return `Searching: "${query}" (${engine}) — loaded in locked tab`;
+          return `Searching: "${query}" (${engine}) — loaded in locked tab\n\n💡 On SERPs, use elements({ grep: 'keyword' }) → click(index) for links. text() shows visual URLs (missing paths/params). elements() has full hrefs.`;
         }
         return browserTools.bSearch(browserCtx, [query]);
       },

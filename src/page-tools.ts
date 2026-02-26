@@ -446,3 +446,37 @@ export async function pageWait(ms: number): Promise<string> {
   await sleep(ms);
   return `Waited ${ms}ms`;
 }
+
+/**
+ * Extract ALL links from the page with full hrefs.
+ * Unlike text() which shows visual URLs (truncated on SERPs),
+ * this returns actual href attributes with full paths/params.
+ */
+export async function pageLinks(wc: WebContents, grep?: string): Promise<string> {
+  const result = await callPreload(wc, 'indexLinks', grep || null);
+  
+  if (result.error) return result.error;
+  
+  const links = result.links || [];
+  const total = result.total || links.length;
+  
+  if (links.length === 0) {
+    return grep ? `No links matching "${grep}".` : 'No HTTP links found.';
+  }
+  
+  const lines = links.map((l: any, i: number) => `[${i}] ${l.text || '(no text)'}\n    → ${l.href}`);
+  
+  if (grep) {
+    lines.unshift(`[grep: "${grep}" — ${links.length} of ${total} links]`);
+  } else if (total > links.length) {
+    lines.push(`(${total - links.length} more links — use grep to filter)`);
+  }
+  
+  // Add helpful hint for SERPs
+  const hasGoogle = links.some((l: any) => l.href.includes('google.com/search'));
+  if (hasGoogle) {
+    lines.push('\n💡 Tip: Use elements({ grep: "keyword" }) to click links by index.');
+  }
+  
+  return lines.join('\n');
+}
