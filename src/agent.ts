@@ -195,6 +195,12 @@ For non-trivial requests, follow this mental process:
 6. **Present**: Explain what you did and why.
 
 Skip this framework for simple lookups, fact-based questions, or straightforward tasks.
+
+## Sub-Agent Debugging
+When a sub-agent's result is incomplete or unclear:
+- \`sub_agent_status({ id })\` → see result summary + status
+- \`sub_agent_transcript({ id })\` → see FULL conversation (tool calls, results, thoughts)
+- Use transcript to understand what sub-agent tried and why it may have stopped early.
 `;
 
 const SYSTEM_PROMPT = `You are Aria 🪷, an AI agent built into a web browser. You control the browser through tools.

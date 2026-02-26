@@ -31,7 +31,7 @@ import { createTools, TOOL_USAGE_GUIDE } from './tool-registry';
 import * as browserTools from './browser-tools';
 import * as httpTools from './http-tools';
 import type { BrowserContext } from './browser-tools';
-import { addMessage, getWindow, clearHistory, type ChatMessage } from './conversation';
+import { addMessage, getWindow, getFullHistory, clearHistory, type ChatMessage } from './conversation';
 import { purgeSession } from './output-buffer';
 import { cleanupSession } from './shell-tools';
 
@@ -49,6 +49,7 @@ export interface SubAgentTask {
   assignedTabId?: string;   // dedicated browser tab for this sub-agent
   abortController?: AbortController; // Phase 9.12: for kill support
   result?: string;
+  transcript?: ChatMessage[]; // Phase 9.097: full conversation history (for debugging/audit)
   error?: string;
   startedAt: number;
   finishedAt?: number;
@@ -434,6 +435,9 @@ export function killSubAgent(id: string, browserCtx: BrowserContext): string {
     agent.result = `[KILLED — No synthesis yet] Used ${partialToolsUsed.length} tools: ${[...new Set(partialToolsUsed)].join(', ')}`;
   }
 
+  // Phase 9.097: Preserve transcript before clearing
+  agent.transcript = getFullHistory(agent.sessionId);
+
   releaseSubAgentTab(agent, browserCtx);
   cleanupSession(agent.sessionId);
   purgeSession(agent.sessionId);
@@ -504,6 +508,11 @@ export function getSubAgentStatus(id?: string): string {
     } else if (agent.status === 'completed' && agent.workingDir) {
       lines.push(`📁 Access outputs: file_list({ path: "${agent.workingDir}" }) or file_read({ path: "${agent.workingDir}/<filename>" })`);
     }
+
+    // Phase 9.097: Mention transcript availability for debugging
+    if (agent.transcript && agent.transcript.length > 0) {
+      lines.push(`📝 Full transcript available (${agent.transcript.length} messages) — use sub_agent_transcript({ id: "${id}" }) to inspect.`);
+    }
     return lines.join('\n');
   }
 
@@ -515,6 +524,21 @@ export function getSubAgentStatus(id?: string): string {
     const duration = ((a.finishedAt || Date.now()) - a.startedAt) / 1000;
     return `${statusEmoji} ${a.id} [${a.taskType}, ${a.depth}] ${a.task.slice(0, 60)}${a.task.length > 60 ? '...' : ''} (${duration.toFixed(1)}s, ${a.toolsUsed.length} tools)`;
   }).join('\n');
+}
+
+// ─── Transcript Access (Phase 9.097) ───
+
+/**
+ * Get the full transcript for a sub-agent (tool calls, results, thoughts).
+ * Useful when sub-agent stopped mid-run or result is incomplete.
+ */
+export function getSubAgentTranscript(id: string): { transcript: ChatMessage[] | null; error?: string } {
+  const agent = activeAgents.get(id);
+  if (!agent) return { transcript: null, error: `Sub-agent "${id}" not found.` };
+  if (!agent.transcript || agent.transcript.length === 0) {
+    return { transcript: null, error: `No transcript available for ${id}.` };
+  }
+  return { transcript: agent.transcript };
 }
 
 // ─── Tab Release ───
@@ -893,6 +917,9 @@ Timezone: ${tz}
     // Release the dedicated tab
     releaseSubAgentTab(agentTask, browserCtx);
 
+    // Phase 9.097: Preserve full transcript before clearing (for main agent audit)
+    agentTask.transcript = getFullHistory(sessionId);
+
     // Cleanup session resources
     cleanupSession(sessionId);
     purgeSession(sessionId);
@@ -975,8 +1002,14 @@ When finished, provide:
 - Key details with sources (for research) or files touched (for coding)
 - Then STOP — do not keep searching after you have a good answer
 
-## Problem-Solving
-If stuck: re-read your assignment → identify what's blocking → try 1-2 alternatives → summarize partial results if still stuck.
+## Problem-Solving Framework
+1. **Understand**: Re-read your assignment. What's the exact deliverable?
+2. **Plan**: Map 2-3 approaches. Pick the one that fits your step budget.
+3. **Execute**: Work efficiently. Save progress incrementally (files, synthesis).
+4. **Verify**: Did you complete the assignment? If not, summarize what's missing.
+5. **Report**: Your lead needs a clear answer. Format: summary + key findings + sources/files.
+
+Skip this for trivial lookups. Use it for research, coding, or multi-step tasks.
 
 ${TOOL_USAGE_GUIDE}
 `;

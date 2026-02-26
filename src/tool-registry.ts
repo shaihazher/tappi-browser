@@ -1436,6 +1436,46 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
       }),
       execute: async ({ id }: { id: string }) => subAgent.killSubAgent(id, browserCtx),
     }),
+
+    sub_agent_transcript: tool({
+      description: `Get the FULL transcript of a sub-agent (all messages, tool calls, tool results). USE WHEN: (1) Sub-agent result is incomplete or unclear, (2) Debugging why sub-agent stopped, (3) You need to see intermediate tool results. Returns: Array of all messages in conversation order. Example: sub_agent_transcript({ id: "sub-1" })`,
+      inputSchema: z.object({
+        id: z.string().describe('Sub-agent ID (e.g. "sub-1")'),
+      }),
+      execute: async ({ id }: { id: string }) => {
+        const result = subAgent.getSubAgentTranscript(id);
+        if (result.error) return result.error;
+        if (!result.transcript) return 'No transcript available.';
+        // Format transcript for readability
+        const lines: string[] = [`📝 Transcript for ${id} (${result.transcript.length} messages):`];
+        for (const msg of result.transcript) {
+          if ('role' in msg) {
+            const role = msg.role;
+            if (role === 'user') {
+              lines.push(`\n[USER]: ${(msg as any).content}`);
+            } else if (role === 'assistant') {
+              const content = (msg as any).content;
+              if (typeof content === 'string') {
+                lines.push(`\n[ASSISTANT]: ${content.slice(0, 500)}${content.length > 500 ? '...' : ''}`);
+              } else if (Array.isArray(content)) {
+                // Tool calls
+                for (const part of content) {
+                  if (part.type === 'tool-call') {
+                    lines.push(`\n[TOOL CALL]: ${part.toolName}(${JSON.stringify(part.args).slice(0, 200)})`);
+                  } else if (part.type === 'text') {
+                    lines.push(`\n[ASSISTANT]: ${part.text?.slice(0, 300)}${(part.text?.length || 0) > 300 ? '...' : ''}`);
+                  }
+                }
+              }
+            } else if (role === 'tool') {
+              const toolResult = (msg as any).content;
+              lines.push(`\n[TOOL RESULT]: ${typeof toolResult === 'string' ? toolResult.slice(0, 500) : JSON.stringify(toolResult).slice(0, 500)}`);
+            }
+          }
+        }
+        return lines.join('\n');
+      },
+    }),
   };
 }
 
