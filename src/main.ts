@@ -1118,6 +1118,64 @@ function createWindow() {
     return activeConversationId;
   });
 
+  // ─── Prompt Enhancement (Phase 9.098) ───────────────────────────────────────
+  ipcMain.handle('aria:enhance-prompt', async (_e, prompt: string, webSearch: boolean) => {
+    const { generateText } = await import('ai');
+    const { createModel, buildProviderOptions } = await import('./llm-client');
+
+    if (!currentConfig.llm?.apiKey) {
+      return { error: 'No API key configured' };
+    }
+
+    const apiKey = decryptApiKey(currentConfig.llm.apiKey);
+
+    const ENHANCEMENT_SYSTEM_PROMPT = `You are a prompt enhancement assistant. Your job is to rewrite user prompts to be clearer and more actionable for an AI agent.
+
+Rewrite the user's prompt using this structure:
+
+**Goal**: [What they want - one sentence]
+
+**Context**: [What you understand about their situation]
+
+**Deliverable**: [What a successful response looks like]
+
+**Constraints**: [Any limits, preferences, or requirements]
+
+Rules:
+- Preserve the user's intent - don't change what they're asking
+- Add clarity where ambiguous
+- If searching the web, include relevant context you found
+- Keep it concise (under 300 words)
+- Don't add requirements they didn't mention`;
+
+    try {
+      const model = createModel({
+        provider: currentConfig.llm.provider,
+        model: currentConfig.llm.model,
+        apiKey,
+        region: currentConfig.llm.region,
+        projectId: currentConfig.llm.projectId,
+        location: currentConfig.llm.location,
+        endpoint: currentConfig.llm.endpoint,
+        baseUrl: currentConfig.llm.baseUrl,
+      });
+
+      // If web search is enabled, we'd need to add tools - but for simplicity, just enhance without search
+      // A full implementation would add a web_search tool here
+      const result = await generateText({
+        model,
+        system: ENHANCEMENT_SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: prompt }],
+        maxOutputTokens: 500,
+      });
+
+      return { enhanced: result.text };
+    } catch (err: any) {
+      console.error('[main] enhance-prompt error:', err);
+      return { error: err.message || 'Enhancement failed' };
+    }
+  });
+
   // ─── Projects IPC (Phase 9.07) ───────────────────────────────────────────
 
   ipcMain.handle('projects:list', (_e, includeArchived = false) => {

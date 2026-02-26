@@ -99,6 +99,11 @@ contextBridge.exposeInMainWorld('aria', {
   onTeammateChunk: (cb: (data: { name: string; text: string; done: boolean }) => void) => {
     ipcRenderer.on('team:teammate-chunk', (_e, data) => cb(data));
   },
+
+  // ─── Prompt Enhancement (Phase 9.098) ───
+  enhancePrompt: (prompt: string, webSearch: boolean) =>
+    ipcRenderer.invoke('aria:enhance-prompt', prompt, webSearch),
+
   onTeammateTool: (cb: (data: { name: string; toolName: string; display: string }) => void) => {
     ipcRenderer.on('team:teammate-tool', (_e, data) => cb(data));
   },

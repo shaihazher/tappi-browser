@@ -1585,6 +1585,93 @@ body.dark-mode .aria-msg.assistant .md-content a {
 }
 
 /* ═══════════════════════════════════════════
+   ENHANCE PROMPT (Phase 9.098)
+═══════════════════════════════════════════ */
+
+#aria-enhance-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#aria-enhance-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s, transform 0.1s;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+#aria-enhance-btn:hover {
+  background: rgba(139, 92, 246, 0.15);
+  color: #8b5cf6;
+}
+
+#aria-enhance-btn:active {
+  transform: scale(0.91);
+}
+
+#aria-enhance-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+#aria-enhance-btn.loading {
+  animation: enhance-spin 1s linear infinite;
+}
+
+@keyframes enhance-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+#aria-enhance-search-label {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 10px;
+  transition: background 0.15s;
+}
+
+#aria-enhance-search-label:hover {
+  background: rgba(139, 92, 246, 0.1);
+}
+
+#aria-enhance-search {
+  margin: 0;
+  cursor: pointer;
+}
+
+#aria-enhance-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 4px 16px 0;
+  text-align: left;
+}
+
+#aria-enhance-status.error {
+  color: var(--accent);
+}
+
+#aria-input.enhanced {
+  border-color: #8b5cf6;
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.2);
+}
+
+/* ═══════════════════════════════════════════
    RESPONSIVE — collapse sidebar below 640px
 ═══════════════════════════════════════════ */
 

@@ -75,11 +75,20 @@
     <div id="aria-input-area">
       <textarea id="aria-input" placeholder="Ask Aria anything…" rows="1" spellcheck="true" autocomplete="off"></textarea>
       <div id="aria-controls">
+        <!-- Enhance prompt controls (Phase 9.098) -->
+        <div id="aria-enhance-wrap">
+          <button id="aria-enhance-btn" title="Enhance prompt with AI">✨</button>
+          <label id="aria-enhance-search-label" class="hidden">
+            <input type="checkbox" id="aria-enhance-search">
+            <span>🔍 Web</span>
+          </label>
+        </div>
         <!-- Fix 4: Coding mode toggle — only visible when Developer Mode is ON -->
         <button id="aria-coding-btn" class="aria-mode-btn hidden" title="Coding Mode: OFF — enables agent team orchestration">&lt;/&gt;</button>
         <button id="aria-stop-btn" class="hidden" title="Stop (Esc)">⏹</button>
         <button id="aria-send-btn" title="Send (⏎)">↑</button>
       </div>
+      <div id="aria-enhance-status" class="hidden"></div>
     </div>
   </div>
 

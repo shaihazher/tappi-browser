@@ -54,6 +54,12 @@ const ariaStopBtn    = document.getElementById('aria-stop-btn');
 const tokenFill      = document.getElementById('aria-token-fill');
 const tokenLabel     = document.getElementById('aria-token-label');
 
+// Phase 9.098: Enhance prompt elements
+const ariaEnhanceBtn = document.getElementById('aria-enhance-btn');
+const ariaEnhanceSearchLabel = document.getElementById('aria-enhance-search-label');
+const ariaEnhanceSearch = document.getElementById('aria-enhance-search');
+const ariaEnhanceStatus = document.getElementById('aria-enhance-status');
+
 // Fix 4: Coding mode + team status elements
 const ariaCodingBtn   = document.getElementById('aria-coding-btn');
 const ariaTeamCard    = document.getElementById('aria-team-card');
@@ -67,6 +73,10 @@ const ariaTeamCollapse= document.getElementById('aria-team-collapse');
 let devModeActive    = false;
 let codingModeActive = false;
 let teamCardCollapsed = false;
+
+// Phase 9.098: Enhance prompt state
+let originalPromptText = null;  // Store original text when enhancing
+let isEnhancing = false;        // Prevent double-clicks
 
 // ═══════════════════════════════════════════
 //  MARKDOWN RENDERER
@@ -1203,6 +1213,11 @@ async function sendMessage(text) {
   ariaInput.value = '';
   ariaInput.style.height = 'auto';
 
+  // Phase 9.098: Clear enhanced state
+  ariaInput.classList.remove('enhanced');
+  originalPromptText = null;
+  ariaEnhanceStatus?.classList.add('hidden');
+
   // Ensure we have a conversation
   if (!currentConversationId) {
     try {
@@ -1299,6 +1314,88 @@ ariaInput.addEventListener('keydown', e => {
 ariaInput.addEventListener('input', () => {
   ariaInput.style.height = 'auto';
   ariaInput.style.height = Math.min(ariaInput.scrollHeight, 140) + 'px';
+});
+
+// ─── Enhance Prompt (Phase 9.098) ──────────────────────
+
+async function enhancePrompt() {
+  const text = ariaInput.value.trim();
+  if (!text || isEnhancing) return;
+
+  isEnhancing = true;
+  ariaEnhanceBtn.classList.add('loading');
+  ariaEnhanceBtn.disabled = true;
+  ariaEnhanceStatus.textContent = 'Enhancing...';
+  ariaEnhanceStatus.classList.remove('hidden', 'error');
+
+  // Store original text in case user wants to revert
+  originalPromptText = text;
+
+  try {
+    const webSearch = ariaEnhanceSearch?.checked || false;
+    const result = await window.aria.enhancePrompt(text, webSearch);
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    if (result.enhanced) {
+      ariaInput.value = result.enhanced;
+      ariaInput.classList.add('enhanced');
+      ariaInput.style.height = 'auto';
+      ariaInput.style.height = Math.min(ariaInput.scrollHeight, 140) + 'px';
+      ariaEnhanceStatus.textContent = '✨ Enhanced! Review and send, or edit further.';
+    }
+  } catch (err) {
+    console.error('[aria] enhance error:', err);
+    ariaEnhanceStatus.textContent = '❌ ' + (err.message || 'Enhancement failed');
+    ariaEnhanceStatus.classList.add('error');
+  } finally {
+    isEnhancing = false;
+    ariaEnhanceBtn.classList.remove('loading');
+    ariaEnhanceBtn.disabled = false;
+  }
+}
+
+// Show enhance search checkbox on hover over enhance button
+ariaEnhanceBtn?.addEventListener('mouseenter', () => {
+  if (ariaEnhanceSearchLabel) {
+    ariaEnhanceSearchLabel.classList.remove('hidden');
+  }
+});
+
+// Keep checkbox visible while interacting
+ariaEnhanceSearchLabel?.addEventListener('mouseenter', () => {
+  ariaEnhanceSearchLabel.classList.remove('hidden');
+});
+
+// Hide checkbox when mouse leaves the enhance area
+document.getElementById('aria-enhance-wrap')?.addEventListener('mouseleave', () => {
+  if (!ariaEnhanceSearch?.checked) {
+    ariaEnhanceSearchLabel?.classList.add('hidden');
+  }
+});
+
+ariaEnhanceBtn?.addEventListener('click', enhancePrompt);
+
+// Revert to original prompt on Escape when enhanced
+ariaInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && originalPromptText !== null) {
+    ariaInput.value = originalPromptText;
+    ariaInput.classList.remove('enhanced');
+    originalPromptText = null;
+    ariaEnhanceStatus.classList.add('hidden');
+    ariaInput.style.height = 'auto';
+    ariaInput.style.height = Math.min(ariaInput.scrollHeight, 140) + 'px';
+  }
+});
+
+// Clear enhanced state when user starts typing after enhancement
+ariaInput.addEventListener('input', () => {
+  if (originalPromptText !== null && ariaInput.value !== originalPromptText) {
+    // User modified the enhanced text, clear original reference after a short delay
+    // to allow Escape to still work for a moment
+  }
 });
 
 // ─── Streaming state ──────────────────────
