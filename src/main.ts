@@ -131,7 +131,7 @@ interface TappiConfig {
     profileEnrichHistory?: boolean;
     profileEnrichBookmarks?: boolean;
   };
-  workspacePath?: string;  // User-defined workspace directory (default: ~/tappi-workspace/)
+  workspacePath?: string;  // User-defined workspace directory (default: ~/Documents/Tappi/)
 }
 
 const DEFAULT_CONFIG: TappiConfig = {
@@ -140,7 +140,7 @@ const DEFAULT_CONFIG: TappiConfig = {
   features: { adBlocker: false, darkMode: false },
   developerMode: false,
   privacy: { agentBrowsingDataAccess: false, profileEnrichHistory: true, profileEnrichBookmarks: true },
-  workspacePath: undefined,  // undefined = use default ~/tappi-workspace/
+  workspacePath: undefined,  // undefined = use platform default
 };
 
 function loadConfig(): TappiConfig {

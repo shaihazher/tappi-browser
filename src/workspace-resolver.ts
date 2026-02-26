@@ -4,7 +4,9 @@
  * Priority:
  * 1. Project working_dir (coding mode) — passed as parameter
  * 2. User-configured workspace path (from config.json)
- * 3. Default: ~/tappi-workspace/
+ * 3. Platform-appropriate default:
+ *      - macOS/Linux: ~/Documents/Tappi/
+ *      - Windows: Documents\Tappi\
  */
 
 import * as path from 'path';
@@ -13,6 +15,31 @@ import * as fs from 'fs';
 
 // Config path for workspace setting
 const CONFIG_DIR = path.join(os.homedir(), '.tappi-browser');
+
+/**
+ * Get the platform-appropriate default workspace directory.
+ * Uses Documents folder for cross-platform compatibility.
+ */
+function getDefaultWorkspace(): string {
+  const home = os.homedir();
+  
+  // Platform-specific Documents folder
+  // On all major platforms, the Documents folder is a standard location
+  // macOS: ~/Documents
+  // Windows: C:\Users\<user>\Documents
+  // Linux: ~/Documents (or XDG_DOCUMENTS_DIR if set)
+  
+  let documentsDir: string;
+  
+  // Check for XDG_DOCUMENTS_DIR on Linux
+  if (process.platform === 'linux' && process.env.XDG_DOCUMENTS_DIR) {
+    documentsDir = process.env.XDG_DOCUMENTS_DIR;
+  } else {
+    documentsDir = path.join(home, 'Documents');
+  }
+  
+  return path.join(documentsDir, 'Tappi');
+}
 
 function getConfigPath(): string {
   // Respect profile manager if available
@@ -58,8 +85,8 @@ export function getWorkspacePath(projectWorkingDir?: string): string {
     return expandTilde(config.workspacePath);
   }
 
-  // Priority 3: Default workspace
-  return path.join(os.homedir(), 'tappi-workspace');
+  // Priority 3: Platform-appropriate default workspace
+  return getDefaultWorkspace();
 }
 
 /**
@@ -73,6 +100,6 @@ export function expandTilde(p: string): string {
 }
 
 /**
- * Default workspace path constant.
+ * Default workspace path constant (platform-aware).
  */
-export const DEFAULT_WORKSPACE = path.join(os.homedir(), 'tappi-workspace');
+export const DEFAULT_WORKSPACE = getDefaultWorkspace();

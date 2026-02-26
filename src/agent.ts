@@ -26,6 +26,7 @@ import * as httpTools from './http-tools';
 import * as toolManagerMod from './tool-manager';
 import { loadProfile, loadUserProfileTxt } from './user-profile';
 import type { BrowserContext } from './browser-tools';
+import { getWorkspacePath } from './workspace-resolver';
 
 // Re-export agentEvents from shared bus (avoids circular dep with tool-registry)
 export { agentEvents } from './agent-bus';
@@ -95,6 +96,14 @@ function assembleContext(browserCtx: BrowserContext, llmConfig?: LLMConfig): str
     parts.push(browserTools.getBrowserState(browserCtx));
   } catch (e) {
     parts.push('Page: (unavailable)');
+  }
+
+  // Workspace hint — show configured workspace path
+  try {
+    const workspacePath = getWorkspacePath();
+    parts.push(`Workspace: ${workspacePath}`);
+  } catch {
+    // Non-fatal
   }
 
   // API services context (only if services are configured)
@@ -233,7 +242,7 @@ grep > scroll > read-all. Always.
 **CRITICAL: When you create any file (report, document, export, etc.), you MUST call present_download IMMEDIATELY after file_write. Do not just mention the file in text.**
 
 Example workflow:
-1. file_write(path="~/tappi-workspace/report.md", content="...")
+1. file_write(path="report.md", content="...")  // relative paths resolve to workspace
 2. present_download(path="report.md") <- THIS IS REQUIRED
 
 The user expects to see an interactive download card with buttons. Don't let them down.

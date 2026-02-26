@@ -13,12 +13,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execFile } from 'child_process';
+import { getWorkspacePath } from './workspace-resolver';
 
 // ─── Paths & Config ───
 
 const FFMPEG_PATH = '/opt/homebrew/bin/ffmpeg';
-const SCREENSHOTS_DIR = path.join(os.homedir(), 'tappi-workspace', 'screenshots');
-const RECORDINGS_DIR  = path.join(os.homedir(), 'tappi-workspace', 'recordings');
+
+function getScreenhotsDir(): string { return path.join(getWorkspacePath(), 'screenshots'); }
+function getRecordingsDir(): string { return path.join(getWorkspacePath(), 'recordings'); }
 
 function ffmpegAvailable(): boolean {
   try { return fs.existsSync(FFMPEG_PATH); } catch { return false; }
@@ -28,14 +30,14 @@ function ensureDir(dirPath: string): void {
   if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
 
-const WORKSPACE_DIR = path.join(os.homedir(), 'tappi-workspace');
 const DOWNLOADS_DIR = path.join(os.homedir(), 'Downloads');
 
 function resolvePath(saveTo: string | undefined, defaultDir: string, defaultName: string): string {
+  const workspaceDir = getWorkspacePath();
   if (saveTo) {
     const expanded = saveTo.startsWith('~/') ? path.join(os.homedir(), saveTo.slice(2)) : saveTo;
     const resolved = path.resolve(expanded);
-    if (!resolved.startsWith(WORKSPACE_DIR) && !resolved.startsWith(DOWNLOADS_DIR)) {
+    if (!resolved.startsWith(workspaceDir) && !resolved.startsWith(DOWNLOADS_DIR)) {
       throw new Error('Path must be within workspace or downloads directory');
     }
     ensureDir(path.dirname(resolved));
@@ -77,7 +79,7 @@ export async function captureScreenshot(
   const ts      = Date.now();
 
   const defaultName = `capture-${ts}.${format}`;
-  const savePath = resolvePath(params.saveTo, SCREENSHOTS_DIR, defaultName);
+  const savePath = resolvePath(params.saveTo, getScreenhotsDir(), defaultName);
 
   if (target === 'fullpage') {
     if (!activeWebContents) throw new Error('No active tab to capture full page of.');
@@ -286,7 +288,7 @@ export async function handleRecord(
     const ts          = Date.now();
     const ext         = ffmpegAvailable() ? 'mp4' : 'mp4'; // always .mp4 extension
     const defaultName = `recording-${ts}.${ext}`;
-    const savePath    = resolvePath(params.saveTo, RECORDINGS_DIR, defaultName);
+    const savePath    = resolvePath(params.saveTo, getRecordingsDir(), defaultName);
     const tempDir     = fs.mkdtempSync(path.join(os.tmpdir(), 'tappi-rec-'));
 
     _recording = {

@@ -1845,7 +1845,7 @@ function openSettings() {
       if (workspaceHint) {
         workspaceHint.textContent = config.workspacePath
           ? `Workspace: ${config.workspacePath}`
-          : 'Default: ~/tappi-workspace/';
+          : 'Default: ~/Documents/Tappi/';
       }
     }
     // Agent timeout (Phase 8.40)

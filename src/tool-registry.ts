@@ -66,7 +66,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
 
   // Phase 9.099: Project-scoped default CWD. When a conversation belongs to a
   // project with a working_dir, all exec/file tools use that as their default
-  // instead of ~/tappi-workspace/. This prevents cross-project bleed.
+  // instead of ~/Documents/Tappi/. This prevents cross-project bleed.
   const projectCwd = options?.projectWorkingDir || '';
 
   /** Resolve a file path using the same logic as file-tools (~ expansion + workspace fallback). */

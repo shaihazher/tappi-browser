@@ -12,9 +12,9 @@ import { execSync, spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { captureOutput, appendOutput, finishEntry, grepOutput, listOutputs, getOutputView } from './output-buffer';
+import { getWorkspacePath } from './workspace-resolver';
 
 const DEFAULT_TIMEOUT = 30_000; // 30s for sync exec
-const DEFAULT_CWD = path.join(process.env.HOME || process.env.USERPROFILE || '.', 'tappi-workspace');
 const SHELL = process.env.SHELL || '/bin/bash';
 const HOME = process.env.HOME || process.env.USERPROFILE || '/';
 
@@ -142,7 +142,7 @@ function checkCommandSafety(command: string): string | null {
         command.includes(`"${tildeVersion}"`) || command.includes(`'${tildeVersion}'`) ||
         command.endsWith(tildeVersion)) {
       // Only block if the tilde path IS the protected path, not a subdir of it
-      // e.g., block "rm -rf ~/" but allow "rm -rf ~/tappi-workspace/temp"
+      // e.g., block "rm -rf ~/" but allow "rm -rf ~/Documents/Tappi/temp"
       const cmdParts = command.split(/\s+/);
       for (const part of cmdParts) {
         const cleanPart = part.replace(/^["']|["']$/g, '').replace(/\/+$/, '');
@@ -235,7 +235,7 @@ export function shellExec(
   const safetyError = checkCommandSafety(command);
   if (safetyError) return safetyError;
 
-  const cwd = ensureCwd(options?.cwd || DEFAULT_CWD);
+  const cwd = ensureCwd(options?.cwd || getWorkspacePath());
   const timeout = options?.timeout || DEFAULT_TIMEOUT;
 
   let stdout = '';
@@ -295,7 +295,7 @@ export function shellExecBg(
     return `❌ Max ${MAX_BG_PROCESSES} background processes reached. Kill existing processes first.`;
   }
 
-  const cwd = ensureCwd(options?.cwd || DEFAULT_CWD);
+  const cwd = ensureCwd(options?.cwd || getWorkspacePath());
 
   const child = spawn(SHELL, ['-c', command], {
     cwd,

@@ -459,7 +459,7 @@ HTTP & API:
   api-key get <svc>      Show key preview
   api-key delete <svc>   Remove stored key
 
-Files (workspace: ~/tappi-workspace/):
+Files (relative paths resolve to workspace):
   file write <path> <content>   Create/overwrite file (.md, .csv, .txt, .json, .html, etc.)
   file read <path>              Read file contents
   file head <path> [n]          First n lines (default 20)

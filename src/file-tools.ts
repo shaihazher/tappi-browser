@@ -5,7 +5,7 @@
  * The agent can create markdown, CSV, JSON, text, HTML files —
  * anything it needs to save research, export data, or produce deliverables.
  *
- * Workspace: Configurable via config.json (default: ~/tappi-workspace/)
+ * Workspace: Configurable via config.json (default: ~/Documents/Tappi/)
  * The agent can also access absolute paths when explicitly requested.
  */
 
