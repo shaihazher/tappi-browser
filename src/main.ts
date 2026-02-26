@@ -1727,6 +1727,10 @@ Rules:
         }
       }
     }
+    // Workspace path (Phase 9.13)
+    if (updates.workspacePath !== undefined) {
+      currentConfig.workspacePath = updates.workspacePath || undefined;
+    }
     saveConfig(currentConfig);
     console.log('[config] Saved:', currentConfig.llm.provider, currentConfig.llm.model);
 
