@@ -302,6 +302,29 @@ export async function testConnection(provider: string, config: {
         return { success: false, message: err?.error?.message || `HTTP ${resp.status}` };
       }
 
+      case 'openai-codex': {
+        const token = config.apiKey || '';
+        const accountId = extractChatgptAccountId(token);
+        if (!accountId) {
+          return { success: false, message: 'Invalid ChatGPT OAuth token. Please sign in again.' };
+        }
+
+        const resp = await fetch('https://chatgpt.com/backend-api/codex/models', {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'chatgpt-account-id': accountId,
+            'OpenAI-Beta': 'responses=experimental',
+            'originator': 'codex_cli_rs',
+          },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (resp.ok) {
+          return { success: true, message: 'Connected to OpenAI Codex (ChatGPT OAuth)' };
+        }
+        const err = await resp.json().catch(() => ({})) as any;
+        return { success: false, message: err?.error?.message || `HTTP ${resp.status}` };
+      }
+
       case 'openai':
       case 'openrouter': {
         const baseUrl = provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : 'https://api.openai.com/v1';
@@ -384,6 +407,20 @@ export async function testConnection(provider: string, config: {
 }
 
 // ─── Helpers ───
+
+function extractChatgptAccountId(token: string): string | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length < 2 || !parts[1]) return null;
+    const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
+    const payload = JSON.parse(payloadJson) as Record<string, any>;
+    const auth = payload?.['https://api.openai.com/auth'];
+    const accountId = auth?.chatgpt_account_id;
+    return typeof accountId === 'string' && accountId.length > 0 ? accountId : null;
+  } catch {
+    return null;
+  }
+}
 
 function maskKey(key: string, showStart: number, showEnd: number): string {
   if (key.length <= showStart + showEnd) return key;

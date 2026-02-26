@@ -18,6 +18,9 @@ process.on('uncaughtException', (e) => console.error('[CRASH]', e));
 process.on('unhandledRejection', (e) => console.error('[REJECT]', e));
 import * as path from 'path';
 import * as fs from 'fs';
+import * as http from 'http';
+import { URL } from 'url';
+import { createHash, randomBytes } from 'crypto';
 import { TabManager } from './tab-manager';
 import { executeCommand, getMenu, type ExecutorContext } from './command-executor';
 import type { BrowserContext } from './browser-tools';
@@ -168,6 +171,11 @@ function saveConfig(config: TappiConfig) {
 const ENC_PREFIX = 'enc:';
 const RAW_PREFIX = 'raw:';
 
+// OpenAI Codex OAuth constants (mirrors official Codex login flow)
+const OPENAI_OAUTH_ISSUER = 'https://auth.openai.com';
+const OPENAI_CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
+const OPENAI_CODEX_ORIGINATOR = 'codex_cli_rs';
+
 function encryptApiKey(key: string): string {
   if (!key) return '';
   try {
@@ -217,6 +225,136 @@ function decryptApiKey(stored: string): string {
     console.error('[config] legacy decrypt failed, key unusable');
   }
   return '';
+}
+
+function generatePkcePair(): { verifier: string; challenge: string } {
+  const verifier = randomBytes(32).toString('base64url');
+  const challenge = createHash('sha256').update(verifier).digest('base64url');
+  return { verifier, challenge };
+}
+
+function generateOAuthState(): string {
+  return randomBytes(32).toString('base64url');
+}
+
+function parseOpenAIAuthClaimsFromJwt(jwt: string): Record<string, any> {
+  try {
+    const parts = jwt.split('.');
+    if (parts.length < 2 || !parts[1]) return {};
+    const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
+    const payload = JSON.parse(payloadJson) as Record<string, any>;
+    const namespaced = payload?.['https://api.openai.com/auth'];
+    if (namespaced && typeof namespaced === 'object') return namespaced;
+    return payload;
+  } catch {
+    return {};
+  }
+}
+
+function buildOpenAICodexAuthorizeUrl(redirectUri: string, challenge: string, state: string): string {
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: OPENAI_CODEX_CLIENT_ID,
+    redirect_uri: redirectUri,
+    scope: 'openid profile email offline_access',
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    id_token_add_organizations: 'true',
+    codex_cli_simplified_flow: 'true',
+    state,
+    originator: OPENAI_CODEX_ORIGINATOR,
+  });
+  return `${OPENAI_OAUTH_ISSUER}/oauth/authorize?${params.toString()}`;
+}
+
+async function exchangeOpenAICodexCodeForTokens(code: string, redirectUri: string, verifier: string): Promise<{ idToken: string; accessToken: string; refreshToken: string; }> {
+  const body = new URLSearchParams({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: redirectUri,
+    client_id: OPENAI_CODEX_CLIENT_ID,
+    code_verifier: verifier,
+  });
+
+  const response = await fetch(`${OPENAI_OAUTH_ISSUER}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Token exchange failed (${response.status}): ${text || 'no details'}`);
+  }
+
+  const json = await response.json() as any;
+  if (!json?.id_token || !json?.access_token || !json?.refresh_token) {
+    throw new Error('OAuth token response was incomplete.');
+  }
+
+  return {
+    idToken: json.id_token,
+    accessToken: json.access_token,
+    refreshToken: json.refresh_token,
+  };
+}
+
+async function exchangeOpenAIIdTokenForApiKey(idToken: string, accessToken?: string): Promise<string> {
+  const exchangeWith = async (subjectToken: string, subjectTokenType: string): Promise<{ ok: boolean; status: number; text: string; accessToken?: string }> => {
+    const body = new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+      client_id: OPENAI_CODEX_CLIENT_ID,
+      requested_token: 'openai-api-key',
+      subject_token: subjectToken,
+      subject_token_type: subjectTokenType,
+    });
+
+    const response = await fetch(`${OPENAI_OAUTH_ISSUER}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      return { ok: false, status: response.status, text };
+    }
+
+    const json = await response.json() as any;
+    if (!json?.access_token) {
+      return { ok: false, status: 500, text: 'token endpoint returned success but no access_token' };
+    }
+
+    return { ok: true, status: response.status, text: '', accessToken: json.access_token };
+  };
+
+  // Canonical Codex flow: ID token as subject token.
+  const primary = await exchangeWith(idToken, 'urn:ietf:params:oauth:token-type:id_token');
+  if (primary.ok && primary.accessToken) return primary.accessToken;
+
+  const primaryText = primary.text || '';
+  const normalized = primaryText.toLowerCase();
+
+  // Pragmatic fallback: some tenants/accounts appear to reject id_token as subject token.
+  // Retry once with access_token as subject token type.
+  if (accessToken && primary.status === 401 && (normalized.includes('invalid_subject_token') || normalized.includes('missing organization id'))) {
+    const fallback = await exchangeWith(accessToken, 'urn:ietf:params:oauth:token-type:access_token');
+    if (fallback.ok && fallback.accessToken) return fallback.accessToken;
+
+    const fallbackText = fallback.text || '';
+    const fallbackNormalized = fallbackText.toLowerCase();
+    if (fallback.status === 401 && (fallbackNormalized.includes('missing organization id') || fallbackNormalized.includes('invalid_subject_token'))) {
+      throw new Error('API key minting failed: your ChatGPT token does not currently include a valid API organization. Finish API org onboarding on platform.openai.com (including billing) or sign in with the correct account/workspace, then retry.');
+    }
+
+    throw new Error(`API key exchange failed after fallback (${fallback.status}): ${fallbackText || 'no details'}`);
+  }
+
+  if (primary.status === 401 && (normalized.includes('missing organization id') || normalized.includes('invalid_subject_token'))) {
+    throw new Error('API key minting failed: your ChatGPT token does not currently include a valid API organization. Finish API org onboarding on platform.openai.com (including billing) or sign in with the correct account/workspace, then retry.');
+  }
+
+  throw new Error(`API key exchange failed (${primary.status}): ${primaryText || 'no details'}`);
 }
 
 let currentConfig = DEFAULT_CONFIG;
@@ -481,6 +619,13 @@ function createWindow() {
       // Users can open new tabs via Cmd+T or the + button.
       const ariaId = tabManager.createAriaTab();
       initTabMedia(ariaId);
+      // Debug aria console (same as chrome console-message listener)
+      const ariaWC = tabManager.ariaWebContents;
+      if (ariaWC) {
+        ariaWC.on('console-message', (_e: any, _level: number, message: string) => {
+          console.log('[aria]', message);
+        });
+      }
       console.log('[main] Aria tab created');
 
       // Reuse the most recent empty conversation on startup, or create one if none exist
@@ -510,11 +655,17 @@ function createWindow() {
 
   // Relay agent download_card events to Electron windows (belt-and-suspenders for Electron mode)
   agentEvents.on('download_card', (payload: any) => {
-    try { mainWindow?.webContents.send('agent:present-download', payload); } catch {}
+    console.log('[main] Broadcasting download_card to all windows');
+    // Send to main window (chrome UI / app.js)
+    try { mainWindow?.webContents.send('agent:present-download', payload); } catch (e) { console.error('[main] Error sending to mainWindow:', e); }
+    // Send to Aria BrowserView webContents (aria.js) — belt-and-suspenders alongside tool-registry direct send
     try {
       const ariaWC = tabManager?.ariaWebContents;
-      if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:present-download', payload);
-    } catch {}
+      if (ariaWC && !ariaWC.isDestroyed()) {
+        ariaWC.send('agent:present-download', payload);
+        console.log('[main] Sent download_card to aria webContents');
+      }
+    } catch (e) { console.error('[main] Error sending to aria:', e); }
   });
 
   // Start ad blocker if enabled in config
@@ -1113,6 +1264,181 @@ function createWindow() {
 
   ipcMain.on('overlay:hide', () => {
     tabManager.showAllViews();
+  });
+
+  // ─── OpenAI Codex OAuth (Settings UI) ───
+  let openAICodexOAuthInFlight = false;
+  let openAICodexOAuthServer: http.Server | null = null;
+  let openAICodexOAuthTimeout: NodeJS.Timeout | null = null;
+  let openAICodexOAuthPopup: BrowserWindow | null = null;
+
+  const emitOpenAICodexOAuthStatus = (phase: 'started' | 'progress' | 'success' | 'error', message: string) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send('oauth:openai-codex:status', { phase, message, ts: Date.now() });
+  };
+
+  const finishOpenAICodexOAuthFlow = () => {
+    openAICodexOAuthInFlight = false;
+    if (openAICodexOAuthTimeout) {
+      clearTimeout(openAICodexOAuthTimeout);
+      openAICodexOAuthTimeout = null;
+    }
+    if (openAICodexOAuthServer) {
+      try { openAICodexOAuthServer.close(); } catch {}
+      openAICodexOAuthServer = null;
+    }
+    if (openAICodexOAuthPopup && !openAICodexOAuthPopup.isDestroyed()) {
+      try { openAICodexOAuthPopup.close(); } catch {}
+    }
+    openAICodexOAuthPopup = null;
+  };
+
+  ipcMain.handle('oauth:openai-codex:start', async () => {
+    if (openAICodexOAuthInFlight) {
+      return { success: false, error: 'OAuth flow already in progress.' };
+    }
+
+    const pkce = generatePkcePair();
+    const state = generateOAuthState();
+
+    return await new Promise((resolve) => {
+      const server = http.createServer(async (req, res) => {
+        try {
+          const requestUrl = new URL(req.url || '/', 'http://localhost');
+
+          if (requestUrl.pathname !== '/auth/callback') {
+            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('Not found');
+            return;
+          }
+
+          const returnedState = requestUrl.searchParams.get('state');
+          if (!returnedState || returnedState !== state) {
+            res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end('<h2>State mismatch</h2><p>OAuth state did not match. Please restart login.</p>');
+            emitOpenAICodexOAuthStatus('error', 'OAuth callback rejected (state mismatch).');
+            finishOpenAICodexOAuthFlow();
+            return;
+          }
+
+          const oauthError = requestUrl.searchParams.get('error');
+          if (oauthError) {
+            const description = requestUrl.searchParams.get('error_description') || oauthError;
+            res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(`<h2>Sign-in failed</h2><p>${description}</p>`);
+            emitOpenAICodexOAuthStatus('error', `OAuth failed: ${description}`);
+            finishOpenAICodexOAuthFlow();
+            return;
+          }
+
+          const code = requestUrl.searchParams.get('code');
+          if (!code) {
+            res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end('<h2>Missing code</h2><p>No authorization code was returned.</p>');
+            emitOpenAICodexOAuthStatus('error', 'OAuth callback missing authorization code.');
+            finishOpenAICodexOAuthFlow();
+            return;
+          }
+
+          emitOpenAICodexOAuthStatus('progress', 'Authorization received. Exchanging OAuth tokens…');
+
+          const redirectUri = `http://localhost:${(server.address() as any).port}/auth/callback`;
+          const exchanged = await exchangeOpenAICodexCodeForTokens(code, redirectUri, pkce.verifier);
+
+          // Use ChatGPT OAuth access token directly for Codex backend calls.
+          // This matches OpenClaw/pi-ai behavior and avoids API-org token exchange failures.
+          const accessClaims = parseOpenAIAuthClaimsFromJwt(exchanged.accessToken);
+          const chatgptAccountId = accessClaims?.chatgpt_account_id;
+          if (!chatgptAccountId) {
+            throw new Error('OAuth succeeded, but ChatGPT account metadata was missing from access token. Please retry sign-in with your intended ChatGPT account/workspace.');
+          }
+
+          const model = 'gpt-5.3-codex';
+          applyConfigUpdates({
+            llm: {
+              provider: 'openai-codex',
+              model,
+            },
+            rawApiKey: exchanged.accessToken,
+          } as any);
+
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end('<h2>✅ OpenAI Codex OAuth complete</h2><p>You can close this window and return to Tappi Browser.</p>');
+
+          emitOpenAICodexOAuthStatus('success', 'OpenAI Codex OAuth complete. ChatGPT token saved.');
+          finishOpenAICodexOAuthFlow();
+        } catch (error: any) {
+          const message = error?.message || String(error);
+          try {
+            res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(`<h2>OAuth failed</h2><p>${message}</p>`);
+          } catch {}
+          emitOpenAICodexOAuthStatus('error', `OAuth failed: ${message}`);
+          finishOpenAICodexOAuthFlow();
+        }
+      });
+
+      // Codex OAuth callback uses localhost:1455 in official flow.
+      // Keep this fixed for compatibility with OpenAI's registered redirect expectations.
+      server.listen(1455, '127.0.0.1', async () => {
+        try {
+          const addr = server.address() as any;
+          if (!addr?.port) {
+            throw new Error('Could not bind local OAuth callback server.');
+          }
+
+          openAICodexOAuthInFlight = true;
+          openAICodexOAuthServer = server;
+
+          const redirectUri = `http://localhost:${addr.port}/auth/callback`;
+          const authorizeUrl = buildOpenAICodexAuthorizeUrl(redirectUri, pkce.challenge, state);
+
+          openAICodexOAuthTimeout = setTimeout(() => {
+            emitOpenAICodexOAuthStatus('error', 'OAuth timed out after 10 minutes. Please try again.');
+            finishOpenAICodexOAuthFlow();
+          }, 10 * 60 * 1000);
+
+          openAICodexOAuthPopup = new BrowserWindow({
+            width: 980,
+            height: 760,
+            parent: mainWindow,
+            modal: false,
+            autoHideMenuBar: true,
+            title: 'OpenAI Codex Sign In',
+            webPreferences: {
+              contextIsolation: true,
+              sandbox: true,
+              nodeIntegration: false,
+            },
+          });
+
+          openAICodexOAuthPopup.on('closed', () => {
+            openAICodexOAuthPopup = null;
+            if (openAICodexOAuthInFlight) {
+              emitOpenAICodexOAuthStatus('error', 'OAuth window was closed before completion.');
+              finishOpenAICodexOAuthFlow();
+            }
+          });
+
+          await openAICodexOAuthPopup.loadURL(authorizeUrl);
+          openAICodexOAuthPopup.focus();
+
+          emitOpenAICodexOAuthStatus('started', 'Sign-in window opened in Tappi Browser. Complete ChatGPT login there.');
+          resolve({ success: true, authorizeUrl, redirectUri });
+        } catch (error: any) {
+          finishOpenAICodexOAuthFlow();
+          resolve({ success: false, error: error?.message || String(error) });
+        }
+      });
+
+      server.on('error', (error: any) => {
+        finishOpenAICodexOAuthFlow();
+        const msg = error?.code === 'EADDRINUSE'
+          ? 'Port 1455 is already in use. Close any other active Codex login flow and retry.'
+          : (error?.message || String(error));
+        resolve({ success: false, error: msg });
+      });
+    });
   });
 
   // ─── Settings IPC ───

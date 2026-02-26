@@ -159,6 +159,7 @@
             <label for="setting-provider">Provider</label>
             <select id="setting-provider">
               <option value="anthropic">Anthropic</option>
+              <option value="openai-codex">OpenAI Codex</option>
               <option value="openai">OpenAI</option>
               <option value="google">Google (Gemini)</option>
               <option value="openrouter">OpenRouter</option>
@@ -180,11 +181,20 @@
           </div>
 
           <!-- API Key row (shown for: anthropic, openai, google, openrouter, azure) -->
-          <div class="settings-row provider-field" id="apikey-row" data-providers="anthropic openai google openrouter azure">
+          <div class="settings-row provider-field" id="apikey-row" data-providers="anthropic openai openai-codex google openrouter azure">
             <label for="setting-apikey">API Key</label>
             <div class="input-group">
               <input id="setting-apikey" type="password" placeholder="Enter API key">
               <button id="toggle-apikey" class="input-addon" title="Show/hide">👁</button>
+            </div>
+          </div>
+
+          <!-- OpenAI Codex OAuth sign-in -->
+          <div class="settings-row provider-field" id="openai-codex-oauth-row" data-providers="openai-codex openai" style="align-items:flex-start;">
+            <label>Codex OAuth</label>
+            <div style="display:flex;flex-direction:column;gap:6px;">
+              <button id="openai-codex-oauth-btn" class="small-btn" type="button">Sign in with ChatGPT (Codex OAuth)</button>
+              <div class="settings-hint" id="openai-codex-oauth-status">No active OAuth session.</div>
             </div>
           </div>
 
@@ -253,6 +263,7 @@
               <select id="setting-secondary-provider">
                 <option value="">Same as primary</option>
                 <option value="anthropic">Anthropic</option>
+                <option value="openai-codex">OpenAI Codex</option>
                 <option value="openai">OpenAI</option>
                 <option value="google">Google (Gemini)</option>
                 <option value="openrouter">OpenRouter</option>

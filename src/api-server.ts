@@ -472,33 +472,51 @@ async function handleRequest(
 
     const browserCtx: browserTools.BrowserContext = { window: mainWindow, tabManager, config: cfg };
 
-    const chunkHandler = ({ text, done }: { text: string; done: boolean }) => {
+    let chunkHandler: ((data: { text: string; done: boolean }) => void) | null = null;
+    let downloadCardHandler: ((data: any) => void) | null = null;
+    let toolHandler: ((data: any) => void) | null = null;
+
+    const cleanup = () => {
+      if (chunkHandler) agentEvents.removeListener('chunk', chunkHandler);
+      if (downloadCardHandler) agentEvents.removeListener('download_card', downloadCardHandler);
+      if (toolHandler) agentEvents.removeListener('tool', toolHandler);
+    };
+
+    chunkHandler = ({ text, done }: { text: string; done: boolean }) => {
       try {
         res.write(`data: ${JSON.stringify({ text, done })}\n\n`);
         if (done) {
-          agentEvents.removeListener('chunk', chunkHandler);
+          cleanup();
           res.end();
         }
       } catch {
-        agentEvents.removeListener('chunk', chunkHandler);
+        cleanup();
       }
     };
 
-    const downloadCardHandler = (data: any) => {
+    downloadCardHandler = (data: any) => {
       try {
         res.write(`data: ${JSON.stringify({ type: 'download_card', payload: data })}\n\n`);
       } catch {
-        agentEvents.removeListener('download_card', downloadCardHandler);
+        cleanup();
+      }
+    };
+
+    toolHandler = (data: any) => {
+      try {
+        res.write(`data: ${JSON.stringify({ type: 'tool', payload: data })}\n\n`);
+      } catch {
+        cleanup();
       }
     };
 
     agentEvents.on('chunk', chunkHandler);
     agentEvents.on('download_card', downloadCardHandler);
+    agentEvents.on('tool', toolHandler);
 
     // Cleanup on client disconnect
     req.on('close', () => {
-      agentEvents.removeListener('chunk', chunkHandler);
-      agentEvents.removeListener('download_card', downloadCardHandler);
+      cleanup();
     });
 
     runAgent({
@@ -521,8 +539,7 @@ async function handleRequest(
       agentBrowsingDataAccess: cfg.privacy?.agentBrowsingDataAccess === true,
     }).catch(e => {
       try { res.write(`data: ${JSON.stringify({ text: `❌ ${e.message}`, done: true })}\n\n`); res.end(); } catch {}
-      agentEvents.removeListener('chunk', chunkHandler);
-      agentEvents.removeListener('download_card', downloadCardHandler);
+      cleanup();
     });
 
     return; // response handled by SSE

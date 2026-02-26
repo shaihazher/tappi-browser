@@ -37,6 +37,8 @@ const settingApikey = document.getElementById('setting-apikey');
 const toggleApikey = document.getElementById('toggle-apikey');
 const apikeyStatus = document.getElementById('apikey-status');
 const settingSearch = document.getElementById('setting-search');
+const openaiCodexOauthBtn = document.getElementById('openai-codex-oauth-btn');
+const openaiCodexOauthStatus = document.getElementById('openai-codex-oauth-status');
 
 // Secondary model elements (Phase 8.85)
 const secondaryModelFields = document.getElementById('secondary-model-fields');
@@ -1602,7 +1604,7 @@ const ollamaModelList = document.getElementById('ollama-model-list');
 // Providers that support auto-detect credentials
 const AUTO_DETECT_PROVIDERS = ['bedrock', 'vertex', 'azure', 'ollama'];
 // Providers that need an API key (manual entry)
-const API_KEY_PROVIDERS = ['anthropic', 'openai', 'google', 'openrouter', 'azure'];
+const API_KEY_PROVIDERS = ['anthropic', 'openai-codex', 'openai', 'google', 'openrouter', 'azure'];
 
 /**
  * Show/hide provider-specific fields based on selected provider.
@@ -1628,6 +1630,7 @@ function updateProviderFields(provider) {
   // Update placeholders per provider
   const placeholders = {
     anthropic: { key: 'sk-ant-...', model: 'claude-sonnet-4-6' },
+    'openai-codex': { key: 'sk-...', model: 'gpt-5.3-codex' },
     openai: { key: 'sk-...', model: 'gpt-4o' },
     google: { key: 'AI...', model: 'gemini-2.0-flash' },
     openrouter: { key: 'sk-or-...', model: 'anthropic/claude-sonnet-4-6' },
@@ -1746,6 +1749,65 @@ function esc(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function setOpenAICodexOauthStatus(message, kind = 'info') {
+  if (!openaiCodexOauthStatus) return;
+  openaiCodexOauthStatus.textContent = message;
+  openaiCodexOauthStatus.className = kind === 'success'
+    ? 'settings-hint success'
+    : kind === 'error'
+      ? 'settings-hint error'
+      : 'settings-hint';
+}
+
+if (openaiCodexOauthBtn) {
+  openaiCodexOauthBtn.addEventListener('click', async () => {
+    try {
+      openaiCodexOauthBtn.disabled = true;
+      setOpenAICodexOauthStatus('Starting OAuth flow… opening browser.', 'info');
+
+      const result = await window.tappi.startOpenAICodexOAuth();
+      if (!result?.success) {
+        setOpenAICodexOauthStatus(result?.error || 'Could not start OAuth flow.', 'error');
+        openaiCodexOauthBtn.disabled = false;
+      }
+    } catch (e) {
+      setOpenAICodexOauthStatus(e?.message || 'OAuth start failed.', 'error');
+      openaiCodexOauthBtn.disabled = false;
+    }
+  });
+}
+
+if (window.tappi.onOpenAICodexOAuthStatus) {
+  window.tappi.onOpenAICodexOAuthStatus((status) => {
+    if (!status) return;
+
+    if (status.phase === 'started') {
+      setOpenAICodexOauthStatus(status.message || 'OAuth started. Finish sign-in in browser.', 'info');
+      return;
+    }
+
+    if (status.phase === 'progress') {
+      setOpenAICodexOauthStatus(status.message || 'Completing OAuth…', 'info');
+      return;
+    }
+
+    if (status.phase === 'success') {
+      setOpenAICodexOauthStatus(status.message || 'OpenAI Codex OAuth complete. API key saved.', 'success');
+      apikeyStatus.textContent = '✓ OpenAI API key saved via Codex OAuth';
+      apikeyStatus.className = 'settings-hint success';
+      settingApikey.value = '••••••••';
+      settingApikey.type = 'password';
+      openaiCodexOauthBtn.disabled = false;
+      return;
+    }
+
+    if (status.phase === 'error') {
+      setOpenAICodexOauthStatus(status.message || 'OAuth failed.', 'error');
+      openaiCodexOauthBtn.disabled = false;
+    }
+  });
+}
+
 // Wire credential check buttons
 if (btnCredRecheck) btnCredRecheck.addEventListener('click', () => runCredentialCheck(settingProvider.value));
 if (btnTestConnection) btnTestConnection.addEventListener('click', runTestConnection);
@@ -1766,6 +1828,10 @@ settingProvider.addEventListener('change', async () => {
   settingApikey.placeholder = 'Enter API key';
   apikeyStatus.textContent = hasKey ? '✓ API key saved' : 'No API key set';
   apikeyStatus.className = hasKey ? 'settings-hint success' : 'settings-hint';
+  if (provider === 'openai-codex' || provider === 'openai') {
+    setOpenAICodexOauthStatus('Use Codex OAuth or paste an API key.', 'info');
+    if (openaiCodexOauthBtn) openaiCodexOauthBtn.disabled = false;
+  }
 });
 
 function openSettings() {
@@ -1781,6 +1847,7 @@ function openSettings() {
       settingApikey.placeholder = 'Enter API key';
       apikeyStatus.textContent = config.hasApiKey ? '✓ API key saved' : 'No API key set';
       apikeyStatus.className = config.hasApiKey ? 'settings-hint success' : 'settings-hint';
+      setOpenAICodexOauthStatus('No active OAuth session.', 'info');
       // Cloud provider fields
       if (settingBaseurl) settingBaseurl.value = config.llm.baseUrl || '';
       if (settingEndpoint) settingEndpoint.value = config.llm.endpoint || '';

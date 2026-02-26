@@ -10,7 +10,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { streamText, stepCountIs } from 'ai';
-import { createModel, buildProviderOptions, type LLMConfig } from './llm-client';
+import {
+  createModel,
+  buildProviderOptions,
+  withCodexProviderOptions,
+  logProviderRequestError,
+  type LLMConfig,
+} from './llm-client';
 import { createTools } from './tool-registry';
 import * as browserTools from './browser-tools';
 import type { BrowserContext } from './browser-tools';
@@ -264,13 +270,19 @@ async function executeJob(job: CronJob): Promise<void> {
     addMessage(sessionId, { role: 'user', content: fullTask });
 
     const providerOptions = buildProviderOptions(llmConfig);
+    const callProviderOptions: Record<string, any> = withCodexProviderOptions(
+      llmConfig.provider,
+      { ...providerOptions },
+      CRON_AGENT_PROMPT,
+      CRON_AGENT_PROMPT,
+    );
 
     const result = await streamText({
       model,
       system: CRON_AGENT_PROMPT,
       messages: [{ role: 'user' as const, content: fullTask }],
       tools,
-      ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
+      ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
       stopWhen: stepCountIs(50),
     });
 
@@ -297,7 +309,10 @@ async function executeJob(job: CronJob): Promise<void> {
 
   } catch (err: any) {
     const durationMs = Date.now() - startTime;
-    const errMsg = err?.message || 'Unknown error';
+    if (llmConfig.provider === 'openai-codex') {
+      logProviderRequestError(`cron.${job.name}`, err);
+    }
+    const errMsg = (err?.responseBody || err?.message || 'Unknown error') as string;
 
     job.lastRun = new Date(startTime).toISOString();
     job.lastStatus = 'error';

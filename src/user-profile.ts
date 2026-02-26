@@ -11,11 +11,17 @@
  *   Only injected when agentBrowsingDataAccess is enabled.
  */
 
-import { generateText } from 'ai';
+import { generateText, streamText } from 'ai';
 import * as fs from 'fs';
 import * as path from 'path';
 import Database from 'better-sqlite3';
-import { createModel, type LLMConfig } from './llm-client';
+import {
+  createModel,
+  buildProviderOptions,
+  withCodexProviderOptions,
+  logProviderRequestError,
+  type LLMConfig,
+} from './llm-client';
 
 const CONFIG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.tappi-browser');
 
@@ -247,13 +253,37 @@ ${browsingData}`;
 
   try {
     const model = createModel(llmConfig);
+    const providerOptions = buildProviderOptions(llmConfig);
+    const callProviderOptions: Record<string, any> = withCodexProviderOptions(
+      llmConfig.provider,
+      { ...providerOptions },
+      'Return concise JSON only. No markdown.',
+      'Return concise JSON only. No markdown.',
+    );
+
+    const runProfilePrompt = async (prompt: string): Promise<string> => {
+      if (llmConfig.provider === 'openai-codex') {
+        const result = streamText({
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
+        });
+        let out = '';
+        for await (const chunk of result.textStream) out += chunk;
+        return out;
+      }
+
+      const generated = await generateText({
+        model,
+        prompt,
+        maxOutputTokens: 32768, // universal cap
+        ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
+      });
+      return generated.text;
+    };
 
     // First attempt
-    let { text } = await generateText({
-      model,
-      prompt: basePrompt,
-      maxOutputTokens: 32768, // universal cap
-    });
+    let text = await runProfilePrompt(basePrompt);
 
     text = text.trim();
 
@@ -266,8 +296,8 @@ ${browsingData}`;
       parsed = JSON.parse(text);
     } catch {
       console.warn('[user-profile] LLM output is not valid JSON, retrying with strict prompt');
-      const retry = await generateText({ model, prompt: strictPrompt, maxOutputTokens: 32768 });
-      let retryText = retry.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+      const retryTextRaw = await runProfilePrompt(strictPrompt);
+      let retryText = retryTextRaw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
       try {
         parsed = JSON.parse(retryText);
       } catch {
@@ -280,8 +310,8 @@ ${browsingData}`;
     const profileStr = JSON.stringify(parsed);
     if (estimateTokens(profileStr) > MAX_TOKENS) {
       console.warn('[user-profile] Profile exceeds 200 tokens, retrying with strict constraint');
-      const retry = await generateText({ model, prompt: strictPrompt, maxOutputTokens: 32768 });
-      let retryText = retry.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+      const retryTextRaw = await runProfilePrompt(strictPrompt);
+      let retryText = retryTextRaw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
       try {
         parsed = JSON.parse(retryText);
       } catch {
@@ -313,7 +343,11 @@ ${browsingData}`;
 
     return profile;
   } catch (e: any) {
-    console.error('[user-profile] Generation failed:', e?.message || e);
+    if (llmConfig.provider === 'openai-codex') {
+      logProviderRequestError('user-profile.generate', e);
+    } else {
+      console.error('[user-profile] Generation failed:', e?.message || e);
+    }
     return null;
   }
 }

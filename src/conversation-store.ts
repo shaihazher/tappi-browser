@@ -135,15 +135,14 @@ export function getConversationMessageCount(conversationId: string): number {
 // ─── Auto-title generation ────────────────────────────────────────────────────
 
 /**
- * Generate a short title from the first assistant response.
- * Called from agent.ts after the first assistant response in a new conversation.
+ * Fallback: generate a short title from the first user message (no LLM).
+ * Only used when the LLM-based title generation fails.
  */
-export function generateAutoTitle(conversationId: string, assistantText: string): string {
-  // Take first ~100 chars of the assistant response, extract first sentence/phrase
-  const text = assistantText.replace(/[#*`_\[\]()]/g, '').trim();
-  const firstSentence = text.split(/[.!?\n]/)[0].trim();
-  const words = firstSentence.split(/\s+/).slice(0, 6).join(' ');
-  const title = words.length > 3 ? words : text.slice(0, 40).trim();
+export function generateAutoTitleFallback(conversationId: string, userMessage: string): string {
+  const text = userMessage.replace(/[#*`_\[\]()]/g, '').trim();
+  const firstLine = text.split(/\n/)[0].trim();
+  const words = firstLine.split(/\s+/).slice(0, 6).join(' ');
+  const title = words.length > 3 ? words : text.slice(0, 50).trim();
   if (title) {
     updateConversationTitle(conversationId, title);
   }

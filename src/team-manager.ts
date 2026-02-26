@@ -7,7 +7,15 @@
 
 import { streamText, stepCountIs } from 'ai';
 import type { WebContents } from 'electron';
-import { createModel, getModelConfig, type LLMConfig } from './llm-client';
+import {
+  createModel,
+  getModelConfig,
+  buildProviderOptions,
+  withCodexProviderOptions,
+  logProviderRequestError,
+  extractRequestErrorDetails,
+  type LLMConfig,
+} from './llm-client';
 import { createTools } from './tool-registry';
 import type { BrowserContext } from './browser-tools';
 import { addMessage, clearHistory } from './conversation';
@@ -99,6 +107,7 @@ export interface Teammate {
   _systemPrompt?: string;              // frozen at first invocation for resume
   _tools?: Record<string, any>;        // frozen at first invocation for resume
   _model?: any;                        // frozen at first invocation for resume
+  _provider?: string;                  // frozen provider id for resume
   // Phase 9.096d: Pulse
   lastPulse?: string;                  // latest ~20-token activity snippet
   _activityLog?: string[];             // plain text log of tool calls + results for interrupt resume
@@ -436,6 +445,8 @@ async function runTeammateSession(
     task,
   });
 
+  let teammateProviderForLogging = llmConfig.provider;
+
   try {
     // Use teammate's explicit model if specified; otherwise use secondary model (Phase 8.85).
     // Teammates are parallel workers — secondary is cheaper/faster and sufficient.
@@ -443,6 +454,7 @@ async function runTeammateSession(
     const tmConfig: LLMConfig = teammate.model
       ? { ...baseConfig, model: teammate.model }
       : baseConfig;
+    teammateProviderForLogging = tmConfig.provider;
 
     const model = createModel(tmConfig);
     const team = activeTeams.get(teamId);
@@ -474,6 +486,7 @@ async function runTeammateSession(
     teammate._systemPrompt = systemPrompt;
     teammate._tools = tools;
     teammate._model = model;
+    teammate._provider = tmConfig.provider;
 
     // Phase 9.096d: Initialize conversation history for interrupt/resume
     teammate.conversationHistory = [{ role: 'user', content: userContent }];
@@ -492,6 +505,14 @@ async function runTeammateSession(
     }, teammateTimeoutMs);
 
     console.log(`[team] ${name} calling LLM (model: ${tmConfig.model}, provider: ${tmConfig.provider})...`);
+    const tmProviderOptions = buildProviderOptions(tmConfig);
+    const tmCallProviderOptions: Record<string, any> = withCodexProviderOptions(
+      tmConfig.provider,
+      { ...tmProviderOptions },
+      systemPrompt,
+      systemPrompt,
+    );
+
     let result;
     try {
     result = await streamText({
@@ -500,6 +521,7 @@ async function runTeammateSession(
       messages: [{ role: 'user', content: userContent }],
       tools,
       maxOutputTokens: 32768,
+      ...(Object.keys(tmCallProviderOptions).length > 0 ? { providerOptions: tmCallProviderOptions } : {}),
       // Phase 9.096f: Match main agent step limit (200). 100 was cutting teammates short.
       stopWhen: stepCountIs(200),
       abortSignal: tmAbortController.signal,
@@ -616,8 +638,10 @@ async function runTeammateSession(
     } catch (initErr: any) {
       // Catch InvalidPromptError / TypeValidationError on initial teammate invocation
       const errName = initErr?.name || initErr?.constructor?.name || '';
+      if (tmConfig.provider === 'openai-codex') {
+        logProviderRequestError(`team.${name}.init`, initErr);
+      }
       console.error(`[team] ${name} INITIAL streamText failed (${errName}):`, initErr?.message?.slice?.(0, 200));
-      console.error(`[team] ${name} cause:`, initErr?.cause?.message?.slice?.(0, 500) || 'no cause');
       // Rethrow — we can't simplify the initial invocation (no prior context to summarize)
       throw initErr;
     }
@@ -754,8 +778,12 @@ async function runTeammateSession(
     notifyUpdate(teamId);
 
   } catch (err: any) {
-    const errMsg = err?.message || 'Unknown error';
-    console.error(`[team] ${name} session error:`, errMsg, err?.stack?.slice(0, 300));
+    const details = extractRequestErrorDetails(err, 1600);
+    if (teammateProviderForLogging === 'openai-codex') {
+      logProviderRequestError(`team.${name}.session`, err);
+    }
+    const errMsg = details.responseBody || details.message || 'Unknown error';
+    console.error(`[team] ${name} session error:`, errMsg, err?.stack?.slice?.(0, 300));
     teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
     teamBroadcast('team:teammate-done', { name, status: 'failed', summary: errMsg });
     teammate.status = 'failed';
@@ -835,6 +863,7 @@ export async function interruptTeammate(teamId: string, name: string, message: s
   const frozenSystemPrompt = teammate._systemPrompt || '';
   const frozenTools = teammate._tools || {};
   const frozenModel = teammate._model;
+  const frozenProvider = teammate._provider;
   const worktreePath = teammate.worktreePath;
 
   // Run with history in background
@@ -845,6 +874,7 @@ export async function interruptTeammate(teamId: string, name: string, message: s
     systemPrompt: frozenSystemPrompt,
     tools: frozenTools,
     model: frozenModel,
+    provider: frozenProvider,
     abortController: newAbortController,
     ariaWebContents: ariaWC,
   }).catch(err => {
@@ -865,6 +895,7 @@ interface TeammateResumeOptions {
   systemPrompt: string;
   tools: Record<string, any>;
   model: any;
+  provider?: string;
   abortController: AbortController;
   ariaWebContents?: WebContents | null;
 }
@@ -874,7 +905,7 @@ interface TeammateResumeOptions {
  * Shares core logic with runTeammateSession but skips initial message construction.
  */
 async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void> {
-  const { teammate, teamId, resumeHistory, systemPrompt, tools, model, abortController, ariaWebContents } = opts;
+  const { teammate, teamId, resumeHistory, systemPrompt, tools, model, provider, abortController, ariaWebContents } = opts;
   const { sessionId, name } = teammate;
 
   function teamBroadcast(channel: string, data: any): void {
@@ -906,6 +937,13 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
       textSincePulse = '';
     }, 30_000);
 
+    const resumeCallProviderOptions: Record<string, any> = withCodexProviderOptions(
+      provider || '',
+      {},
+      systemPrompt,
+      systemPrompt,
+    );
+
     // Resume messages are always plain text (user role) — can never fail SDK validation
     const result = await streamText({
       model,
@@ -913,6 +951,7 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
       messages: resumeHistory,
       tools,
       maxOutputTokens: 32768, // universal cap
+      ...(Object.keys(resumeCallProviderOptions).length > 0 ? { providerOptions: resumeCallProviderOptions } : {}),
       stopWhen: stepCountIs(200), // Phase 9.096f: match main agent
       abortSignal: abortController.signal,
       onStepFinish: async (event: any) => {
@@ -1031,7 +1070,11 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
 
     notifyUpdate(teamId);
   } catch (err: any) {
-    const errMsg = err?.message || 'Unknown error';
+    const details = extractRequestErrorDetails(err, 1600);
+    if (provider === 'openai-codex') {
+      logProviderRequestError(`team.${name}.resume`, err);
+    }
+    const errMsg = details.responseBody || details.message || 'Unknown error';
     console.error(`[team] ${name} resume error:`, errMsg);
     teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
     teamBroadcast('team:teammate-done', { name, status: 'failed', summary: errMsg });
