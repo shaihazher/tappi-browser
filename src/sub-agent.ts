@@ -18,6 +18,7 @@ import { generateText, streamText, stepCountIs } from 'ai';
 import * as os from 'os';
 import * as path from 'path';
 import { getWorkspacePath, DEFAULT_WORKSPACE } from './workspace-resolver';
+import { getWorkingDir, setWorkingDir, resetContext } from './working-context';
 import {
   createModel,
   buildProviderOptions,
@@ -347,7 +348,19 @@ export async function spawnSubAgent(
   const preset = DEPTH_PRESETS[depth];
 
   // Resolve working directory for file operations
-  const workingDir = spawnOptions?.workingDir;
+  // Priority: explicit workingDir > inherit from parent session > default workspace
+  let workingDir = spawnOptions?.workingDir;
+  if (!workingDir) {
+    const parentWorkingDir = getWorkingDir(parentSessionId);
+    if (parentWorkingDir) {
+      workingDir = parentWorkingDir;
+    }
+  }
+
+  // Initialize sub-agent's working context with inherited working dir
+  if (workingDir) {
+    setWorkingDir(sessionId, workingDir);
+  }
 
   // Allocate a dedicated browser tab for this sub-agent
   const assignedTabId = allocateSubAgentTab(id, browserCtx);
@@ -555,6 +568,8 @@ function releaseSubAgentTab(agentTask: SubAgentTask, browserCtx: BrowserContext)
     console.warn(`[sub-agent] ${agentTask.id} failed to release tab:`, e);
   }
   agentTask.assignedTabId = undefined;
+  // Clean up sub-agent's working context
+  resetContext(agentTask.sessionId);
 }
 
 // ─── Internal: Run a sub-agent to completion ───

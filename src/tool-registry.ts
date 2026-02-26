@@ -686,7 +686,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
             return result + '\n\n💡 Auto-registered as a team contract. Next time, use team_write_contracts directly — it auto-copies to all teammate worktrees.';
           }
         }
-        return fileTools.fileWrite(filePath, content);
+        return fileTools.fileWrite(filePath, content, { sessionId });
       },
     }),
 
@@ -765,7 +765,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
             }
           }
         }
-        return fileTools.fileAppend(path, content);
+        return fileTools.fileAppend(path, content, { sessionId });
       },
     }),
 

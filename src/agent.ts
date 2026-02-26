@@ -27,6 +27,7 @@ import * as toolManagerMod from './tool-manager';
 import { loadProfile, loadUserProfileTxt } from './user-profile';
 import type { BrowserContext } from './browser-tools';
 import { getWorkspacePath } from './workspace-resolver';
+import { getWorkingDir, getLastFile, resetContext } from './working-context';
 
 // Re-export agentEvents from shared bus (avoids circular dep with tool-registry)
 export { agentEvents } from './agent-bus';
@@ -65,7 +66,11 @@ import { profileManager } from './profile-manager';
 import { sessionManager } from './session-manager';
 import { listIdentities } from './password-vault';
 
-export { clearConversation as clearHistory };
+// Wrapper: clear conversation history AND working context for a session
+export function clearHistory(sessionId: string = 'default'): void {
+  clearConversation(sessionId);
+  resetContext(sessionId);
+}
 
 /**
  * Assemble minimal context for the LLM.
@@ -416,6 +421,11 @@ Timezone: ${tz}
         // Inject browser context (and optional project context) into the last user message
         const ctxParts = [`[Browser: ${browserContext}]`];
         if (projectContextBlock) ctxParts.push(projectContextBlock);
+        // Inject working context (active working dir and last file)
+        const workingDir = getWorkingDir(sessionId);
+        const lastFile = getLastFile(sessionId);
+        if (workingDir) ctxParts.push(`Working Dir: ${workingDir}`);
+        if (lastFile) ctxParts.push(`Last File: ${lastFile}`);
         messages.push({ role: 'user', content: `${ctxParts.join('\n')}\n\n${msg.content}` });
       } else {
         messages.push(msg);

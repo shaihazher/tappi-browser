@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { getWorkspacePath, expandTilde } from './workspace-resolver';
+import { setWorkingDir, setLastFile, getWorkingDir } from './working-context';
 
 // Cache the workspace path to avoid repeated config reads
 let _cachedWorkspace: string | null = null;
@@ -39,27 +40,47 @@ function expandPath(p: string): string {
   return expandTilde(p);
 }
 
-function resolvePath(filePath: string): string {
+function resolvePath(filePath: string, activeWorkingDir?: string): string {
   // Expand ~ before checking if absolute
   const expanded = expandPath(filePath);
-  // Absolute paths pass through; relative paths resolve to workspace
+  // Absolute paths pass through
   if (path.isAbsolute(expanded)) return expanded;
-  ensureWorkspace();
-  return path.join(getWorkspace(), expanded);
+  // Relative paths: prefer activeWorkingDir over default workspace
+  const baseDir = activeWorkingDir || getWorkspace();
+  if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
+  return path.join(baseDir, expanded);
 }
 
 // ─── File Operations ───
 
-export function fileWrite(filePath: string, content: string): string {
+export interface FileWriteOptions {
+  sessionId?: string;  // Session ID for working context tracking
+}
+
+export function fileWrite(filePath: string, content: string, options?: FileWriteOptions): string {
   if (!filePath) return 'Usage: file write <path> <content>';
   if (!content && content !== '') return 'Usage: file write <path> <content>';
 
-  const resolved = resolvePath(filePath);
+  // Use session's active working dir if available
+  const activeWorkingDir = options?.sessionId ? getWorkingDir(options.sessionId) : undefined;
+  const resolved = resolvePath(filePath, activeWorkingDir || undefined);
   const dir = path.dirname(resolved);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   fs.writeFileSync(resolved, content, 'utf-8');
   const size = fs.statSync(resolved).size;
+
+  // Update working context for this session
+  if (options?.sessionId) {
+    const workspace = getWorkspace();
+    const writtenDir = path.dirname(resolved);
+    // Only track if different from default workspace
+    if (writtenDir !== workspace) {
+      setWorkingDir(options.sessionId, writtenDir);
+    }
+    setLastFile(options.sessionId, resolved);
+  }
+
   return `Written: ${resolved} (${formatBytes(size)})`;
 }
 
@@ -255,14 +276,31 @@ export function fileTail(filePath: string, lines: number = 20): string {
   return `... (${allLines.length - lines} lines above)\n` + allLines.slice(-lines).join('\n');
 }
 
-export function fileAppend(filePath: string, content: string): string {
+export interface FileAppendOptions {
+  sessionId?: string;  // Session ID for working context tracking
+}
+
+export function fileAppend(filePath: string, content: string, options?: FileAppendOptions): string {
   if (!filePath || !content) return 'Usage: file append <path> <content>';
 
-  const resolved = resolvePath(filePath);
+  // Use session's active working dir if available
+  const activeWorkingDir = options?.sessionId ? getWorkingDir(options.sessionId) : undefined;
+  const resolved = resolvePath(filePath, activeWorkingDir || undefined);
   const dir = path.dirname(resolved);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   fs.appendFileSync(resolved, content + '\n', 'utf-8');
+
+  // Update working context for this session
+  if (options?.sessionId) {
+    const workspace = getWorkspace();
+    const writtenDir = path.dirname(resolved);
+    if (writtenDir !== workspace) {
+      setWorkingDir(options.sessionId, writtenDir);
+    }
+    setLastFile(options.sessionId, resolved);
+  }
+
   return `Appended to: ${resolved}`;
 }
 
