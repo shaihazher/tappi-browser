@@ -126,7 +126,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     // ═══ PAGE TOOLS ═══
 
     elements: tool({
-      description: 'Index interactive elements on the page. Default: viewport only (~20-40 elements). Use grep to search ALL elements (including offscreen) by text match — like "elements | grep submit" in a terminal. Use tab param to target a specific tab by index without switching.',
+      description: `ESSENTIAL: Call this FIRST to see clickable elements on any page. Returns a numbered list like "[0] Submit button", "[1] Email input... Use these index numbers with click({ index: N }) or type({ index: N, text: "..." }). Default: viewport only (~20-40 elements). Use grep: "submit" to find elements by text (searches entire page including offscreen). Use tab: 2 to target a specific tab without switching. After navigation or page changes, indexes shift — call elements() again.`,
       inputSchema: z.object({
         filter: z.string().optional().describe('CSS selector to scope indexing'),
         grep: z.string().optional().describe('Search all elements (including offscreen) for this text'),
@@ -145,7 +145,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     links: tool({
-      description: 'List ALL page links with full hrefs. Unlike text() which shows visual URLs (truncated on Google SERPs), this returns actual href attributes with complete paths, query params, and fragments. Use grep to filter by URL or link text.',
+      description: `List ALL page links (<a> tags) with full URLs. USE CASES: When you need complete URLs (text() truncates URLs on search result pages), checking all outbound links, finding specific link destinations. Links are clickable via click() — use elements() first to get the index. Example: links({ grep: "github" }) returns all links containing "github".`,
       inputSchema: z.object({
         grep: z.string().optional().describe('Filter links where href or text contains this string'),
         tab: z.number().optional().describe('Tab index (0-based) to target — omit for current/agent-targeted tab'),
@@ -156,7 +156,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     click: tool({
-      description: 'Click an element by its index number from the elements list.',
+      description: `Click an element by index. PREREQUISITE: Call elements() first to get valid index numbers. After navigation or page changes, indexes shift — call elements() again before clicking. Example: click({ index: 3 }) clicks the element labeled [3] in the elements output.`,
       inputSchema: z.object({
         index: z.number().describe('Element index from elements output'),
         tab: z.number().optional().describe('Tab index (0-based) to target'),
@@ -171,7 +171,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     type: tool({
-      description: 'Type text into an input/textarea by index. Clears existing content first. For long content, prefer paste.',
+      description: `Type text into an input field by index. PREREQUISITE: Call elements() first to get valid index numbers. Clears existing content before typing. For content >100 chars, use paste() instead (more reliable). Example: type({ index: 2, text: "hello@example.com" }).`,
       inputSchema: z.object({
         index: z.number().describe('Element index'),
         text: z.string().describe('Text to type'),
@@ -186,7 +186,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     paste: tool({
-      description: 'Paste text into an element by index. Uses OS clipboard — more reliable than type for long content.',
+      description: `Paste text into an input by index. PREREQUISITE: Call elements() first. More reliable than type() for long content (100+ chars). Uses OS clipboard. For very large content (>50KB), consider file_write instead. Example: paste({ index: 1, content: "Long text here..." }).`,
       inputSchema: z.object({
         index: z.number().describe('Element index'),
         content: z.string().describe('Text to paste'),
@@ -206,7 +206,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     focus: tool({
-      description: 'Focus an element by index without clicking.',
+      description: `Focus an element by index without clicking. PREREQUISITE: Call elements() first. Use before keyboard input (keys) or to scroll element into view. Example: focus({ index: 5 }).`,
       inputSchema: z.object({
         index: z.number().describe('Element index'),
       }),
@@ -214,7 +214,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     check: tool({
-      description: 'Read current state of an element: value, checked, disabled, focused.',
+      description: `Read current state of an element: value, checked, disabled, focused. PREREQUISITE: Call elements() first. Use before interaction to verify element is ready, or after to confirm action worked. Example: check({ index: 3 }) returns { value: "hello", disabled: false }.`,
       inputSchema: z.object({
         index: z.number().describe('Element index'),
       }),
@@ -222,7 +222,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     text: tool({
-      description: 'Extract text from the page. Default: ~1.5KB of page text. Use selector for targeted sections (up to 4KB). Use grep to search passages across the entire page (literal or regex like "Wednesday|Thursday" or "/Wed|Thu/i") — returns matching lines with context. Use tab param to target a specific tab by index.',
+      description: `Extract readable text from the page. USE CASES: reading articles, error messages, labels, any visible content. FOR FINDING/CLICKING ELEMENTS: use elements() instead — it gives you clickable indexes. Default: ~1.5KB of page text. Use grep: "error" to search for specific text. Use selector: ".message" to scope to a section. Example: text({ grep: "price" }) returns lines containing "price".`,
       inputSchema: z.object({
         selector: z.string().optional().describe('CSS selector to scope extraction'),
         grep: z.string().optional().describe('Search page text for this string, return matching passages'),
@@ -238,7 +238,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     scroll: tool({
-      description: 'Scroll the page. Directions: up, down, top, bottom. Use tab param to target a specific tab.',
+      description: `Scroll the page. USE CASES: elements not visible in viewport, infinite scroll pages, finding content below the fold. Directions: up, down, top, bottom. AFTER SCROLLING: Call elements() again to see newly visible elements. Example: scroll({ direction: "down" }) or scroll({ direction: "bottom" }).`,
       inputSchema: z.object({
         direction: z.enum(['up', 'down', 'top', 'bottom']),
         amount: z.number().optional().describe('Pixels to scroll (default 500)'),
@@ -248,7 +248,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     keys: tool({
-      description: 'Send keyboard input. Essential for canvas apps (Sheets, Docs, Figma). Pass a single combo string or array of actions. Special: enter, tab, escape, backspace, up, down. Combos: ctrl+c, cmd+b.',
+      description: `Send keyboard input. ESSENTIAL FOR: canvas apps (Google Sheets, Docs, Figma) where click/type don't work. NO PREREQUISITE: Works without elements(). Special keys: enter, tab, escape, backspace, up, down. Combos: ctrl+c, cmd+b, ctrl+shift+s. Pass single combo or array. Example: keys({ sequence: "ctrl+a" }) or keys({ sequence: ["ctrl+a", "delete"] }).`,
       inputSchema: z.object({
         sequence: z.union([z.string(), z.array(z.string())]).describe('Key combo or array of actions'),
       }),
@@ -256,7 +256,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     eval_js: tool({
-      description: 'Execute JavaScript in the page context. Has access to document, window.',
+      description: `Execute arbitrary JavaScript in the page. LAST RESORT: Prefer elements/click/type for most interactions. USE CASES: canvas apps (Figma, Excalidraw), complex interactions not possible with click/type, extracting data not available through other tools. Has access to document and window. Example: eval_js({ js: "document.querySelector('.price').textContent" }).`,
       inputSchema: z.object({
         js: z.string().describe('JavaScript code to execute'),
       }),
@@ -264,7 +264,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     screenshot: tool({
-      description: 'Save a screenshot of the current page to a file. Prefer elements/text for quick page understanding.',
+      description: `Capture a screenshot for visual review. USE CASES: visual layout verification, canvas apps (Figma, Excalidraw), or when user asks to "see the page". NOTE: Requires vision model to interpret (~1K tokens vs ~200 tokens for elements()). FOR FINDING/CLICKING: Prefer elements() — it returns clickable indexes directly. Example: screenshot({ filePath: "~/Desktop/page.png" }).`,
       inputSchema: z.object({
         filePath: z.string().optional().describe('File path to save PNG (default: temp dir)'),
       }),
@@ -275,7 +275,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     click_xy: tool({
-      description: 'Click at specific pixel coordinates. Fallback for elements not reachable by index.',
+      description: `Click at specific pixel coordinates. FALLBACK: Use only when elements() doesn't show the target element (overlays, canvas elements, cross-origin iframes). PREREQUISITE: Take a screenshot first to determine coordinates. Example: click_xy({ x: 150, y: 300 }).`,
       inputSchema: z.object({
         x: z.number().describe('X coordinate'),
         y: z.number().describe('Y coordinate'),
@@ -284,7 +284,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     hover_xy: tool({
-      description: 'Hover at coordinates. Triggers tooltips, dropdowns.',
+      description: `Hover at pixel coordinates to trigger tooltips or dropdowns. FALLBACK: Use when elements() doesn't show the target. PREREQUISITE: Take a screenshot first to determine coordinates. Example: hover_xy({ x: 200, y: 150 }).`,
       inputSchema: z.object({
         x: z.number().describe('X coordinate'),
         y: z.number().describe('Y coordinate'),
@@ -293,7 +293,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     wait: tool({
-      description: 'Wait for milliseconds. Use sparingly.',
+      description: `Wait for milliseconds. USE SPARINGLY: Prefer checking element state with elements() or check() instead of arbitrary waits. USE CASES: animations, dynamic content loading, rate limiting. Example: wait({ ms: 1000 }) waits 1 second.`,
       inputSchema: z.object({
         ms: z.number().describe('Milliseconds to wait'),
       }),
@@ -303,7 +303,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     // ═══ BROWSER TOOLS ═══
 
     navigate: tool({
-      description: 'Navigate current tab to a URL.',
+      description: `Navigate current tab to a URL. Automatically adds https:// if missing. AFTER NAVIGATION: Call elements() to see interactive elements on the new page. Example: navigate({ url: "github.com" }) loads https://github.com.`,
       inputSchema: z.object({
         url: z.string().describe('URL to navigate to'),
       }),
@@ -339,7 +339,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     search: tool({
-      description: 'Search the web using the configured search engine.',
+      description: `Search the web using Google/DuckDuckGo. Opens search results page. AFTER SEARCH: Use elements({ grep: "keyword" }) to find result links, then click({ index: N }) to open a result. Example: search({ query: "best restaurants Houston" }).`,
       inputSchema: z.object({
         query: z.string().describe('Search query'),
       }),
@@ -510,7 +510,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     // ═══ HTTP TOOLS ═══
 
     http_request: tool({
-      description: 'Make an HTTP request. Supports methods, headers, JSON bodies, auth, binary save. Pass jsonBody as a JSON string — it will be parsed and sent as JSON. For auth, use "@service" to auto-resolve a stored API key (e.g. auth: "@openai" → "Bearer sk-...").',
+      description: `Make an HTTP request. BASIC USAGE: http_request({ url: "https://api.example.com/data" }). FOR JSON APIs: http_request({ url: "...", method: "POST", jsonBody: '{"key": "value"}' }). FOR AUTH: First store key with api_key_store({ service: "openai", key: "sk-..." }), then use auth: "@openai". FOR DOWNLOADING: Use saveToFile: "/path/to/file". Returns response body (truncated if large).`,
       inputSchema: z.object({
         url: z.string().describe('Request URL'),
         method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).default('GET'),
@@ -638,7 +638,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     // ═══ FILE TOOLS ═══
 
     file_write: tool({
-      description: 'Create or overwrite a file. Relative paths → ~/tappi-workspace/.',
+      description: `Write content to a file. CAUTION: Overwrites existing files without warning! FOR EXISTING FILES: Call file_read() first to see current content, then file_write() to update. Relative paths resolve to ~/tappi-workspace/. Example: file_write({ path: "notes.md", content: "# Notes\\nMy notes here..." }).`,
       inputSchema: z.object({
         path: z.string().describe('File path'),
         content: z.string().describe('File content'),
@@ -693,7 +693,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     file_read: tool({
-      description: 'Read a file. Files >2K tokens return a summary with options. Use grep to search without loading full content. Use offset/limit for chunked reading.',
+      description: `Read a file's contents. Large files (>2K tokens) return a summary with options. FOR LARGE FILES: Use grep: "keyword" to search without loading everything, or file_grep() for more control. FOR CHUNKED READING: Use offset/limit parameters. Example: file_read({ path: "notes.md" }) or file_read({ path: "large.log", grep: "error" }).`,
       inputSchema: z.object({
         path: z.string().describe('File path'),
         grep: z.string().optional().describe('Search the file for this text — returns matching lines with ±2 context lines (recommended for large files)'),
@@ -1404,7 +1404,7 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
     // ═══ SUB-AGENT (requires shell/dev mode) ═══
 
     spawn_agent: tool({
-      description: 'Spawn a background sub-agent for a focused task. Returns immediately with agent ID — does NOT block. Use sub_agent_status to check results, kill_agent to stop. Each sub-agent gets its own browser tab. Max 5 concurrent.',
+      description: `Spawn a background sub-agent for parallel work. USE WHEN: (1) Task can run independently without your help, (2) You need to do multiple things at once, (3) Task benefits from isolated browser tab. DO NOT USE FOR: Simple lookups, single-page tasks, anything you can do in 2-3 tool calls yourself. Returns immediately with agent ID — check results with sub_agent_status(). Max 5 concurrent. Example: spawn_agent({ task: "Research competitor pricing for 5 HVAC companies in Houston", depth: "quick" })`,
       inputSchema: z.object({
         task: z.string().describe('Clear, self-contained task description for the sub-agent'),
         task_type: z.enum(['research', 'coding', 'story-writing', 'normal']).optional().describe('Task type — determines contract/scaffolding. Default: auto-detect.'),
@@ -1419,7 +1419,7 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
     }),
 
     sub_agent_status: tool({
-      description: 'Check sub-agent status and results. No id = list all. With id = detailed status + result (if completed).',
+      description: `Check sub-agent status and results. Call after spawn_agent to see if complete. No id = list all agents. With id = detailed status + result (if completed). Statuses: "running" (still working), "done" (complete), "failed" (error). Example: sub_agent_status({ id: "sub-1" }) or sub_agent_status() to list all.`,
       inputSchema: z.object({
         id: z.string().optional().describe('Sub-agent ID (e.g. "sub-1")'),
       }),
@@ -1427,7 +1427,7 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
     }),
 
     kill_agent: tool({
-      description: 'Kill a running sub-agent immediately. Use when a sub-agent is taking too long or going off track.',
+      description: `Kill a running sub-agent immediately. USE WHEN: Sub-agent is taking too long, going off track, or user wants to cancel. Prerequisite: Agent must be running (check with sub_agent_status first). Result: Agent stops, tab closes, resources freed. Example: kill_agent({ id: "sub-2" })`,
       inputSchema: z.object({
         id: z.string().describe('Sub-agent ID to kill (e.g. "sub-1")'),
       }),
@@ -1474,7 +1474,7 @@ function createTeamTools(
     // ─── Available to all (lead + teammates) ───
 
     team_status: tool({
-      description: 'Get team overview: teammates status, task list, recent messages, file conflicts.',
+      description: `Get team overview: teammates status, task list, recent messages, file conflicts. USE TO: Check progress before assigning new tasks, see if teammates are blocked, review file conflicts. Returns: Each teammate's status (idle/working/done), task completion, unread messages. Example: team_status()`,
       inputSchema: z.object({
         team_id: z.string().optional().describe('Team ID (default: active team)'),
       }),
@@ -1486,7 +1486,7 @@ function createTeamTools(
     }),
 
     team_message: tool({
-      description: 'Send a message to a teammate (@name) or everyone (@all).',
+      description: `Send a message to a teammate (@name) or everyone (@all). USE TO: Provide guidance, answer questions, redirect work. Messages appear in teammate's context immediately. Example: team_message({ to: "@backend", content: "Use PostgreSQL instead of SQLite for this project" })`,
       inputSchema: z.object({
         to: z.string().describe('Recipient: "@backend", "@frontend", "@lead", "@all"'),
         content: z.string().describe('Message content'),
@@ -1501,7 +1501,7 @@ function createTeamTools(
     }),
 
     team_task_update: tool({
-      description: 'Update a task status, result, or files touched. Use when starting (in-progress), finishing (done), or getting blocked.',
+      description: `Update a task status, result, or files touched. USE WHEN: Starting work (status: "in-progress"), finishing (status: "done" with result), or blocked (status: "blocked" with reason). ALWAYS include files_touched when done — enables conflict detection. Example: team_task_update({ task_id: "task-1", status: "done", result: "Created User model", files_touched: ["src/models/User.ts"] })`,
       inputSchema: z.object({
         task_id: z.string().describe('Task ID (e.g. "task-1")'),
         status: z.enum(['pending', 'in-progress', 'done', 'blocked']).optional(),
@@ -1533,7 +1533,7 @@ function createTeamTools(
     }),
 
     team_task_add: tool({
-      description: 'Add a new task to the team\'s shared task list.',
+      description: `Add a new task to the team's shared task list. USE TO: Break down work for teammates, assign responsibilities. Tasks can have dependencies (must complete before starting). Example: team_task_add({ title: "Create User API", description: "REST endpoints for user CRUD", assignee: "@backend", dependencies: ["task-1"] })`,
       inputSchema: z.object({
         title: z.string().describe('Short task title'),
         description: z.string().describe('Detailed task description'),
@@ -1557,7 +1557,7 @@ function createTeamTools(
   // ─── Lead-only tools ───
   if (!isTeammate) {
     tools.team_create = tool({
-      description: 'Create a coding team. Decomposes the task, spawns teammates who work in parallel. Only the lead (you) can create teams. When working_dir is a git repo and worktree_isolation is enabled, each teammate gets its own isolated git worktree (separate branch + directory) preventing file conflicts.',
+      description: `Create a coding team for parallel development. USE WHEN: (1) Large task with independent modules, (2) Multiple files need simultaneous changes, (3) Task benefits from specialized roles (frontend, backend, tests). DO NOT USE FOR: Small fixes, single-file changes, quick prototypes. WORKFLOW: Create team → Write contracts → Run teammates → Validate → Merge worktrees. Git worktree isolation prevents file conflicts. Example: team_create({ task: "Build REST API with auth system", working_dir: "~/projects/myapp" })`,
       inputSchema: z.object({
         task: z.string().describe('High-level task description'),
         working_dir: z.string().describe('Project root directory (e.g. ~/projects/myapp)'),
@@ -1593,7 +1593,7 @@ function createTeamTools(
     });
 
     tools.team_run_teammate = tool({
-      description: 'Assign a task to a teammate and start their session.',
+      description: `Assign a task to a teammate and start their session. PREREQUISITE: Team must exist (team_create), contracts should be written (team_write_contracts) for shared interfaces. Teammate works in parallel in isolated worktree. Monitor with team_status(). Example: team_run_teammate({ teammate_name: "@backend", task: "Create User API with auth" })`,
       inputSchema: z.object({
         teammate_name: z.string().describe('Teammate name (e.g. "@backend")'),
         task: z.string().describe('Task description for this teammate'),
@@ -1627,7 +1627,7 @@ function createTeamTools(
     // ─── Phase 9.096: Contract-First Tools (Lead only) ───
 
     tools.team_write_contracts = tool({
-      description: 'Write a shared contract/interface stub file that all teammates must reference. Call this BEFORE team_run_teammate. Contracts define the shared API surface: type definitions, interfaces, function signatures, data shapes. Max 5 per phase. Teammates receive these in their system prompt and must import/use them — not redefine their own versions.',
+      description: `Write shared contracts/interfaces that all teammates must follow. CRITICAL: Call this BEFORE team_run_teammate. Contracts define the shared API surface: type definitions, interfaces, function signatures. Teammates receive these in their system prompt and MUST use them — not redefine their own. Prevents integration failures. Example: team_write_contracts({ path: "contracts/api.ts", content: "export interface User {...}", description: "User types and API signatures" })`,
       inputSchema: z.object({
         path: z.string().describe('Relative path from working dir (e.g. "contracts/types.ts", "shared/api.py", "interfaces/cart.go")'),
         content: z.string().describe('Contract file content — type defs, interfaces, function stubs. Keep it lean (~20 lines per file). NO implementations, just signatures and shapes.'),
@@ -1654,7 +1654,7 @@ function createTeamTools(
     });
 
     tools.team_validate = tool({
-      description: 'Run post-merge integration validation. Checks: (1) all contracts are referenced by teammate code, (2) no file conflicts between teammates, (3) optionally runs a build/test command. Call this AFTER teammates finish and worktrees are merged.',
+      description: `Run integration validation after teammates finish. PREREQUISITE: Teammates must be done (check with team_status). Checks: (1) contracts are referenced by code, (2) no file conflicts, (3) build/test passes. Call AFTER merging worktrees. Example: team_validate({ command: "npm run build" })`,
       inputSchema: z.object({
         command: z.string().optional().describe('Build/test command to run (e.g. "npm run build", "python -m pytest", "go build ./..."). Runs in the working directory with 60s timeout.'),
         team_id: z.string().optional().describe('Team ID (default: active team)'),
@@ -1676,7 +1676,7 @@ function createTeamTools(
     });
 
     tools.team_advance_phase = tool({
-      description: 'Advance to the next phase after merging current phase results. Later phases build on real merged code — write new contracts that reference the actual implementations from the previous phase. Use this for large projects that need multiple rounds of parallel work.',
+      description: `Advance to next phase after merging. USE WHEN: Current phase complete, ready for next round of parallel work. PREREQUISITE: All worktrees merged (worktree_merge for each). Later phases build on real merged code. Example: team_advance_phase()`,
       inputSchema: z.object({
         team_id: z.string().optional().describe('Team ID (default: active team)'),
       }),
@@ -1699,7 +1699,7 @@ function createTeamTools(
     // ─── Phase 9.096d: Interrupt Tool (Lead only) ───
 
     tools.team_interrupt = tool({
-      description: 'Interrupt a running teammate and redirect them. Preserves their work — they resume with full conversation history plus your new instructions.',
+      description: `Interrupt a running teammate and redirect them. USE WHEN: Teammate going off track, needs correction, or priorities changed. Preserves their work — they resume with your new instructions. Softer than kill_agent. Example: team_interrupt({ name: "@backend", message: "Switch to PostgreSQL instead of SQLite" })`,
       inputSchema: z.object({
         name: z.string().describe('Teammate name (e.g. "@ui", "@backend")'),
         message: z.string().describe('Redirect instruction — what they should do instead'),
@@ -2247,14 +2247,50 @@ function createCodingMemoryTools() {
 }
 
 export const TOOL_USAGE_GUIDE = `
-## How to use browser tools
+## How to use Tappi Browser tools
 
-1. **Always start with \`elements\`** to see what's on the page.
-2. **Click/type/paste by index number** from the elements list.
-3. **After navigation or major changes**, re-run \`elements\`.
-4. **For canvas apps** (Sheets, Docs, Figma) — use \`keys\` instead of type/click.
-5. **For API workflows** — use http_request to call APIs.
-6. **Save research** to files — markdown for notes, CSV for tabular data.
-7. **Grep first, scroll second.** When looking for something specific, use grep on elements/text/history/files.
-8. **Be concise** in responses.
+### PAGE INTERACTION WORKFLOW (MOST COMMON)
+1. \`navigate({ url: "..." })\` or \`search({ query: "..." })\` → go to page
+2. \`elements()\` → SEE what's on the page (returns numbered elements like [0], [1], [2])
+3. \`click({ index: N })\` or \`type({ index: N, text: "..." })\` → INTERACT using index from elements
+4. \`text({ grep: "keyword" })\` → READ page content
+5. **After navigation or page changes, indexes shift — call \`elements()\` again**
+
+### WHEN TO USE EACH TOOL
+- **elements()**: First tool for ANY page interaction — gives you clickable indexes
+- **click/type/paste**: Use index from elements output
+- **text()**: Read visible content (articles, errors, labels) — NOT for finding clickable elements
+- **screenshot()**: Visual review only — requires vision model, expensive (~1K tokens)
+- **keys()**: Canvas apps (Sheets, Docs, Figma) where click/type don't work
+- **eval_js()**: LAST RESORT — only for complex interactions impossible with other tools
+
+### FILE OPERATIONS
+1. \`file_read()\` or \`file_list()\` → see what exists
+2. \`file_write()\` → create/overwrite (CAUTION: overwrites!)
+
+### ERROR RECOVERY
+- "Element not found" or wrong index → call \`elements()\` again (indexes shift after page changes)
+- "Tab not found" → call \`tab({ action: "list" })\` to see available tabs
+- "File not found" → use absolute path or check with \`file_list()\`
+
+### GREP PARAMETER (works in multiple tools)
+Case-insensitive text search. Available in: elements, text, links, file_read, file_grep, history.
+All work the same: \`grep: "search term"\` returns matching results.
+
+### SUB-AGENT WORKFLOW (PARALLEL TASKS)
+USE WHEN: Task can run independently, you need to do multiple things at once.
+DO NOT USE FOR: Simple lookups, single-page tasks, anything you can do in 2-3 tool calls.
+Workflow: \`spawn_agent({ task: "..." })\` → \`sub_agent_status({ id: "sub-1" })\` → get results
+Depth options: "quick" (5 steps), "standard" (15 steps), "deep" (30 steps).
+
+### TEAM WORKFLOW (PARALLEL CODING)
+USE WHEN: Large coding task with independent modules, multiple files need simultaneous changes.
+DO NOT USE FOR: Small fixes, single-file changes, quick prototypes.
+Workflow:
+1. \`team_create({ task: "...", working_dir: "..." })\` → create team
+2. \`team_write_contracts({ path: "...", content: "..." })\` → define shared interfaces (CRITICAL)
+3. \`team_run_teammate({ teammate_name: "@backend", task: "..." })\` → assign work
+4. \`team_status()\` → monitor progress
+5. \`worktree_merge({ name: "@backend" })\` → merge completed work
+6. \`team_validate({ command: "npm run build" })\` → verify integration
 `.trim();

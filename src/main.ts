@@ -98,6 +98,7 @@ interface TappiConfig {
     apiKey: string; // encrypted — active provider's key (kept for backward compat)
     providerApiKeys?: Record<string, string>; // encrypted keys per provider (Phase 9.1)
     thinking?: boolean;      // true = medium thinking (default), false = off
+    thinkingEffort?: 'low' | 'medium' | 'high';  // reasoning effort level (default: medium)
     codingMode?: boolean;    // true = team tools + coding system prompt (Phase 8.38)
     worktreeIsolation?: boolean; // Phase 8.39: git worktree per teammate (default: true when codingMode + git repo)
     // Cloud provider fields
@@ -129,7 +130,7 @@ interface TappiConfig {
 }
 
 const DEFAULT_CONFIG: TappiConfig = {
-  llm: { provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: '', thinking: true, codingMode: false, worktreeIsolation: true, agentTimeoutMs: 1_800_000, teammateTimeoutMs: 1_800_000, subtaskTimeoutMs: 300_000 },
+  llm: { provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: '', thinking: true, thinkingEffort: 'medium', codingMode: false, worktreeIsolation: true, agentTimeoutMs: 1_800_000, teammateTimeoutMs: 1_800_000, subtaskTimeoutMs: 300_000 },
   searchEngine: 'google',
   features: { adBlocker: false, darkMode: false },
   developerMode: false,
@@ -685,6 +686,7 @@ function createWindow() {
         model: currentConfig.llm.model,
         apiKey,
         thinking: currentConfig.llm.thinking,
+        thinkingEffort: currentConfig.llm.thinkingEffort,
         region: currentConfig.llm.region,
         projectId: currentConfig.llm.projectId,
         location: currentConfig.llm.location,
@@ -949,6 +951,7 @@ function createWindow() {
         model: currentConfig.llm.model,
         apiKey,
         thinking: currentConfig.llm.thinking,
+        thinkingEffort: currentConfig.llm.thinkingEffort,
         region: currentConfig.llm.region,
         projectId: currentConfig.llm.projectId,
         location: currentConfig.llm.location,
@@ -1017,6 +1020,7 @@ function createWindow() {
         model: currentConfig.llm.model,
         apiKey,
         thinking: currentConfig.llm.thinking,
+        thinkingEffort: currentConfig.llm.thinkingEffort,
         region: currentConfig.llm.region,
         projectId: currentConfig.llm.projectId,
         location: currentConfig.llm.location,
@@ -1490,6 +1494,7 @@ function createWindow() {
       if (updates.llm.endpoint !== undefined) currentConfig.llm.endpoint = updates.llm.endpoint || undefined;
       if (updates.llm.baseUrl !== undefined) currentConfig.llm.baseUrl = updates.llm.baseUrl || undefined;
       if (updates.llm.thinking !== undefined) currentConfig.llm.thinking = updates.llm.thinking;
+      if ((updates.llm as any).thinkingEffort !== undefined) currentConfig.llm.thinkingEffort = (updates.llm as any).thinkingEffort;
       if ((updates.llm as any).codingMode !== undefined) currentConfig.llm.codingMode = (updates.llm as any).codingMode;
       if ((updates.llm as any).worktreeIsolation !== undefined) currentConfig.llm.worktreeIsolation = (updates.llm as any).worktreeIsolation;
       // Secondary model fields (Phase 8.85)
@@ -2956,6 +2961,7 @@ function startDevServer() {
           llmConfig: {
             provider: currentConfig.llm.provider, model: currentConfig.llm.model, apiKey,
             thinking: currentConfig.llm.thinking,
+            thinkingEffort: currentConfig.llm.thinkingEffort,
             region: currentConfig.llm.region, projectId: currentConfig.llm.projectId,
             location: currentConfig.llm.location, endpoint: currentConfig.llm.endpoint,
             baseUrl: currentConfig.llm.baseUrl,

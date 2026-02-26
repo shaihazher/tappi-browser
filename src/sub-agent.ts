@@ -849,6 +849,8 @@ Core rules:
 6. If you can answer from search result snippets alone, do that.
 
 The page is a black box — use elements/text tools to see it.
+
+${TOOL_USAGE_GUIDE}
 `;
 
 // ─── Cleanup ───

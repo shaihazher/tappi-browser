@@ -104,6 +104,7 @@ export interface LLMConfig {
   model: string;
   apiKey: string; // decrypted — may be empty for Bedrock/Vertex/Ollama
   thinking?: boolean;      // true = adaptive/deep thinking (high effort where supported), false = no thinking
+  thinkingEffort?: 'low' | 'medium' | 'high';  // reasoning effort level (default: medium)
   // Cloud provider fields
   region?: string;         // Bedrock: AWS region
   projectId?: string;      // Vertex: GCP project ID
@@ -150,6 +151,7 @@ export function getModelConfig(
  */
 export function buildProviderOptions(config: LLMConfig): Record<string, any> {
   const thinkingEnabled = config.thinking !== false; // default ON
+  const thinkingEffort = config.thinkingEffort || 'medium'; // default medium
   const provider = config.provider;
   const model = config.model || '';
   // Phase 9.12: Medium thinking budget — balances quality vs cost
@@ -172,11 +174,11 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
     }
 
     case 'openai-codex': {
-      // Phase 9.12: Default to medium reasoning for cost efficiency.
+      // OpenAI Codex (gpt-5.x-codex) supports reasoningEffort: low/medium/high
       if (thinkingEnabled) {
         return {
           openai: {
-            reasoningEffort: 'medium',
+            reasoningEffort: thinkingEffort,
           },
         };
       }
@@ -228,10 +230,29 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
         }
         return {};
       }
-      if (model.startsWith('openai/') && /^openai\/(o1|o3|o4)/.test(model)) {
+      if (model.startsWith('openai/') && /^openai\/(o1|o3|o4|gpt-5)/.test(model)) {
+        // OpenAI reasoning models via OpenRouter
         if (thinkingEnabled) {
-          return { openai: { reasoningEffort: 'medium' } };
+          return { openai: { reasoningEffort: thinkingEffort } };
         }
+        return { openai: { reasoningEffort: 'low' } };
+      }
+      if (model.startsWith('x-ai/') && /^x-ai\/grok/.test(model)) {
+        // xAI Grok models via OpenRouter support reasoning parameter
+        // https://openrouter.ai/provider/xai
+        if (thinkingEnabled) {
+          return {
+            reasoning: {
+              enabled: true,
+              effort: thinkingEffort,
+            },
+          };
+        }
+        return {
+          reasoning: {
+            enabled: false,
+          },
+        };
       }
       if (model.startsWith('google/') && /google\/gemini-(2\.5|3)/.test(model)) {
         if (thinkingEnabled) {

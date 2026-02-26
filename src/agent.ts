@@ -217,6 +217,8 @@ Example workflow:
 2. present_download(path="report.md") <- THIS IS REQUIRED
 
 The user expects to see an interactive download card with buttons. Don't let them down.
+
+${TOOL_USAGE_GUIDE}
 `;
 
 interface AgentRunOptions {
