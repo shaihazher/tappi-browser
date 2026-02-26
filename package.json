@@ -1,19 +1,27 @@
 {
-  "name": "tappi-browser",
+  "name": "tappi",
+  "productName": "Tappi",
   "version": "0.1.0",
   "description": "AI-native browser with built-in agent",
+  "author": "SynthWorx",
   "main": "dist/main.js",
   "bin": {
-    "tappi-browser": "dist/cli.js"
+    "tappi": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc && cp -r src/ui dist/ && cp src/content-preload.js dist/ && chmod +x dist/cli.js",
     "start": "npm run build && electron dist/main.js",
-    "dev": "tsc && cp -r src/ui dist/ && cp src/content-preload.js dist/ && chmod +x dist/cli.js && electron dist/main.js"
+    "dev": "tsc && cp -r src/ui dist/ && cp src/content-preload.js dist/ && chmod +x dist/cli.js && electron dist/main.js",
+    "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:linux": "npm run build && electron-builder --linux",
+    "dist:all": "npm run build && electron-builder --mac --win --linux"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "electron": "^35.0.0",
+    "electron-builder": "^25.1.8",
     "typescript": "^5.7.0"
   },
   "dependencies": {
@@ -29,5 +37,78 @@
     "marked": "^17.0.3",
     "tldts": "^7.0.23",
     "zod": "^4.3.6"
+  },
+  "build": {
+    "appId": "com.synthworx.tappi",
+    "productName": "Tappi",
+    "copyright": "Copyright © 2026 SynthWorx",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "README.md",
+        "to": "README.md"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "contents": [
+        { "x": 130, "y": 220 },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      ]
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        { "target": "nsis", "arch": ["x64", "arm64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "icon": "build/icons",
+      "category": "Network;WebBrowser;Productivity",
+      "target": [
+        { "target": "AppImage", "arch": ["x64", "arm64"] },
+        { "target": "deb", "arch": ["x64", "arm64"] },
+        { "target": "rpm", "arch": ["x64"] }
+      ],
+      "desktop": {
+        "Name": "Tappi",
+        "Comment": "AI-native browser with built-in agent",
+        "Categories": "Network;WebBrowser;Productivity",
+        "StartupWMClass": "tappi"
+      },
+      "executableName": "tappi"
+    },
+    "appImage": {
+      "license": "./LICENSE"
+    }
   }
 }
