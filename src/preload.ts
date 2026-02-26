@@ -75,6 +75,7 @@ contextBridge.exposeInMainWorld('tappi', {
   saveConfig: (updates: any) => ipcRenderer.invoke('config:save', updates),
   revealProviderApiKey: () => ipcRenderer.invoke('config:reveal-api-key'),
   hasProviderKey: (provider: string) => ipcRenderer.invoke('config:has-provider-key', provider),
+  selectDirectory: (options: { title?: string; defaultPath?: string }) => ipcRenderer.invoke('dialog:select-directory', options),
   startOpenAICodexOAuth: () => ipcRenderer.invoke('oauth:openai-codex:start'),
   onOpenAICodexOAuthStatus: (callback: (status: any) => void) => {
     ipcRenderer.on('oauth:openai-codex:status', (_e, status) => callback(status));

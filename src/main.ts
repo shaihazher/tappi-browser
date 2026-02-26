@@ -18,6 +18,7 @@ process.on('uncaughtException', (e) => console.error('[CRASH]', e));
 process.on('unhandledRejection', (e) => console.error('[REJECT]', e));
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as http from 'http';
 import { URL } from 'url';
 import { createHash, randomBytes } from 'crypto';
@@ -28,6 +29,7 @@ import { runAgent, stopAgent, clearHistory, agentProgressData, interruptMainSess
 import { agentEvents } from './agent-bus';
 import { loadServices, registerService, removeService, storeApiKey, getApiKey, listApiKeys, deleteApiKey } from './http-tools';
 import { initDatabase, getDb, closeDatabase, reinitDatabase, addHistory, searchHistory, getRecentHistory, clearHistory as clearDbHistory, migrateBookmarksFromJson, getPermission, setPermission, getAllBookmarks, searchBookmarks, removeBookmark } from './database';
+import { invalidateWorkspaceCache } from './file-tools';
 import { profileManager } from './profile-manager';
 import { sessionManager } from './session-manager';
 import { startAdBlocker, stopAdBlocker, isAdBlockerEnabled, getBlockedCount, resetBlockedCount, addSiteException, removeSiteException, toggleAdBlocker } from './ad-blocker';
@@ -129,6 +131,7 @@ interface TappiConfig {
     profileEnrichHistory?: boolean;
     profileEnrichBookmarks?: boolean;
   };
+  workspacePath?: string;  // User-defined workspace directory (default: ~/tappi-workspace/)
 }
 
 const DEFAULT_CONFIG: TappiConfig = {
@@ -137,6 +140,7 @@ const DEFAULT_CONFIG: TappiConfig = {
   features: { adBlocker: false, darkMode: false },
   developerMode: false,
   privacy: { agentBrowsingDataAccess: false, profileEnrichHistory: true, profileEnrichBookmarks: true },
+  workspacePath: undefined,  // undefined = use default ~/tappi-workspace/
 };
 
 function loadConfig(): TappiConfig {
@@ -1747,7 +1751,12 @@ Rules:
   }
 
   ipcMain.handle('config:save', (_e, updates: Partial<TappiConfig & { rawApiKey?: string; rawSecondaryApiKey?: string }>) => {
-    return applyConfigUpdates(updates);
+    const result = applyConfigUpdates(updates);
+    // Invalidate workspace cache if workspace path changed
+    if (updates.workspacePath !== undefined) {
+      invalidateWorkspaceCache();
+    }
+    return result;
   });
 
   // ─── Profile Management IPC (Phase 8.4.4) ───
@@ -1899,6 +1908,17 @@ Rules:
 
   ipcMain.handle('provider:default-model', (_e, provider: string) => {
     return getDefaultModel(provider);
+  });
+
+  // ─── Directory Selection IPC ───
+  ipcMain.handle('dialog:select-directory', async (_e, options: { title?: string; defaultPath?: string }) => {
+    const { filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: options.title || 'Select Directory',
+      defaultPath: options.defaultPath,
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (!filePaths || filePaths.length === 0) return null;
+    return { path: filePaths[0] };
   });
 
   // ─── API Services IPC ───

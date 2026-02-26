@@ -5,25 +5,38 @@
  * The agent can create markdown, CSV, JSON, text, HTML files —
  * anything it needs to save research, export data, or produce deliverables.
  *
- * Workspace: ~/tappi-workspace/ (created on first use)
+ * Workspace: Configurable via config.json (default: ~/tappi-workspace/)
  * The agent can also access absolute paths when explicitly requested.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { getWorkspacePath, expandTilde } from './workspace-resolver';
 
-const WORKSPACE = path.join(process.env.HOME || process.env.USERPROFILE || '.', 'tappi-workspace');
+// Cache the workspace path to avoid repeated config reads
+let _cachedWorkspace: string | null = null;
+
+function getWorkspace(): string {
+  if (!_cachedWorkspace) {
+    _cachedWorkspace = getWorkspacePath();
+  }
+  return _cachedWorkspace;
+}
+
+// Invalidate cache when config changes (called from main.ts)
+export function invalidateWorkspaceCache(): void {
+  _cachedWorkspace = null;
+}
 
 function ensureWorkspace() {
-  if (!fs.existsSync(WORKSPACE)) fs.mkdirSync(WORKSPACE, { recursive: true });
+  const workspace = getWorkspace();
+  if (!fs.existsSync(workspace)) fs.mkdirSync(workspace, { recursive: true });
 }
 
 /** Bug 2 fix: expand ~ to the home directory */
 function expandPath(p: string): string {
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
-  if (p === '~') return os.homedir();
-  return p;
+  return expandTilde(p);
 }
 
 function resolvePath(filePath: string): string {
@@ -32,7 +45,7 @@ function resolvePath(filePath: string): string {
   // Absolute paths pass through; relative paths resolve to workspace
   if (path.isAbsolute(expanded)) return expanded;
   ensureWorkspace();
-  return path.join(WORKSPACE, expanded);
+  return path.join(getWorkspace(), expanded);
 }
 
 // ─── File Operations ───
@@ -289,7 +302,7 @@ export function fileDelete(filePath: string): string {
 }
 
 export function fileList(dirPath?: string): string {
-  const resolved = dirPath ? resolvePath(dirPath) : WORKSPACE;
+  const resolved = dirPath ? resolvePath(dirPath) : getWorkspace();
   ensureWorkspace();
 
   if (!fs.existsSync(resolved)) return `Directory not found: ${resolved}`;

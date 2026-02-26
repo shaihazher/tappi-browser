@@ -32,6 +32,7 @@ import * as codingMemory from './coding-memory';
 import { loadUserProfileTxt, saveUserProfileTxt, getUserProfileTxtPath } from './user-profile';
 import * as path from 'path';
 import * as os from 'os';
+import { getWorkspacePath, expandTilde, DEFAULT_WORKSPACE } from './workspace-resolver';
 
 // ─── Phase 9.09: Project update callback ─────────────────────────────────────
 // Main process sets this so agent tools can notify the UI when projects change.
@@ -70,14 +71,11 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
 
   /** Resolve a file path using the same logic as file-tools (~ expansion + workspace fallback). */
   function resolveFilePath(filePath: string): string {
-    const HOME_DIR = os.homedir();
-    const FALLBACK_WORKSPACE = path.join(HOME_DIR, 'tappi-workspace');
-    let expanded = filePath;
-    if (filePath.startsWith('~/')) expanded = path.join(HOME_DIR, filePath.slice(2));
-    else if (filePath === '~') expanded = HOME_DIR;
+    let expanded = expandTilde(filePath);
     if (path.isAbsolute(expanded)) return expanded;
     // If a project working dir is set, resolve relative paths against it
-    return path.join(projectCwd || FALLBACK_WORKSPACE, expanded);
+    // Otherwise use the configured workspace path
+    return path.join(projectCwd || getWorkspacePath(), expanded);
   }
 
   // Sub-agent tab isolation: when lockedTabId is set, ALL browser interactions
@@ -458,10 +456,10 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     browser_screenshot: tool({
-      description: 'Capture a screenshot of the browser tab, window, or full scrollable page. Returns file path + metadata. target: "tab" (default) | "window" (full Electron window) | "fullpage" (stitched scrollable page). format: "png" (default) | "jpeg". quality: JPEG quality 1-100 (default 90). saveTo: custom file path (default ~/tappi-workspace/screenshots/).',
+      description: 'Capture a screenshot of the browser tab, window, or full scrollable page. Returns file path + metadata. target: "tab" (default) | "window" (full Electron window) | "fullpage" (stitched scrollable page). format: "png" (default) | "jpeg". quality: JPEG quality 1-100 (default 90). saveTo: custom file path (default: <workspace>/screenshots/).',
       inputSchema: z.object({
         target:  z.enum(['tab', 'window', 'fullpage']).optional().describe('What to capture (default: tab)'),
-        saveTo:  z.string().optional().describe('File path to save to (default: ~/tappi-workspace/screenshots/capture-{ts}.png)'),
+        saveTo:  z.string().optional().describe('File path to save to (default: <workspace>/screenshots/capture-{ts}.png)'),
         format:  z.enum(['png', 'jpeg']).optional().describe('Image format (default: png)'),
         quality: z.number().optional().describe('JPEG quality 1-100 (default: 90)'),
       }),
@@ -487,7 +485,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
       inputSchema: z.object({
         action:      z.enum(['start', 'stop', 'status']).describe('start | stop | status'),
         target:      z.enum(['tab', 'window']).optional().describe('What to record: tab (default) or window'),
-        saveTo:      z.string().optional().describe('Output file path (default: ~/tappi-workspace/recordings/recording-{ts}.mp4)'),
+        saveTo:      z.string().optional().describe('Output file path (default: <workspace>/recordings/recording-{ts}.mp4)'),
         maxDuration: z.number().optional().describe('Max seconds before auto-stop (default: 300, max: 600)'),
         fps:         z.number().optional().describe('Frame rate 1-30 (default: 15)'),
       }),
@@ -638,7 +636,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     // ═══ FILE TOOLS ═══
 
     file_write: tool({
-      description: `Write content to a file. CAUTION: Overwrites existing files without warning! WORKFLOW: (1) file_read() to see current content, (2) file_write() to update. Relative paths resolve to project working dir or ~/tappi-workspace/. For large content, file_write is more reliable than paste(). Example: file_write({ path: "notes.md", content: "# Notes\\nMy notes here..." })`,
+      description: `Write content to a file. CAUTION: Overwrites existing files without warning! WORKFLOW: (1) file_read() to see current content, (2) file_write() to update. Relative paths resolve to project working dir or <workspace>/. For large content, file_write is more reliable than paste(). Example: file_write({ path: "notes.md", content: "# Notes\\nMy notes here..." })`,
       inputSchema: z.object({
         path: z.string().describe('File path'),
         content: z.string().describe('File content'),
@@ -693,7 +691,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     file_read: tool({
-      description: `Read a file's contents. Large files (>2K tokens) return truncated output with options. FOR LARGE FILES: Use \`grep: "keyword"\` to search without loading everything. FOR CHUNKED READING: Use offset/limit parameters. Relative paths resolve to project working dir or ~/tappi-workspace/. Example: file_read({ path: "notes.md" }) or file_read({ path: "large.log", grep: "error" })`,
+      description: `Read a file's contents. Large files (>2K tokens) return truncated output with options. FOR LARGE FILES: Use \`grep: "keyword"\` to search without loading everything. FOR CHUNKED READING: Use offset/limit parameters. Relative paths resolve to project working dir or <workspace>/. Example: file_read({ path: "notes.md" }) or file_read({ path: "large.log", grep: "error" })`,
       inputSchema: z.object({
         path: z.string().describe('File path'),
         grep: z.string().optional().describe('Search the file for this text — returns matching lines with ±2 context lines (recommended for large files)'),
@@ -757,7 +755,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
               const resolvedTeamDir = activeTeam.workingDir.replace(/^~/, os.homedir());
               let resolvedWritePath = path;
               if (!path.startsWith('/') && !path.startsWith('~')) {
-                resolvedWritePath = nodePath.join(os.homedir(), 'tappi-workspace', path);
+                resolvedWritePath = nodePath.join(getWorkspacePath(), path);
               } else if (path.startsWith('~/')) {
                 resolvedWritePath = nodePath.join(os.homedir(), path.slice(2));
               }
@@ -780,7 +778,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     file_list: tool({
-      description: `List files and directories.${projectCwd ? ` Defaults to ${projectCwd}` : ' Defaults to ~/tappi-workspace/'}`,
+      description: `List files and directories.${projectCwd ? ` Defaults to ${projectCwd}` : ' Defaults to <workspace>/'}`,
       inputSchema: z.object({
         path: z.string().optional().describe('Directory path'),
       }),
@@ -1213,10 +1211,10 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         const pathMod = await import('path');
         const os = await import('os');
 
-        // Resolve relative paths against ~/tappi-workspace/
+        // Resolve relative paths against configured workspace
         let resolved = filePath;
         if (!filePath.startsWith('/') && !filePath.startsWith('~')) {
-          resolved = pathMod.join(os.homedir(), 'tappi-workspace', filePath);
+          resolved = pathMod.join(getWorkspacePath(), filePath);
         } else if (filePath.startsWith('~/')) {
           resolved = pathMod.join(os.homedir(), filePath.slice(2));
         }
@@ -1302,10 +1300,10 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
 
   return {
     exec: tool({
-      description: `Run a shell command (non-interactive, no TTY). Output is captured — you see first 20 + last 20 lines. Use exec_grep to search full output. Default timeout: 30s. Interactive prompts will hang or cancel — avoid scaffolding CLIs (create-vite, create-react-app, etc.) and write files directly instead.${shellProjectCwd ? ` Default cwd: ${shellProjectCwd}` : ' Default cwd: ~/tappi-workspace/'}`,
+      description: `Run a shell command (non-interactive, no TTY). Output is captured — you see first 20 + last 20 lines. Use exec_grep to search full output. Default timeout: 30s. Interactive prompts will hang or cancel — avoid scaffolding CLIs (create-vite, create-react-app, etc.) and write files directly instead.${shellProjectCwd ? ` Default cwd: ${shellProjectCwd}` : ' Default cwd: <workspace>/'}`,
       inputSchema: z.object({
         command: z.string().describe('Shell command to run'),
-        cwd: z.string().optional().describe(`Working directory${shellProjectCwd ? ` (default: ${shellProjectCwd})` : ' (default: ~/tappi-workspace/)'}`),
+        cwd: z.string().optional().describe(`Working directory${shellProjectCwd ? ` (default: ${shellProjectCwd})` : ' (default: <workspace>)'}`),
         timeout: z.number().optional().describe('Timeout in milliseconds (default: 30000)'),
       }),
       execute: async ({ command, cwd: userCwd, timeout }: { command: string; cwd?: string; timeout?: number }) => {
@@ -1404,13 +1402,13 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
     // ═══ SUB-AGENT (requires shell/dev mode) ═══
 
     spawn_agent: tool({
-      description: `Spawn a background sub-agent for parallel work. USE WHEN: (1) Task can run independently without your help, (2) You need to do multiple things at once, (3) Task benefits from isolated browser tab. DO NOT USE FOR: Simple lookups, single-page tasks, anything you can do in 2-3 tool calls yourself. Returns immediately with agent ID — check results with sub_agent_status(). Max 5 concurrent. Sub-agent saves files to working_dir (default: ~/tappi-workspace/). Example: spawn_agent({ task: "Research competitor pricing for 5 HVAC companies", depth: "quick" })`,
+      description: `Spawn a background sub-agent for parallel work. USE WHEN: (1) Task can run independently without your help, (2) You need to do multiple things at once, (3) Task benefits from isolated browser tab. DO NOT USE FOR: Simple lookups, single-page tasks, anything you can do in 2-3 tool calls yourself. Returns immediately with agent ID — check results with sub_agent_status(). Max 5 concurrent. Sub-agent saves files to working_dir (default: <workspace>). Example: spawn_agent({ task: "Research competitor pricing for 5 HVAC companies", depth: "quick" })`,
       inputSchema: z.object({
         task: z.string().describe('Clear, self-contained task description for the sub-agent'),
         task_type: z.enum(['research', 'coding', 'story-writing', 'normal']).optional().describe('Task type — determines contract/scaffolding. Default: auto-detect.'),
         model: z.enum(['primary', 'secondary']).optional().describe('Model tier: "secondary" (default, cheaper) or "primary" (stronger reasoning)'),
         depth: z.enum(['quick', 'standard', 'deep']).optional().describe('Budget: "quick" (5 steps, 1 source), "standard" (15 steps, 3 sources, default), "deep" (30 steps, 5 sources). Quick is great for simple lookups.'),
-        working_dir: z.string().optional().describe('Working directory for file operations. Default: ~/tappi-workspace/. Use same dir as project to access outputs later.'),
+        working_dir: z.string().optional().describe('Working directory for file operations. Default: <workspace>. Use same dir as project to access outputs later.'),
       }),
       execute: async ({ task, task_type, model, depth, working_dir }: { task: string; task_type?: 'research' | 'coding' | 'story-writing' | 'normal'; model?: 'primary' | 'secondary'; depth?: 'quick' | 'standard' | 'deep'; working_dir?: string }) => {
         if (!llmConfig) return '❌ No LLM config available for sub-agent.';
@@ -2312,7 +2310,7 @@ export const TOOL_USAGE_GUIDE = `
 2. \`file_read({ path: "..." })\` → read a file (use \`grep\` for large files)
 3. \`file_write({ path: "...", content: "..." })\` → create/overwrite
    - **CAUTION**: Overwrites without warning! Read first if updating.
-   - Relative paths resolve to project working dir or \`~/tappi-workspace/\`
+   - Relative paths resolve to project working dir or \`<workspace>/\`
 4. \`file_append({ path: "...", content: "..." })\` → add to end of file (safer than write)
 5. \`file_delete({ path: "..." })\` → remove file or directory
 

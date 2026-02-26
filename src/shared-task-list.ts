@@ -2,12 +2,13 @@
  * shared-task-list.ts — Shared task registry for agent teams (Phase 8.38).
  *
  * All agents in a team share a single task list. Tasks have states, dependencies,
- * and file conflict detection. Persisted to ~/tappi-workspace/teams/<team-id>/tasks.json.
+ * and file conflict detection. Persisted to <workspace>/teams/<team-id>/tasks.json.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { getWorkspacePath } from './workspace-resolver';
 
 export type TaskStatus = 'pending' | 'in-progress' | 'done' | 'blocked';
 
@@ -32,7 +33,10 @@ export interface FileConflict {
   taskTitles: string[];
 }
 
-const WORKSPACE_DIR = path.join(os.homedir(), 'tappi-workspace', 'teams');
+// Get teams directory from configured workspace
+function getTeamsDir(): string {
+  return path.join(getWorkspacePath(), 'teams');
+}
 
 // In-memory task lists per team
 const teamTaskLists = new Map<string, SharedTask[]>();
@@ -242,7 +246,7 @@ export function formatTaskListCompact(tasks: SharedTask[]): string {
 // ─── Persistence ───
 
 function getTeamDir(teamId: string): string {
-  return path.join(WORKSPACE_DIR, teamId);
+  return path.join(getTeamsDir(), teamId);
 }
 
 function getTasksPath(teamId: string): string {

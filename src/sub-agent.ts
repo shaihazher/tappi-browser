@@ -17,6 +17,7 @@
 import { generateText, streamText, stepCountIs } from 'ai';
 import * as os from 'os';
 import * as path from 'path';
+import { getWorkspacePath, DEFAULT_WORKSPACE } from './workspace-resolver';
 import {
   createModel,
   buildProviderOptions,
@@ -251,7 +252,7 @@ You are a creative writing sub-agent. Your ONE job is the specific writing task 
 2. **Style**: Match the tone, voice, and style established by the lead agent.
 3. **Consistency**: Stay true to established characters, world rules, and plot.
 4. **Quality**: Write vivid, purposeful prose. Show don't tell. No filler.
-5. **Files**: Save your output to ~/tappi-workspace/ with your agent ID in the name.
+5. **Files**: Save your output to the working directory with your agent ID in the name.
 6. **Tab**: You have ONE dedicated browser tab (for research only). Focus on writing.
 7. **Done**: When finished, state "WRITING COMPLETE:" and summarize what you wrote.
 
@@ -319,7 +320,7 @@ function allocateSubAgentTab(id: string, browserCtx: BrowserContext): string | u
  * No retries, no auto-promotion — the agent controls the workflow.
  */
 export interface SubAgentSpawnOptions {
-  workingDir?: string;  // Working directory for file operations (defaults to ~/tappi-workspace/)
+  workingDir?: string;  // Working directory for file operations (defaults to configured workspace)
 }
 
 export async function spawnSubAgent(
@@ -603,8 +604,7 @@ async function runSubAgent(
       : '';
 
     // Build budget and working directory context
-    const defaultWorkspace = path.join(os.homedir(), 'tappi-workspace');
-    const effectiveWorkingDir = agentTask.workingDir || defaultWorkspace;
+    const effectiveWorkingDir = agentTask.workingDir || getWorkspacePath();
     const budgetNote = `## Your Budget
 You have **${depthPreset.maxSteps} steps** maximum. Each tool call counts as one step.
 You may use up to **${depthPreset.maxSources} sources**. Use them wisely.

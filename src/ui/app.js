@@ -36,6 +36,9 @@ const settingApikey = document.getElementById('setting-apikey');
 const toggleApikey = document.getElementById('toggle-apikey');
 const apikeyStatus = document.getElementById('apikey-status');
 const settingSearch = document.getElementById('setting-search');
+const settingWorkspace = document.getElementById('setting-workspace');
+const btnWorkspaceBrowse = document.getElementById('btn-workspace-browse');
+const workspaceHint = document.getElementById('workspace-hint');
 const openaiCodexOauthBtn = document.getElementById('openai-codex-oauth-btn');
 const openaiCodexOauthStatus = document.getElementById('openai-codex-oauth-status');
 
@@ -1836,6 +1839,15 @@ function openSettings() {
     if (config.privacy) {
       updateToggle('toggle-agent-browsing', config.privacy.agentBrowsingDataAccess || false);
     }
+    // Workspace path
+    if (settingWorkspace) {
+      settingWorkspace.value = config.workspacePath || '';
+      if (workspaceHint) {
+        workspaceHint.textContent = config.workspacePath
+          ? `Workspace: ${config.workspacePath}`
+          : 'Default: ~/tappi-workspace/';
+      }
+    }
     // Agent timeout (Phase 8.40)
     const timeoutSelect = document.getElementById('agent-timeout-select');
     if (timeoutSelect && config.llm?.agentTimeoutMs !== undefined) {
@@ -1916,6 +1928,22 @@ toggleApikey.addEventListener('click', async () => {
   }
 });
 
+// Workspace browse button
+if (btnWorkspaceBrowse) {
+  btnWorkspaceBrowse.addEventListener('click', async () => {
+    const result = await window.tappi.selectDirectory({
+      title: 'Select Workspace Directory',
+      defaultPath: settingWorkspace.value || undefined,
+    });
+    if (result && result.path) {
+      settingWorkspace.value = result.path;
+      if (workspaceHint) {
+        workspaceHint.textContent = `Workspace: ${result.path}`;
+      }
+    }
+  });
+}
+
 // Save settings
 settingsSave.addEventListener('click', async () => {
   const provider = settingProvider.value;
@@ -1943,6 +1971,7 @@ settingsSave.addEventListener('click', async () => {
     privacy: {
       agentBrowsingDataAccess: document.getElementById('toggle-agent-browsing')?.classList.contains('on') || false,
     },
+    workspacePath: settingWorkspace ? settingWorkspace.value.trim() || undefined : undefined,
   };
 
   // Only send API key if user typed a new one

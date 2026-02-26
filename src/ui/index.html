@@ -271,6 +271,19 @@
         </div>
 
         <div class="settings-section">
+          <h3>Workspace</h3>
+          <p class="settings-hint">Where agents save files. Relative paths resolve here.</p>
+          <div class="settings-row">
+            <label for="setting-workspace">Workspace Path</label>
+            <div class="input-group">
+              <input id="setting-workspace" type="text" placeholder="~/tappi-workspace">
+              <button id="btn-workspace-browse" class="input-addon" title="Browse...">📁</button>
+            </div>
+          </div>
+          <p class="settings-hint" id="workspace-hint">Default: ~/tappi-workspace/</p>
+        </div>
+
+        <div class="settings-section">
           <h3>Privacy</h3>
           <p class="settings-hint">Control what data the agent can access.</p>
           <div class="settings-row toggle-row">
