@@ -1655,28 +1655,6 @@ body.dark-mode .aria-msg.assistant .md-content a {
   margin-left: auto;
 }
 
-.enhance-divider {
-  height: 1px;
-  background: var(--border-color);
-  margin: 6px 4px;
-}
-
-#aria-enhance-search-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  padding: 6px 10px;
-  border-radius: 8px;
-  transition: background 0.15s;
-}
-
-#aria-enhance-search-label:hover {
-  background: rgba(139, 92, 246, 0.1);
-}
-
 #aria-enhance-btn {
   width: 32px;
   height: 32px;
@@ -1715,11 +1693,6 @@ body.dark-mode .aria-msg.assistant .md-content a {
 @keyframes enhance-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
-}
-
-#aria-enhance-search {
-  margin: 0;
-  cursor: pointer;
 }
 
 #aria-enhance-status {
