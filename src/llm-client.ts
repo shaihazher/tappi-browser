@@ -605,6 +605,15 @@ export interface LiteLLMRunOptions {
   onToolCall?: (toolCall: LiteLLMToolCall) => void;
   onToolResult?: (toolResult: LiteLLMToolResult) => void;
   onStepFinish?: (event: LiteLLMStepEvent) => Promise<void> | void;
+  /**
+   * Optional parity hook with AI SDK prepareStep.
+   * Can inject transient messages for the next step request only.
+   */
+  prepareStep?: (ctx: {
+    stepNumber: number;
+    messages: Array<{ role: string; content?: any; tool_call_id?: string; tool_calls?: any[] }>;
+  }) => Promise<{ messages?: Array<{ role: string; content?: any; tool_call_id?: string; tool_calls?: any[] }> } | void>
+    | ({ messages?: Array<{ role: string; content?: any; tool_call_id?: string; tool_calls?: any[] }> } | void);
   logPrefix?: string;
 }
 
@@ -614,6 +623,11 @@ export interface LiteLLMRunResult {
   steps: LiteLLMStepEvent[];
   usage: LiteLLMUsage;
   metrics: LiteLLMMetrics;
+  /**
+   * AI SDK-style structured messages (assistant/tool turns) synthesized from
+   * LiteLLM step events for conversation-memory parity.
+   */
+  responseMessages: Array<{ role: string; content: any }>;
 }
 
 function safeJsonStringify(value: any): string {
@@ -1180,6 +1194,45 @@ async function executeLiteLLMToolCall(
   }
 }
 
+function buildStructuredResponseMessages(steps: LiteLLMStepEvent[]): Array<{ role: string; content: any }> {
+  const messages: Array<{ role: string; content: any }> = [];
+
+  for (const step of steps) {
+    const assistantParts: any[] = [];
+
+    if (step.text && step.text.length > 0) {
+      assistantParts.push({ type: 'text', text: step.text });
+    }
+
+    for (const call of step.toolCalls) {
+      assistantParts.push({
+        type: 'tool-call',
+        toolCallId: call.id,
+        toolName: call.name,
+        args: call.args,
+      });
+    }
+
+    if (assistantParts.length > 0) {
+      messages.push({ role: 'assistant', content: assistantParts });
+    }
+
+    if (step.toolResults.length > 0) {
+      messages.push({
+        role: 'tool',
+        content: step.toolResults.map((result) => ({
+          type: 'tool-result',
+          toolCallId: result.toolCallId,
+          toolName: result.toolName,
+          result: result.output,
+        })),
+      });
+    }
+  }
+
+  return messages;
+}
+
 /**
  * Codex-only LiteLLM runtime loop.
  *
@@ -1221,9 +1274,20 @@ export async function runLiteLLMCodexToolLoop(opts: LiteLLMRunOptions): Promise<
   let fullReasoning = '';
 
   for (let stepNumber = 0; stepNumber < maxSteps; stepNumber++) {
+    let stepMessages: LiteLLMMessage[] = transcript;
+    if (opts.prepareStep) {
+      const prepared = await opts.prepareStep({
+        stepNumber,
+        messages: transcript.map((m) => ({ ...m })),
+      });
+      if (prepared?.messages && Array.isArray(prepared.messages) && prepared.messages.length > 0) {
+        stepMessages = prepared.messages as LiteLLMMessage[];
+      }
+    }
+
     const body: Record<string, any> = {
       model: config.model || DEFAULT_MODELS['openai-codex'],
-      messages: transcript,
+      messages: stepMessages,
       reasoning_effort: reasoningEffort,
       max_tokens: 32768,
       ...(toolSpecs.length > 0
@@ -1378,5 +1442,6 @@ export async function runLiteLLMCodexToolLoop(opts: LiteLLMRunOptions): Promise<
     steps,
     usage,
     metrics,
+    responseMessages: buildStructuredResponseMessages(steps),
   };
 }

@@ -598,6 +598,38 @@ Timezone: ${tz}
           maxSteps: 200,
           providerOptions: callProviderOptions,
           abortSignal: abortController.signal,
+          prepareStep: async ({ messages: currentMessages }) => {
+            // 80% timeout warning injection (parity with AI SDK prepareStep path)
+            if (warningPending && !warningInjected) {
+              warningInjected = true;
+              const elapsed = Date.now() - runStart;
+              const elapsedMin = Math.floor(elapsed / 60000);
+              const totalMin = Math.floor(timeoutMs / 60000);
+              const warningMsg = `[⏰ Approaching timeout (${elapsedMin}m of ${totalMin}m). Wrap up your current task.]`;
+              console.log('[agent] Injecting timeout warning');
+              return {
+                messages: [...currentMessages, { role: 'user', content: warningMsg } as any],
+              };
+            }
+            // Duplicate detection hint injection
+            if (dupHintPending) {
+              dupHintPending = false;
+              return {
+                messages: [...currentMessages, {
+                  role: 'user',
+                  content: "[You're repeating the same action. Try a different approach.]",
+                } as any],
+              };
+            }
+            // Idle detection: 5 consecutive text-only turns → abort
+            if (idleCount >= 5) {
+              console.log(`[agent] Idle detection: ${idleCount} text-only turns — stopping`);
+              stopReason = 'idle';
+              _lastStopReason = 'idle';
+              abortController.abort();
+            }
+            return undefined;
+          },
           onReasoningDelta: (delta: string) => {
             codexReasoningChunkCount++;
             codexReasoningBuffer += delta;
@@ -669,7 +701,7 @@ Timezone: ${tz}
           text: fullResponse,
           steps: codexRun.steps,
           usage: Promise.resolve(codexRun.usage),
-          response: Promise.resolve({ messages: [] }),
+          response: Promise.resolve({ messages: codexRun.responseMessages || [] }),
         };
       } else {
         const llmCallBase: Record<string, any> = {
