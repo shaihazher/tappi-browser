@@ -101,6 +101,7 @@ let currentModelConfig = {
 };
 let availableModels = [];
 let modelDropdownOpen = false;
+let providerChangedInPicker = false;
 
 // ═══════════════════════════════════════════
 //  MARKDOWN RENDERER
@@ -298,22 +299,24 @@ function escAttr(str) {
 
 async function selectModel(modelId) {
   currentModelConfig.model = modelId;
-  await saveModelConfig();
+  await saveModelConfig({ includeProvider: providerChangedInPicker });
   updateModelButton();
   closeModelDropdown();
 }
 
-async function saveModelConfig() {
+async function saveModelConfig(options = {}) {
+  const includeProvider = !!options.includeProvider;
   try {
-    await window.aria.saveConfig({
-      llm: {
-        provider: currentModelConfig.provider,
-        model: currentModelConfig.model,
-        thinking: currentModelConfig.thinking,
-        secondaryModel: currentModelConfig.secondaryModel || undefined,
-        secondaryProvider: currentModelConfig.secondaryProvider || undefined,
-      }
-    });
+    const llmUpdate = {
+      model: currentModelConfig.model,
+      thinking: currentModelConfig.thinking,
+    };
+
+    if (includeProvider) {
+      llmUpdate.provider = currentModelConfig.provider;
+    }
+
+    await window.aria.saveConfig({ llm: llmUpdate });
   } catch (e) {
     console.error('[aria] Failed to save model config:', e);
   }
@@ -352,14 +355,16 @@ async function useCustomModel() {
   if (!modelId) return;
   
   currentModelConfig.model = modelId;
-  await saveModelConfig();
+  await saveModelConfig({ includeProvider: providerChangedInPicker });
   updateModelButton();
   hideCustomModelInput();
   closeModelDropdown();
 }
 
-function openModelDropdown() {
+async function openModelDropdown() {
   console.log('[aria] Opening model dropdown');
+  await loadModelConfig(); // sync in case Settings changed provider/model in another tab
+  providerChangedInPicker = false;
   modelDropdownOpen = true;
   if (ariaModelDropdown) {
     ariaModelDropdown.classList.remove('hidden');
@@ -375,32 +380,34 @@ function openModelDropdown() {
 
 function closeModelDropdown() {
   modelDropdownOpen = false;
+  providerChangedInPicker = false;
   if (ariaModelDropdown) ariaModelDropdown.classList.add('hidden');
   hideCustomModelInput();
 }
 
-function toggleModelDropdown() {
+async function toggleModelDropdown() {
   if (modelDropdownOpen) closeModelDropdown();
-  else openModelDropdown();
+  else await openModelDropdown();
 }
 
 function bindModelPickerEvents() {
   // Model button click
-  ariaModelBtn?.addEventListener('click', (e) => {
+  ariaModelBtn?.addEventListener('click', async (e) => {
     e.stopPropagation();
-    toggleModelDropdown();
+    await toggleModelDropdown();
   });
   
   // Thinking toggle
   ariaThinkingBtn?.addEventListener('click', async () => {
     currentModelConfig.thinking = !currentModelConfig.thinking;
-    await saveModelConfig();
+    await saveModelConfig({ includeProvider: false });
     updateThinkingButton();
   });
   
   // Provider select change
   ariaProviderSelect?.addEventListener('change', () => {
     currentModelConfig.provider = ariaProviderSelect.value;
+    providerChangedInPicker = true;
     fetchModelsForProvider(ariaProviderSelect.value);
   });
   
