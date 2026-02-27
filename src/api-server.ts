@@ -532,6 +532,7 @@ async function handleRequest(
 
     runAgent({
       userMessage: body.message,
+      sessionId: convId,
       conversationId: convId,
       browserCtx,
       llmConfig: {
@@ -616,6 +617,7 @@ async function handleRequest(
 
       runAgent({
         userMessage: body.message,
+        sessionId: convId,
         conversationId: convId,
         browserCtx,
         llmConfig: {

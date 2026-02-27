@@ -991,6 +991,7 @@ function createWindow() {
       },
       window: mainWindow,
       developerMode: currentConfig.developerMode,
+      sessionId: activeConversationId || 'default',
       conversationId: activeConversationId,
       ariaWebContents: tabManager?.ariaWebContents,
     });
@@ -1080,6 +1081,7 @@ function createWindow() {
       },
       window: mainWindow,
       developerMode: currentConfig.developerMode,
+      sessionId: convId || activeConversationId || 'default',
       conversationId: convId || activeConversationId || undefined,
       ariaWebContents: tabManager?.ariaWebContents,
     });

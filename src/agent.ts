@@ -43,7 +43,7 @@ export interface AgentProgressData {
 export let agentProgressData: AgentProgressData = { running: false, elapsed: 0, toolCalls: 0, timeoutMs: 0 };
 
 import {
-  getWindow, addMessage, addMessages,
+  getWindow, getFullHistory, addMessage, addMessages,
   clearHistory as clearConversation,
   getUnsummarizedEvictedMessages, setEvictionSummary,
   buildSummaryPrompt,
@@ -54,6 +54,7 @@ import {
   addConversationMessage,
   generateAutoTitleFallback,
   getConversationMessageCount,
+  getConversationMessages,
   updateConversationTitle,
 } from './conversation-store';
 import { buildProjectContext } from './project-manager';
@@ -296,6 +297,47 @@ function sendError(mainWindow: BrowserWindow, msg: string, extraWC?: WebContents
   sendChunk(mainWindow, `❌ ${msg}`, true, extraWC);
 }
 
+/**
+ * Hydrate in-memory conversation window from persisted SQLite conversation history.
+ *
+ * This is needed after app restart: UI can render DB history, but agent memory starts empty.
+ * We restore user/assistant/system turns into the in-memory session exactly once per sessionId.
+ */
+function hydrateSessionFromConversationIfNeeded(sessionId: string, conversationId?: string): void {
+  if (!conversationId) return;
+  if (getFullHistory(sessionId).length > 0) return;
+
+  try {
+    const BATCH_SIZE = 200;
+    let offset = 0;
+    let restored = 0;
+
+    while (true) {
+      const rows = getConversationMessages(conversationId, offset, BATCH_SIZE);
+      if (!rows || rows.length === 0) break;
+
+      for (const row of rows) {
+        const content = (row.content || '').toString();
+        if (!content) continue;
+
+        if (row.role === 'user' || row.role === 'assistant' || row.role === 'system') {
+          addMessage(sessionId, { role: row.role as 'user' | 'assistant' | 'system', content });
+          restored++;
+        }
+      }
+
+      if (rows.length < BATCH_SIZE) break;
+      offset += rows.length;
+    }
+
+    if (restored > 0) {
+      console.log(`[agent] Hydrated ${restored} messages from conversation ${conversationId} into session ${sessionId}`);
+    }
+  } catch (e: any) {
+    console.error('[agent] Conversation hydration failed (non-fatal):', e?.message || e);
+  }
+}
+
 // Phase 9.12: Removed isReportDeliverableRequest and hasReportArtifacts — no forced retry loops.
 
 export async function runAgent(opts: AgentRunOptions): Promise<void> {
@@ -406,6 +448,9 @@ Timezone: ${tz}
 
     const activeSystemPrompt = dateContext + SYSTEM_PROMPT + codingMemoryContext;
     console.log('[agent] Run starting:', Object.keys(tools).length, 'tools,', browserContext.length, 'chars context, devMode:', developerMode, 'taskType:', taskType);
+
+    // Restore in-memory history from persisted conversation after restart/switch.
+    hydrateSessionFromConversationIfNeeded(sessionId, conversationId);
 
     // Add user message to history
     addMessage(sessionId, { role: 'user', content: userMessage });
