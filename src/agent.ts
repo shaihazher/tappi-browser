@@ -80,13 +80,14 @@ export function clearHistory(sessionId: string = 'default'): void {
  * The LLM calls `elements`, `text`, `grep` tools when it wants to see the page.
  * Only browser state (title, URL, tab count) and API services are injected.
  */
-function assembleContext(browserCtx: BrowserContext, llmConfig?: LLMConfig): string {
+/**
+ * Phase 10: Static context — appended to system prompt for prompt caching.
+ * These don't change between steps in the same agent run:
+ * user profile, API services, CLI tools, workspace, model info.
+ * Cached by Anthropic's prompt caching (90% discount on reads).
+ */
+function assembleStaticContext(browserCtx: BrowserContext, llmConfig?: LLMConfig): string {
   const parts: string[] = [];
-
-  // Current time + timezone (~20 tokens)
-  const now = new Date();
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  parts.push(`Time: ${now.toLocaleString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' })} (${tz})`);
 
   // Model context injection (Phase 8.85)
   if (llmConfig) {
@@ -95,13 +96,6 @@ function assembleContext(browserCtx: BrowserContext, llmConfig?: LLMConfig): str
       ? `${llmConfig.secondaryProvider || llmConfig.provider}/${llmConfig.secondaryModel}`
       : primaryLabel;
     parts.push(`Models: primary=${primaryLabel}, secondary=${secondaryLabel}`);
-  }
-
-  // Browser state — title, URL, tab count (~50 tokens)
-  try {
-    parts.push(browserTools.getBrowserState(browserCtx));
-  } catch (e) {
-    parts.push('Page: (unavailable)');
   }
 
   // Workspace hint — show configured workspace path
@@ -143,9 +137,30 @@ function assembleContext(browserCtx: BrowserContext, llmConfig?: LLMConfig): str
     console.error('[agent] Failed to inject user profile:', e);
   }
 
+  return parts.join('\n');
+}
+
+/**
+ * Phase 10: Dynamic context — injected into last user message per-step.
+ * These change between steps: time, browser state, login hints, identity, recipes.
+ * NOT cached since they're different on each LLM call.
+ */
+function assembleDynamicContext(browserCtx: BrowserContext): string {
+  const parts: string[] = [];
+
+  // Current time + timezone (~20 tokens)
+  const now = new Date();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  parts.push(`Time: ${now.toLocaleString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' })} (${tz})`);
+
+  // Browser state — title, URL, tab count (~50 tokens)
+  try {
+    parts.push(browserTools.getBrowserState(browserCtx));
+  } catch (e) {
+    parts.push('Page: (unavailable)');
+  }
+
   // Login detection hint (Phase 8.4.3)
-  // If the active tab has a detected login form, inject a credential hint (~30 tokens).
-  // This lets the agent proactively offer autofill without being asked.
   try {
     const wc = browserCtx.tabManager.activeWebContents;
     if (wc) {
@@ -153,7 +168,7 @@ function assembleContext(browserCtx: BrowserContext, llmConfig?: LLMConfig): str
       if (loginHint) parts.push('', loginHint);
     }
   } catch {
-    // Non-fatal — agent works fine without the hint
+    // Non-fatal
   }
 
   // Active profile hint (Phase 8.4.4)
@@ -167,7 +182,6 @@ function assembleContext(browserCtx: BrowserContext, llmConfig?: LLMConfig): str
   }
 
   // Multi-identity site hint (Phase 8.4.6)
-  // If current page has multiple identities stored, tell the agent about them.
   try {
     const wc = browserCtx.tabManager.activeWebContents;
     if (wc) {
@@ -404,7 +418,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
 
   try {
     const model = createModel(llmConfig);
-    const browserContext = assembleContext(browserCtx, llmConfig);
+    // Phase 10: Split context into static (cached in system prompt) and dynamic (per-step)
+    const staticContext = assembleStaticContext(browserCtx, llmConfig);
+    const browserContext = assembleDynamicContext(browserCtx);
 
     // ─── Project context injection (Phase 9.07 / 9.099) ────────────────────
     // If the current conversation has a project_id, inject a compact project
@@ -472,8 +488,13 @@ Time: ${now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
 Timezone: ${tz}
 `;
 
-    const activeSystemPrompt = dateContext + SYSTEM_PROMPT + codingMemoryContext;
-    console.log('[agent] Run starting:', Object.keys(tools).length, 'tools,', browserContext.length, 'chars context, devMode:', developerMode, 'taskType:', taskType);
+    // Phase 10: Static context (user profile, API services, CLI tools, project, coding memory)
+    // is appended to the system prompt where it benefits from prompt caching.
+    // Dynamic context (time, browser state, login hints) stays in the per-step user message.
+    const staticCtxBlock = staticContext ? `\n\n## Session Context\n${staticContext}` : '';
+    const projectCtxBlock = projectContextBlock ? `\n\n${projectContextBlock}` : '';
+    const activeSystemPrompt = dateContext + SYSTEM_PROMPT + codingMemoryContext + staticCtxBlock + projectCtxBlock;
+    console.log('[agent] Run starting:', Object.keys(tools).length, 'tools,', browserContext.length, 'chars dynamic ctx,', staticContext.length, 'chars static ctx, devMode:', developerMode, 'taskType:', taskType);
 
     // Restore in-memory history from persisted conversation after restart/switch.
     hydrateSessionFromConversationIfNeeded(sessionId, conversationId);
@@ -484,15 +505,14 @@ Timezone: ${tz}
     // Build messages for LLM from the rolling window
     const history = getWindow(sessionId);
 
-    // Inject browser state into the last user message as a lightweight system note
+    // Phase 10: Inject only dynamic browser state into the last user message.
+    // Static context (user profile, project, API services) is in the system prompt (cached).
     const messages: ChatMessage[] = [];
     for (let i = 0; i < history.length; i++) {
       const msg = history[i];
       if (i === history.length - 1 && msg.role === 'user' && typeof msg.content === 'string') {
-        // Inject browser context (and optional project context) into the last user message
         const ctxParts = [`[Browser: ${browserContext}]`];
-        if (projectContextBlock) ctxParts.push(projectContextBlock);
-        // Inject working context (active working dir and last file)
+        // Working context (active working dir and last file) — changes per file operation
         const workingDir = getWorkingDir(sessionId);
         const lastFile = getLastFile(sessionId);
         if (workingDir) ctxParts.push(`Working Dir: ${workingDir}`);

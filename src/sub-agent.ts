@@ -78,12 +78,13 @@ const MAX_CONCURRENT = 5;
 const activeAgents = new Map<string, SubAgentTask>();
 let agentCounter = 0;
 
-// Phase 9.12: Depth presets — control how much work a sub-agent does
+// Phase 10: Depth presets — tighter step/output budgets for token efficiency.
+// quick: 3 steps (was 5), standard: 10 steps (was 15), deep: 20 steps (was 30).
 export type SubAgentDepth = 'quick' | 'standard' | 'deep';
-const DEPTH_PRESETS: Record<SubAgentDepth, { maxSteps: number; maxSources: number; maxOutputChars: number; thinkingEnabled: boolean }> = {
-  quick:    { maxSteps: 5,  maxSources: 1, maxOutputChars: 800,  thinkingEnabled: false },
-  standard: { maxSteps: 15, maxSources: 3, maxOutputChars: 2000, thinkingEnabled: false },
-  deep:     { maxSteps: 30, maxSources: 5, maxOutputChars: 4000, thinkingEnabled: true },
+const DEPTH_PRESETS: Record<SubAgentDepth, { maxSteps: number; maxSources: number; maxOutputChars: number; thinkingEnabled: boolean; maxOutputTokens: number }> = {
+  quick:    { maxSteps: 3,  maxSources: 1, maxOutputChars: 800,  thinkingEnabled: false, maxOutputTokens: 4096 },
+  standard: { maxSteps: 10, maxSources: 3, maxOutputChars: 2000, thinkingEnabled: false, maxOutputTokens: 16384 },
+  deep:     { maxSteps: 20, maxSources: 5, maxOutputChars: 4000, thinkingEnabled: true,  maxOutputTokens: 16384 },
 };
 
 // ─── Task Classifier ───
@@ -658,8 +659,11 @@ async function runSubAgent(
   const abortSignal = agentTask.abortController?.signal;
 
   try {
-    console.log(`[sub-agent] ${agentTask.id} running with model: ${llmConfig.provider}/${llmConfig.model}, thinking: ${llmConfig.thinking}`);
-    const model = createModel(llmConfig);
+    // Phase 10: llmConfig already has thinking set from depth preset (see spawnSubAgent).
+    // Use it directly for model creation and provider options.
+    const subLlmConfig = llmConfig;
+    console.log(`[sub-agent] ${agentTask.id} running with model: ${subLlmConfig.provider}/${subLlmConfig.model}, thinking: ${subLlmConfig.thinking}, maxOutput: ${depthPreset.maxOutputTokens}, maxSteps: ${MAX_STEPS}`);
+    const model = createModel(subLlmConfig);
     const tools = createTools(browserCtx, sessionId, {
       lockedTabId: assignedTabId,
     });
@@ -696,9 +700,9 @@ Timezone: ${tz}
       ? `${dateContext}${SUB_AGENT_BASE_PROMPT}\n\n${budgetNote}\n\n${contract}`
       : `${dateContext}${SUB_AGENT_BASE_PROMPT}\n\n${budgetNote}`;
 
-    const providerOptions = buildProviderOptions(llmConfig);
+    const providerOptions = buildProviderOptions(subLlmConfig);
     const callProviderOptions: Record<string, any> = withCodexProviderOptions(
-      llmConfig.provider,
+      subLlmConfig.provider,
       { ...providerOptions },
       systemPrompt,
       systemPrompt,
@@ -857,10 +861,34 @@ Timezone: ${tz}
         system: systemPrompt,
         messages: llmMessages as any,
         tools,
-        ...(llmConfig.provider !== 'openai-codex' ? { maxOutputTokens: 30000 } : {}),
+        // Phase 10: Depth-based output token limit (was 30000 for all depths)
+        ...(subLlmConfig.provider !== 'openai-codex' ? { maxOutputTokens: depthPreset.maxOutputTokens } : {}),
         ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
         stopWhen: stepCountIs(MAX_STEPS),
         abortSignal,
+        // Phase 10: Truncate old tool results to prevent context bloat across multi-step loops.
+        // Tool results >3000 chars are trimmed before each subsequent LLM call.
+        prepareStep: async ({ messages: currentMessages }: { messages: any[] }) => {
+          return {
+            messages: currentMessages.map((msg: any) => {
+              if (msg.role === 'tool' && typeof msg.content === 'string' && msg.content.length > 3000) {
+                return { ...msg, content: msg.content.slice(0, 3000) + '\n...(truncated)' };
+              }
+              if (msg.role === 'tool' && Array.isArray(msg.content)) {
+                return {
+                  ...msg,
+                  content: msg.content.map((part: any) => {
+                    if (part.type === 'tool-result' && typeof part.result === 'string' && part.result.length > 3000) {
+                      return { ...part, result: part.result.slice(0, 3000) + '\n...(truncated)' };
+                    }
+                    return part;
+                  }),
+                };
+              }
+              return msg;
+            }),
+          };
+        },
         onStepFinish: handleStepFinish,
       });
 

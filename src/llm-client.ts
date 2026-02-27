@@ -129,15 +129,22 @@ export interface LLMConfig {
 
 /**
  * Get LLM config for a given purpose ('primary' | 'secondary').
- * If no secondary model is configured, always returns primary config.
- * This is the central routing function for model selection (Phase 8.85).
+ * Phase 10: Re-enabled secondary model routing for token efficiency.
+ * Sub-agents and utility tasks (titles, summaries) can use a cheaper model
+ * (e.g., Haiku) when configured, reducing costs by up to 10x.
  */
 export function getModelConfig(
-  _purpose: 'primary' | 'secondary',
+  purpose: 'primary' | 'secondary',
   config: LLMConfig,
 ): LLMConfig {
-  // Phase 9.14: Secondary model routing removed.
-  // All calls (primary + secondary tasks) use the same provider/model/api key.
+  if (purpose === 'secondary' && config.secondaryModel) {
+    return {
+      ...config,
+      model: config.secondaryModel,
+      provider: config.secondaryProvider || config.provider,
+      apiKey: config.secondaryApiKey || config.apiKey,
+    };
+  }
   return config;
 }
 
@@ -156,17 +163,32 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
   switch (provider) {
     case 'anthropic':
     case 'bedrock': {
-      // Adaptive thinking (Opus 4.6 / Sonnet 4.6): model decides when/how much to think.
-      // No effort constraint — let the model reason as much as it needs.
-      // maxOutputTokens (set by caller, ~16K) gives headroom for thinking + response.
+      // Phase 10: Prompt caching + context management for token efficiency.
+      // cacheControl: Caches system prompt + tool definitions (90% read discount, 5min TTL).
+      // contextManagement: Server-side compaction — strips old tool uses at 80K tokens,
+      //   compacts entire conversation at 120K tokens. Prevents O(n^2) growth.
+      const opts: Record<string, any> = {
+        cacheControl: { type: 'ephemeral' },
+        contextManagement: {
+          edits: [
+            {
+              type: 'clear_tool_uses_20250919',
+              trigger: { type: 'input_tokens', value: 80000 },
+              keep: { type: 'tool_uses', value: 5 },
+              clearToolInputs: true,
+            },
+            {
+              type: 'compact_20260112',
+              trigger: { type: 'input_tokens', value: 120000 },
+              instructions: 'Preserve key findings, URLs, file paths, and user preferences. Summarize tool interactions.',
+            },
+          ],
+        },
+      };
       if (thinkingEnabled) {
-        return {
-          anthropic: {
-            thinking: { type: 'adaptive' },
-          },
-        };
+        opts.thinking = { type: 'adaptive' };
       }
-      return {};
+      return { anthropic: opts };
     }
 
     case 'openai-codex': {

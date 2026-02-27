@@ -28,12 +28,12 @@ interface ConversationState {
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 /**
- * Experimental mode: feed full conversation history on every turn (no truncation).
- *
- * This intentionally balloons context turn-over-turn to maximize continuity.
- * Cost/latency can grow significantly in long sessions.
+ * Phase 10: Bounded history mode activated for token efficiency.
+ * The rolling window (100K token budget) with eviction summaries is now the default.
+ * Combined with Anthropic's context management (server-side compaction at 80K/120K),
+ * this prevents O(n^2) growth in long sessions.
  */
-const UNBOUNDED_HISTORY_MODE = true;
+const UNBOUNDED_HISTORY_MODE = false;
 
 /** Target token budget for the rolling window sent to the LLM (when bounded mode is used). */
 const WINDOW_TOKEN_BUDGET = 100_000;

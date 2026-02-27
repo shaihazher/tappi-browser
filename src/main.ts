@@ -153,10 +153,8 @@ function normalizeLoadedConfig(raw: any): TappiConfig {
     developerMode: raw?.developerMode ?? false,
   };
 
-  // Phase 9.14: secondary model routing removed — always use primary.
-  merged.llm.secondaryProvider = undefined;
-  merged.llm.secondaryModel = undefined;
-  merged.llm.secondaryApiKey = undefined;
+  // Phase 10: Secondary model routing re-enabled for token efficiency.
+  // Users can configure a cheaper secondary model (e.g., Haiku) for sub-agents.
 
   return merged;
 }
@@ -1714,9 +1712,7 @@ Rules:
       if ((updates.llm as any).thinkingEffort !== undefined) currentConfig.llm.thinkingEffort = (updates.llm as any).thinkingEffort;
       if ((updates.llm as any).codingMode !== undefined) currentConfig.llm.codingMode = (updates.llm as any).codingMode;
       if ((updates.llm as any).worktreeIsolation !== undefined) currentConfig.llm.worktreeIsolation = (updates.llm as any).worktreeIsolation;
-      // Phase 9.14: secondary model routing removed — always use primary.
-      currentConfig.llm.secondaryProvider = undefined;
-      currentConfig.llm.secondaryModel = undefined;
+      // Phase 10: Secondary model routing re-enabled — no longer force-clearing.
     }
     if ((updates as any).rawApiKey !== undefined) {
       const rawKey = (updates as any).rawApiKey;
