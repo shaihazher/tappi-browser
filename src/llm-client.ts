@@ -330,6 +330,31 @@ function buildCodexAuthHeaders(apiKey: string): Record<string, string> {
   return headers;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableLiteLLMError(err: any): boolean {
+  const msg = String(err?.message || '').toLowerCase();
+  const causeCode = String(err?.cause?.code || '').toLowerCase();
+
+  if (msg.includes('aborted') || msg.includes('aborterror')) return false;
+
+  return (
+    msg.includes('fetch failed')
+    || msg.includes('network')
+    || msg.includes('socket hang up')
+    || msg.includes('econnreset')
+    || msg.includes('econnrefused')
+    || msg.includes('etimedout')
+    || msg.includes('eai_again')
+    || causeCode === 'econnreset'
+    || causeCode === 'econnrefused'
+    || causeCode === 'etimedout'
+    || causeCode === 'eai_again'
+  );
+}
+
 export function createModel(config: LLMConfig): LanguageModel {
   const { provider, apiKey } = config;
   const model = config.model || DEFAULT_MODELS[provider] || DEFAULT_MODELS.anthropic;
@@ -1363,20 +1388,41 @@ export async function runLiteLLMCodexToolLoop(opts: LiteLLMRunOptions): Promise<
         : {}),
     };
 
-    const stepStream = await runLiteLLMStreamStep({
-      config,
-      body,
-      stepNumber,
-      abortSignal: opts.abortSignal,
-      onTextDelta: (delta) => {
-        fullText += delta;
-        opts.onTextDelta?.(delta);
-      },
-      onReasoningDelta: (delta) => {
-        fullReasoning += delta;
-        opts.onReasoningDelta?.(delta);
-      },
-    });
+    let stepStream: LiteLLMStepRawResult | null = null;
+    const streamRetries = 2;
+    for (let attempt = 0; attempt <= streamRetries; attempt++) {
+      try {
+        stepStream = await runLiteLLMStreamStep({
+          config,
+          body,
+          stepNumber,
+          abortSignal: opts.abortSignal,
+          onTextDelta: (delta) => {
+            fullText += delta;
+            opts.onTextDelta?.(delta);
+          },
+          onReasoningDelta: (delta) => {
+            fullReasoning += delta;
+            opts.onReasoningDelta?.(delta);
+          },
+        });
+        break;
+      } catch (err: any) {
+        if (opts.abortSignal?.aborted) throw err;
+        const retryable = isRetryableLiteLLMError(err);
+        if (!retryable || attempt >= streamRetries) throw err;
+        const waitMs = 250 * (attempt + 1);
+        console.warn(
+          `[${logPrefix}] STEP ${stepNumber + 1} stream failed (${err?.message || err}); ` +
+          `retrying in ${waitMs}ms (${attempt + 1}/${streamRetries})`,
+        );
+        await sleep(waitMs);
+      }
+    }
+
+    if (!stepStream) {
+      throw new Error(`LiteLLM step ${stepNumber + 1} failed: no stream response`);
+    }
 
     usage.inputTokens += stepStream.usage.inputTokens;
     usage.outputTokens += stepStream.usage.outputTokens;
@@ -1388,12 +1434,33 @@ export async function runLiteLLMCodexToolLoop(opts: LiteLLMRunOptions): Promise<
     if (step.toolIntent && step.toolCalls.length === 0) {
       metrics.emptyToolIntentRetries += 1;
       retryNonStream = true;
-      const nonStream = await runLiteLLMNonStreamStep({
-        config,
-        body,
-        stepNumber,
-        abortSignal: opts.abortSignal,
-      });
+      let nonStream: LiteLLMStepRawResult | null = null;
+      const nonStreamRetries = 1;
+      for (let attempt = 0; attempt <= nonStreamRetries; attempt++) {
+        try {
+          nonStream = await runLiteLLMNonStreamStep({
+            config,
+            body,
+            stepNumber,
+            abortSignal: opts.abortSignal,
+          });
+          break;
+        } catch (err: any) {
+          if (opts.abortSignal?.aborted) throw err;
+          const retryable = isRetryableLiteLLMError(err);
+          if (!retryable || attempt >= nonStreamRetries) throw err;
+          const waitMs = 250 * (attempt + 1);
+          console.warn(
+            `[${logPrefix}] STEP ${stepNumber + 1} non-stream failed (${err?.message || err}); ` +
+            `retrying in ${waitMs}ms (${attempt + 1}/${nonStreamRetries})`,
+          );
+          await sleep(waitMs);
+        }
+      }
+
+      if (!nonStream) {
+        throw new Error(`LiteLLM step ${stepNumber + 1} failed: no non-stream response`);
+      }
 
       usage.inputTokens += nonStream.usage.inputTokens;
       usage.outputTokens += nonStream.usage.outputTokens;
