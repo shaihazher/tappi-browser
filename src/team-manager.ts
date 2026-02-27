@@ -18,7 +18,7 @@ import {
 } from './llm-client';
 import { createTools } from './tool-registry';
 import type { BrowserContext } from './browser-tools';
-import { addMessage, clearHistory } from './conversation';
+import { addMessage, addMessages, getWindow, clearHistory, type ChatMessage } from './conversation';
 import { purgeSession } from './output-buffer';
 import { cleanupSession, addProtectedPath, removeProtectedPath, clearContractFilePaths } from './shell-tools';
 import {
@@ -184,6 +184,34 @@ function extractMeaningfulPhrase(text: string): string {
   const last = (sentences[sentences.length - 1] || '').replace(/\n/g, ' ').trim();
   if (last.length > 15 && last.length < 80) return last;
   return '';
+}
+
+async function persistTeammateStructuredHistory(
+  sessionId: string,
+  result: any,
+  fullResponse: string,
+  logPrefix: string,
+): Promise<void> {
+  try {
+    const response = await result?.response;
+    const responseMessages = response?.messages || [];
+
+    if (Array.isArray(responseMessages) && responseMessages.length > 0) {
+      addMessages(sessionId, responseMessages as ChatMessage[]);
+      console.log(`[team] ${logPrefix}: persisted ${responseMessages.length} structured response messages`);
+      return;
+    }
+
+    if (fullResponse && fullResponse.trim().length > 0) {
+      addMessage(sessionId, { role: 'assistant', content: fullResponse });
+      console.log(`[team] ${logPrefix}: persisted flat assistant response fallback`);
+    }
+  } catch (persistErr: any) {
+    console.error(`[team] ${logPrefix}: failed to persist structured response messages, falling back:`, persistErr?.message);
+    if (fullResponse && fullResponse.trim().length > 0) {
+      addMessage(sessionId, { role: 'assistant', content: fullResponse });
+    }
+  }
 }
 
 // ─── Active Teams ───
@@ -481,6 +509,7 @@ async function runTeammateSession(
     const userContent = `${task}${inboxContext}`;
 
     addMessage(sessionId, { role: 'user', content: userContent });
+    const teammateMessages = getWindow(sessionId);
 
     // Phase 9.096d: Freeze invocation config for surgical resume
     teammate._systemPrompt = systemPrompt;
@@ -489,7 +518,7 @@ async function runTeammateSession(
     teammate._provider = tmConfig.provider;
 
     // Phase 9.096d: Initialize conversation history for interrupt/resume
-    teammate.conversationHistory = [{ role: 'user', content: userContent }];
+    teammate.conversationHistory = teammateMessages;
     teammate.partialResponse = '';
 
     // Phase 8.40: Timeout-based execution — no step limit
@@ -518,7 +547,7 @@ async function runTeammateSession(
     result = await streamText({
       model,
       system: systemPrompt,
-      messages: [{ role: 'user', content: userContent }],
+      messages: teammateMessages as any,
       tools,
       maxOutputTokens: 30000,
       ...(Object.keys(tmCallProviderOptions).length > 0 ? { providerOptions: tmCallProviderOptions } : {}),
@@ -744,6 +773,10 @@ async function runTeammateSession(
         teammate.status = 'blocked';
         teammate.error = timeoutMsg;
         teammate.finishedAt = Date.now();
+        if (fullResponse && fullResponse.trim().length > 0) {
+          addMessage(sessionId, { role: 'assistant', content: fullResponse });
+        }
+        teammate.conversationHistory = getWindow(sessionId);
         notifyUpdate(teamId);
         return;
       } else if (streamErr?.name !== 'AbortError') {
@@ -753,6 +786,9 @@ async function runTeammateSession(
       clearTimeout(tmTimeoutHandle);
       clearInterval(pulseInterval);
     }
+
+    await persistTeammateStructuredHistory(sessionId, result, fullResponse, `${name}.session`);
+    teammate.conversationHistory = getWindow(sessionId);
 
     teammate.result = fullResponse || `Used ${teammate.toolsUsed.length} tools: ${[...new Set(teammate.toolsUsed)].join(', ')}`;
     teammate.status = 'done';
@@ -793,7 +829,6 @@ async function runTeammateSession(
   } finally {
     cleanupSession(sessionId);
     purgeSession(sessionId);
-    clearHistory(sessionId);
   }
 }
 
@@ -919,8 +954,14 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
   teamBroadcast('team:teammate-start', { id: teammate.id, name, role: teammate.role, task: '(resuming after interrupt)' });
 
   try {
-    // Update conversation history to resumed state
-    teammate.conversationHistory = resumeHistory;
+    // Append redirect turn into teammate history and continue from full context
+    for (const msg of resumeHistory) {
+      if (msg && (msg.role === 'user' || msg.role === 'assistant' || msg.role === 'system')) {
+        addMessage(sessionId, msg as ChatMessage);
+      }
+    }
+    const resumedMessages = getWindow(sessionId);
+    teammate.conversationHistory = resumedMessages;
     teammate.partialResponse = '';
 
     // Pulse system
@@ -944,11 +985,10 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
       systemPrompt,
     );
 
-    // Resume messages are always plain text (user role) — can never fail SDK validation
     const result = await streamText({
       model,
       system: systemPrompt,
-      messages: resumeHistory,
+      messages: resumedMessages as any,
       tools,
       maxOutputTokens: 30000, // universal cap
       ...(Object.keys(resumeCallProviderOptions).length > 0 ? { providerOptions: resumeCallProviderOptions } : {}),
@@ -1057,6 +1097,9 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
     } finally {
       clearInterval(pulseInterval);
     }
+
+    await persistTeammateStructuredHistory(sessionId, result, fullResponse, `${name}.resume`);
+    teammate.conversationHistory = getWindow(sessionId);
 
     teammate.result = fullResponse || `Resumed — ${teammate.toolsUsed.length} tools used`;
     teammate.status = 'done';
