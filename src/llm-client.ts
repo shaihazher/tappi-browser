@@ -134,12 +134,28 @@ export function getModelConfig(
     // No secondary configured → everything uses primary
     return config;
   }
+
+  const secondaryProvider = config.secondaryProvider || config.provider;
+  const secondaryModel = config.secondaryModel;
+
+  // Guard against stale/mismatched legacy config.
+  // Example: provider=openai-codex + secondaryModel=x-ai/grok-4.1-fast
+  // (left over from older OpenRouter secondary settings).
+  // In that case, fall back to primary so background secondary calls
+  // (titles/summaries/teammates) don't explode while primary chat still works.
+  if (secondaryProvider === 'openai-codex' && secondaryModel.includes('/')) {
+    return {
+      ...config,
+      thinking: false,
+    };
+  }
+
   // Phase 9.12: Secondary model gets thinking OFF by default for cost efficiency.
   // Sub-agents and teammates override this via their depth/config as needed.
   return {
     ...config,
-    provider: config.secondaryProvider || config.provider,
-    model: config.secondaryModel,
+    provider: secondaryProvider,
+    model: secondaryModel,
     apiKey: config.secondaryApiKey || config.apiKey,
     thinking: false,
   };
