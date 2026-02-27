@@ -1142,7 +1142,7 @@ function createWindow() {
 
   // ─── Prompt Enhancement (Phase 9.098) ───────────────────────────────────────
   ipcMain.handle('aria:enhance-prompt', async (_e, prompt: string, webSearch: boolean, mode: 'quick' | 'deep' = 'quick') => {
-    const { generateText } = await import('ai');
+    const { generateText, streamText } = await import('ai');
     const { createModel, buildProviderOptions, withCodexProviderOptions } = await import('./llm-client');
 
     if (!currentConfig.llm?.apiKey) {
@@ -1269,11 +1269,23 @@ Rules:
         systemPrompt,
       );
 
+      if (currentConfig.llm.provider === 'openai-codex') {
+        const streamed = streamText({
+          model,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: prompt + contextBlock }],
+          ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
+        });
+        let enhanced = '';
+        for await (const chunk of streamed.textStream) enhanced += chunk;
+        return { enhanced, mode };
+      }
+
       const result = await generateText({
         model,
         system: systemPrompt,
         messages: [{ role: 'user', content: prompt + contextBlock }],
-        ...(currentConfig.llm.provider !== 'openai-codex' ? { maxOutputTokens: maxTokens } : {}),
+        maxOutputTokens: maxTokens,
         ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
       });
 
