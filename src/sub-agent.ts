@@ -464,6 +464,42 @@ export function killSubAgent(id: string, browserCtx: BrowserContext): string {
 
 // ─── Status ───
 
+function summarizeTranscriptTail(transcript: ChatMessage[], limit = 4): string {
+  const tail = transcript.slice(-Math.max(1, limit));
+  const lines: string[] = [];
+
+  for (const msg of tail) {
+    const role = (msg as any).role || 'unknown';
+    if (role === 'assistant') {
+      const content = (msg as any).content;
+      if (typeof content === 'string') {
+        const text = content.replace(/\s+/g, ' ').trim();
+        if (text) lines.push(`[assistant] ${text.slice(0, 180)}${text.length > 180 ? '…' : ''}`);
+      } else if (Array.isArray(content)) {
+        for (const part of content) {
+          if (!part || typeof part !== 'object') continue;
+          if (part.type === 'text' && typeof part.text === 'string' && part.text.trim()) {
+            const text = part.text.replace(/\s+/g, ' ').trim();
+            lines.push(`[assistant] ${text.slice(0, 180)}${text.length > 180 ? '…' : ''}`);
+          } else if (part.type === 'tool-call') {
+            lines.push(`[tool-call] ${part.toolName || 'unknown'}(${JSON.stringify(part.args || {}).slice(0, 120)})`);
+          }
+        }
+      }
+    } else if (role === 'tool') {
+      const content = (msg as any).content;
+      const text = (typeof content === 'string' ? content : JSON.stringify(content || '')).replace(/\s+/g, ' ').trim();
+      if (text) lines.push(`[tool-result] ${text.slice(0, 180)}${text.length > 180 ? '…' : ''}`);
+    } else if (role === 'user' || role === 'system') {
+      const content = (msg as any).content;
+      const text = (typeof content === 'string' ? content : JSON.stringify(content || '')).replace(/\s+/g, ' ').trim();
+      if (text) lines.push(`[${role}] ${text.slice(0, 140)}${text.length > 140 ? '…' : ''}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
 export function getSubAgentStatus(id?: string): string {
   if (id) {
     const agent = activeAgents.get(id);
@@ -501,6 +537,13 @@ export function getSubAgentStatus(id?: string): string {
       // Timing hint: suggest when to check again based on remaining steps
       const estimatedSeconds = Math.max(5, stepsLeft * 3); // ~3s per step remaining
       lines.push(`⏱ Check again in ~${Math.min(30, estimatedSeconds)}s or when steps exhausted.`);
+
+      // Add live transcript tail while running for better parent-agent visibility
+      const liveTranscript = getFullHistory(agent.sessionId);
+      if (liveTranscript.length > 0) {
+        const tail = summarizeTranscriptTail(liveTranscript, 4);
+        if (tail) lines.push(`Latest transcript tail:\n${tail}`);
+      }
     }
 
     if (agent.workingDir) lines.push(`Working Dir: ${agent.workingDir}`);
@@ -516,7 +559,7 @@ export function getSubAgentStatus(id?: string): string {
     // Contextual hints based on status
     if (agent.status === 'running') {
       const preset = DEPTH_PRESETS[agent.depth];
-      lines.push(`💡 Wait for completion. Budget: ${preset.maxSteps} steps max. Kill only if stuck (no progress for 60s).`);
+      lines.push(`💡 Wait for completion. Budget: ${preset.maxSteps} steps max.`);
     } else if (agent.status === 'killed') {
       lines.push(`💡 Sub-agent was killed. Partial result above — reuse findings instead of starting fresh.`);
     } else if (agent.status === 'completed' && agent.workingDir) {
@@ -549,6 +592,17 @@ export function getSubAgentStatus(id?: string): string {
 export function getSubAgentTranscript(id: string): { transcript: ChatMessage[] | null; error?: string } {
   const agent = activeAgents.get(id);
   if (!agent) return { transcript: null, error: `Sub-agent "${id}" not found.` };
+
+  // Live access while running
+  if (agent.status === 'running') {
+    const live = getFullHistory(agent.sessionId);
+    if (!live || live.length === 0) {
+      return { transcript: null, error: `No transcript available yet for ${id}.` };
+    }
+    return { transcript: live };
+  }
+
+  // Archived transcript after completion/kill/failure
   if (!agent.transcript || agent.transcript.length === 0) {
     return { transcript: null, error: `No transcript available for ${id}.` };
   }

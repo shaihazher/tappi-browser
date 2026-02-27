@@ -1420,7 +1420,7 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
     }),
 
     sub_agent_status: tool({
-      description: `Check sub-agent status and results. Call after spawn_agent to see if complete. Shows: steps used/remaining, recent tools, and **work in progress snippet** (first 400 chars of what sub-agent found so far). No id = list all agents. With id = detailed status + result. Statuses: "running" (still working), "completed" (done), "killed" (stopped, partial preserved). Example: sub_agent_status({ id: "sub-1" })`,
+      description: `Check sub-agent status and results. Call after spawn_agent to see if complete. Shows: steps used/remaining, recent tools, **work in progress snippet**, and **latest transcript tail** from the sub-agent loop. No id = list all agents. With id = detailed status + result. Statuses: "running" (still working), "completed" (done), "killed" (stopped, partial preserved). Example: sub_agent_status({ id: "sub-1" })`,
       inputSchema: z.object({
         id: z.string().optional().describe('Sub-agent ID (e.g. "sub-1")'),
       }),
@@ -1428,7 +1428,7 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
     }),
 
     kill_agent: tool({
-      description: `Kill a running sub-agent immediately. Partial result is preserved — check sub_agent_status after killing to see what the sub-agent found. USE WHEN: (1) Sub-agent stuck/no progress for 60+ seconds, (2) Off-track (wrong site, wrong task), (3) User cancellation. DO NOT KILL just because impatient — wait for sub-agent to use its budget. Prerequisite: Agent must be running. Example: kill_agent({ id: "sub-2" }) then sub_agent_status({ id: "sub-2" }) for partial result`,
+      description: `Kill a running sub-agent immediately. Partial result is preserved — check sub_agent_status after killing to see what the sub-agent found. Use only when explicitly needed (user cancellation or clearly wrong/off-track execution). Prerequisite: Agent must be running. Example: kill_agent({ id: "sub-2" }) then sub_agent_status({ id: "sub-2" }) for partial result`,
       inputSchema: z.object({
         id: z.string().describe('Sub-agent ID to kill (e.g. "sub-1")'),
       }),
@@ -1436,7 +1436,7 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
     }),
 
     sub_agent_transcript: tool({
-      description: `Get the FULL transcript of a sub-agent (all messages, tool calls, tool results). USE WHEN: (1) Sub-agent result is incomplete or unclear, (2) Debugging why sub-agent stopped, (3) You need to see intermediate tool results. Returns: Array of all messages in conversation order. Example: sub_agent_transcript({ id: "sub-1" })`,
+      description: `Get the FULL transcript of a sub-agent (all messages, tool calls, tool results). Works both while running (live transcript so far) and after completion/kill (archived transcript). USE WHEN: (1) result is incomplete or unclear, (2) debugging behavior, (3) you need intermediate tool evidence. Returns: Array of messages in conversation order. Example: sub_agent_transcript({ id: "sub-1" })`,
       inputSchema: z.object({
         id: z.string().describe('Sub-agent ID (e.g. "sub-1")'),
       }),
@@ -2339,22 +2339,22 @@ DO NOT USE FOR: Simple lookups, single-page tasks, anything you can do in 2-3 to
 **What You See When Checking Status:**
 - Steps used/remaining (budget progress)
 - Recent tools (activity indicator)
-- **Work in progress snippet** — first 400 chars of what sub-agent found so far
+- **Work in progress snippet**
+- **Latest transcript tail** (most recent loop messages)
 - When to check again
 
 **Patience Guidelines:**
 - **Wait for completion** — sub-agents have strict budgets and WILL finish
 - Depth budgets: "quick"=5 steps, "standard"=15 steps, "deep"=30 steps
 - Each tool call = 1 step. Research tasks typically use 5-10 steps.
-- Only kill if: (1) No progress for 60+ seconds, (2) Steps exhausted but still running, (3) User requests cancel
 
-**When to Kill:**
-- \`sub_agent_status\` shows same step count for 3+ consecutive checks
-- Steps used >= budget but agent still running
-- Sub-agent is clearly off-track (wrong site, wrong task)
+**Transcript Visibility:**
+- \`sub_agent_transcript({ id: "sub-1" })\` gives full transcript at any time
+- While running: returns live transcript so far
+- After done/killed/failed: returns archived full transcript
 
 **Partial Results:**
-- If you kill a sub-agent, the partial result is preserved in status
+- If a sub-agent is killed, the partial result is preserved in status
 - Read it before starting fresh — you may have useful findings already
 - Example: \`sub_agent_status({ id: "sub-1" })\` → check "Result:" section
 
