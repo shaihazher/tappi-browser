@@ -79,22 +79,26 @@ export function logProviderRequestError(scope: string, err: any): void {
 /**
  * Attach codex-specific provider options for the Codex OpenAI-compatible path.
  *
- * Keep signature stable for existing call sites, but ignore legacy `instructions`
- * injection from the old ChatGPT Codex backend.
+ * Direct Codex backend requires `instructions` on each request.
  */
 export function withCodexProviderOptions(
   provider: string,
   providerOptions: Record<string, any>,
-  _instructions: string,
-  _fallbackInstructions = 'You are Aria, a helpful AI assistant.',
+  instructions: string,
+  fallbackInstructions = 'You are Aria, a helpful AI assistant.',
 ): Record<string, any> {
   if (provider !== 'openai-codex') return providerOptions;
+
+  const resolvedInstructions = (instructions || '').trim() || fallbackInstructions;
+
   return {
     ...providerOptions,
     openai: {
       ...(providerOptions.openai || {}),
       // Codex should run at medium/high reasoning effort by default.
       reasoningEffort: (providerOptions.openai && providerOptions.openai.reasoningEffort) || 'medium',
+      // Required by direct ChatGPT Codex backend.
+      instructions: resolvedInstructions,
     },
   };
 }
