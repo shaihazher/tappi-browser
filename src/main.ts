@@ -1143,7 +1143,7 @@ function createWindow() {
   // ─── Prompt Enhancement (Phase 9.098) ───────────────────────────────────────
   ipcMain.handle('aria:enhance-prompt', async (_e, prompt: string, webSearch: boolean, mode: 'quick' | 'deep' = 'quick') => {
     const { generateText } = await import('ai');
-    const { createModel, buildProviderOptions } = await import('./llm-client');
+    const { createModel, buildProviderOptions, withCodexProviderOptions } = await import('./llm-client');
 
     if (!currentConfig.llm?.apiKey) {
       return { error: 'No API key configured' };
@@ -1255,11 +1255,26 @@ Rules:
       const systemPrompt = mode === 'deep' ? DEEP_ENHANCEMENT_PROMPT : QUICK_ENHANCEMENT_PROMPT;
       const maxTokens = mode === 'deep' ? 600 : 500;
 
+      const providerOptions = buildProviderOptions({
+        provider: currentConfig.llm.provider,
+        model: currentConfig.llm.model,
+        apiKey,
+        thinking: currentConfig.llm.thinking,
+        thinkingEffort: currentConfig.llm.thinkingEffort,
+      });
+      const callProviderOptions: Record<string, any> = withCodexProviderOptions(
+        currentConfig.llm.provider,
+        { ...providerOptions },
+        systemPrompt,
+        systemPrompt,
+      );
+
       const result = await generateText({
         model,
         system: systemPrompt,
         messages: [{ role: 'user', content: prompt + contextBlock }],
         ...(currentConfig.llm.provider !== 'openai-codex' ? { maxOutputTokens: maxTokens } : {}),
+        ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
       });
 
       return { enhanced: result.text, mode };
