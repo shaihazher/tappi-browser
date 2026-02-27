@@ -308,7 +308,7 @@ function checkElement(idx) {
   return JSON.stringify(result);
 }
 
-function extractText(selector, grep) {
+function extractText(selector, grep, offset) {
   const root = selector ? document.querySelector(selector) : document.body;
   if (!root) return JSON.stringify({ error: 'Selector not found: ' + selector });
 
@@ -402,12 +402,18 @@ function extractText(selector, grep) {
     return matchLines.join('\n').slice(0, 4000);
   }
 
-  // Default: return page text. If selector provided, allow more (targeted extraction).
+  // Default: return page text with offset-based pagination.
   // No selector = general page text, keep compact for context.
   const maxLen = selector ? 4000 : 1500;
   const fullText = allLines.join('\n');
-  if (fullText.length <= maxLen) return fullText;
-  return fullText.slice(0, maxLen - 50) + '\n... (' + allLines.length + ' lines total — use grep or selector)';
+  const start = offset || 0;
+  if (start > 0 && start >= fullText.length) return '(end of page content)';
+  const chunk = fullText.slice(start, start + maxLen);
+  const remaining = fullText.length - (start + chunk.length);
+  if (remaining > 0) {
+    return chunk + '\n... (' + remaining + ' chars remaining — use offset: ' + (start + chunk.length) + ' to continue)';
+  }
+  return chunk;
 }
 
 /**
@@ -906,7 +912,7 @@ contextBridge.exposeInMainWorld('__tappi', {
   focusElement: focusElement,
   checkElement: checkElement,
   setValueWithEvents: setValueWithEvents,
-  extractText: function(selector, grep) { return extractText(selector, grep); },
+  extractText: function(selector, grep, offset) { return extractText(selector, grep, offset); },
   clickElement: clickElement,
   getPageState: getPageState,
   // Phase 9.096e: Native DOM event helpers

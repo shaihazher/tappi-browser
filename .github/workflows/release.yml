@@ -27,10 +27,15 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
-      - name: Build macOS
-        run: npm run dist:mac
+      - name: Build macOS (arm64)
+        run: npx electron-builder --mac --arm64
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify native module arch
+        run: |
+          echo "Checking better-sqlite3 native module architecture..."
+          find release -name '*.node' -exec file {} \;
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -59,8 +64,8 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
-      - name: Build Windows
-        run: npm run dist:win
+      - name: Build Windows (x64)
+        run: npx electron-builder --win --x64
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -68,7 +73,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-builds
-          path: release/*.exe
+          path: |
+            release/*.exe
           retention-days: 30
 
   build-linux:
@@ -88,10 +94,15 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
-      - name: Build Linux
-        run: npm run dist:linux
+      - name: Build Linux (x64)
+        run: npx electron-builder --linux --x64
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify native module arch
+        run: |
+          echo "Checking better-sqlite3 native module architecture..."
+          find release -name '*.node' -exec file {} \;
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -120,24 +131,43 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name || 'v0.1.3' }}
           files: |
             release-artifacts/mac-builds/*
             release-artifacts/windows-builds/*
             release-artifacts/linux-builds/*
-          generate_release_notes: true
           body: |
+            ## v0.1.3 — Browsing Tool Fixes for AI Agents
+
+            Fixes 3 critical bugs in the browsing tools that caused AI agents to go in circles during multi-source web research tasks. The same LLM that worked perfectly in other environments would get stranded in Tappi because tools returned incomplete/wrong/confusing data.
+
+            ### Bug fixes
+
+            **text() pagination** — `text()` was hard-capped at 1,500 chars with no way to read more. Calling it again returned the identical snippet. Agents burned steps thinking they were gathering data but got duplicates every time. Now supports `offset` parameter with clear "use offset: N to continue" hints for paginated reading of full articles.
+
+            **click() + navigate() load wait** — Clicking a search result link only waited 500ms before returning. JS-heavy sites (McKinsey, Vogue Business, etc.) hadn't rendered yet, so `text()` returned "(empty page)". Agents interpreted this as dead pages and abandoned good sources. Now uses a two-phase content wait: first `did-finish-load`, then polls for rendered DOM content — handles React/Next.js SPA hydration.
+
+            **search() tab awareness** — Each `search()` call silently retargeted the agent tab without reporting which tab it opened. After 3 searches, all tools operated on the last tab with no indication. Tab list didn't show targeting either. Now search reports "opened in tab [N], now targeting it" and tab list marks the targeted tab with `(targeted)`.
+
+            **text() auto-retry on empty** — When a page appears empty (SPA still hydrating), `text()` now retries up to 4× over 2 seconds before giving up. Eliminates false "(empty page)" results on dynamic sites.
+
+            **navigate() background tab load** — Opening URLs from the Aria tab created background tabs but returned "Page loaded" instantly without waiting. Now waits for content to render before returning.
+
+            ### Architecture fix
+
+            **Native module arch mismatch resolved** — Previous release had ARM64 `better-sqlite3` packaged in x64 Linux builds, causing silent crashes on startup. CI now builds single-arch per platform with explicit `--arm64` / `--x64` flags and post-build arch verification.
+
+            ---
+
             ## Platform binaries
-            - macOS: `.dmg` and `.zip`
-            - Windows: `.exe`
-            - Linux: `.AppImage`, `.deb`, `.rpm`
+            - **macOS** (Apple Silicon): `.dmg` and `.zip`
+            - **Windows** (x64): `.exe` installer + portable
+            - **Linux** (x64): `.AppImage`, `.deb`, `.rpm`
 
-            ## macOS note (Gatekeeper / quarantine)
-            If macOS blocks launch with messages like “app is damaged” or “cannot be opened”, clear quarantine attributes:
-
+            ### macOS note (Gatekeeper / quarantine)
+            If macOS blocks launch with "app is damaged" or "cannot be opened":
             ```bash
             xattr -cr /Applications/Tappi.app
             ```
-
-            Then reopen the app.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

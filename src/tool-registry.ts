@@ -220,14 +220,15 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     text: tool({
-      description: `Extract readable text from the page. USE CASES: reading articles, error messages, labels, any visible content. FOR FINDING/CLICKING ELEMENTS: use elements() instead — it gives you clickable indexes. Default: ~1.5KB of page text. Use grep: "error" to search for specific text. Use selector: ".message" to scope to a section. Example: text({ grep: "price" }) returns lines containing "price".`,
+      description: `Extract readable text from the page. USE CASES: reading articles, error messages, labels, any visible content. FOR FINDING/CLICKING ELEMENTS: use elements() instead — it gives you clickable indexes. Default: ~1.5KB of page text. Use offset to paginate through long articles (follow the "... remaining" hint). Use grep: "error" to search for specific text. Use selector: ".message" to scope to a section. Example: text({ grep: "price" }) or text({ offset: 1500 }) to continue reading.`,
       inputSchema: z.object({
         selector: z.string().optional().describe('CSS selector to scope extraction'),
         grep: z.string().optional().describe('Search page text for this string, return matching passages'),
+        offset: z.number().optional().describe('Character offset for pagination — use the value from the "... remaining" hint to continue reading'),
         tab: z.number().optional().describe('Tab index (0-based) to target — omit for current/agent-targeted tab'),
       }),
-      execute: async ({ selector, grep, tab }: { selector?: string; grep?: string; tab?: number }) => {
-        const result = await pageTools.pageText(getWC(tab), selector, grep);
+      execute: async ({ selector, grep, offset, tab }: { selector?: string; grep?: string; offset?: number; tab?: number }) => {
+        const result = await pageTools.pageText(getWC(tab), selector, grep, offset);
         if (typeof result === 'string' && result.length > 8192) {
           return result + '\n\n💡 Large page text (' + Math.round(result.length / 1024) + 'KB). Use text({ grep: \'keyword\' }) to search specific content instead.';
         }

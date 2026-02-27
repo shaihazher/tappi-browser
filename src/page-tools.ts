@@ -13,6 +13,7 @@ import { clipboard, NativeImage } from 'electron';
 import type { WebContents } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import { waitForLoad, waitForContent } from './browser-tools';
 
 // ─── Helpers ───
 
@@ -92,6 +93,8 @@ export async function pageClick(wc: WebContents, index: number): Promise<string>
   let urlAfter = '';
   try { urlAfter = wc.getURL(); } catch {}
   if (urlAfter && urlAfter !== urlBefore && !urlAfter.startsWith('about:')) {
+    // Wait for the new page to actually render content (handles JS-heavy SPAs)
+    await waitForContent(wc, 6000);
     return `✓ Clicked [${index}] '${label}'. Navigated to ${urlAfter}.\n⚠️ Elements stale — re-index with elements().`;
   }
 
@@ -105,7 +108,8 @@ export async function pageClick(wc: WebContents, index: number): Promise<string>
       status = ' — dialog opened';
     }
   } catch {
-    // callPreload threw — page likely navigated away
+    // callPreload threw — page likely navigated away. Wait for new page to render.
+    await waitForContent(wc, 6000);
     return `✓ Clicked [${index}] '${label}'. Navigated away.\n⚠️ Elements stale — re-index with elements().`;
   }
 
@@ -216,13 +220,27 @@ export async function pageCheck(wc: WebContents, index: number): Promise<string>
   return parts.join(' ');
 }
 
-export async function pageText(wc: WebContents, selector?: string, grep?: string): Promise<string> {
-  const text = await callPreload(wc, 'extractText', selector || null, grep || null);
+export async function pageText(wc: WebContents, selector?: string, grep?: string, offset?: number): Promise<string> {
+  let text = await callPreload(wc, 'extractText', selector || null, grep || null, offset ?? null);
   if (typeof text === 'object' && text.error) return text.error;
-  const result: string = text || '(empty page)';
+  let result: string = text || '';
+
+  // Auto-retry: if page appears empty, the page may still be rendering (SPA hydration).
+  // Poll briefly for content before giving up.
+  if (!result || result.trim().length < 50) {
+    for (let retry = 0; retry < 4; retry++) {
+      await new Promise(r => setTimeout(r, 500));
+      text = await callPreload(wc, 'extractText', selector || null, grep || null, offset ?? null);
+      if (typeof text === 'string' && text.trim().length >= 50) {
+        result = text;
+        break;
+      }
+    }
+    if (!result || result.trim().length === 0) return '(empty page)';
+  }
 
   // Enrichment 5: Guide agent when very little text was found (and no grep was used)
-  if (!grep && result.length < 100 && result !== '(empty page)') {
+  if (!grep && !offset && result.length < 100 && result !== '(empty page)') {
     return result + '\n\n💡 Very little text extracted. The page may use dynamic rendering. Try: elements() for interactive elements, scroll("down") + text() for lazy-loaded content, or screenshot for visual content.';
   }
 

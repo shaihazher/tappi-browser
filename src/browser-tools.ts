@@ -93,6 +93,29 @@ export function waitForLoad(wc: WebContents, timeoutMs = 4000): Promise<void> {
 }
 
 /**
+ * Wait for a page to have meaningful rendered content.
+ * First waits for the document to load (did-finish-load / did-stop-loading),
+ * then polls for non-trivial body text — handles JS-heavy SPAs that render
+ * content after the initial HTML load (React, Next.js, etc.).
+ */
+export async function waitForContent(wc: WebContents, timeoutMs = 6000): Promise<void> {
+  // Phase 1: Wait for document load
+  await waitForLoad(wc, Math.min(timeoutMs, 4000));
+
+  // Phase 2: Poll for rendered content (handles SPA hydration)
+  const deadline = Date.now() + Math.max(timeoutMs - 4000, 2000);
+  while (Date.now() < deadline) {
+    try {
+      const len = await wc.executeJavaScript(
+        `(document.body && document.body.innerText) ? document.body.innerText.trim().length : 0`
+      );
+      if (len > 200) return; // Page has meaningful content
+    } catch { return; } // Page destroyed or navigated, bail
+    await new Promise(r => setTimeout(r, 300));
+  }
+}
+
+/**
  * Lightweight page-type detection — runs AFTER the page has loaded.
  * Returns a short string tag describing the page type.
  */
@@ -348,10 +371,12 @@ export async function bTab(ctx: BrowserContext, args: string[]): Promise<string>
   // List tabs
   if (action === 'list') {
     const tabs = ctx.tabManager.getTabList();
+    const targetId = ctx.tabManager.agentTargetId;
     return tabs.map((t: any, i: number) => {
       const marker = t.active ? '→' : ' ';
       const icon = t.isAria ? '🪷' : '📄';
-      return `${marker} [${i}] ${icon} ${t.title}`;
+      const targeted = t.id === targetId ? ' (targeted)' : '';
+      return `${marker} [${i}] ${icon} ${t.title}${targeted}`;
     }).join('\n');
   }
 
@@ -487,15 +512,20 @@ export async function bNavigate(ctx: BrowserContext, args: string[]): Promise<st
   if (activeId && activeId === ctx.tabManager.ariaTabId) {
     const tabId = ctx.tabManager.createTab(finalUrl, undefined, { background: true });
     ctx.tabManager.setAgentTarget(tabId); // Auto-target the new tab
-    return `Navigating to: ${finalUrl} (opened in background tab)\n💡 Page loaded. Call elements() to see interactive elements.`;
+    // Wait for the background tab to actually load
+    const bgWc = ctx.tabManager.getWebContentsForTab(tabId);
+    if (bgWc) await waitForContent(bgWc, 6000);
+    const tabs = ctx.tabManager.getTabList();
+    const tabIndex = tabs.findIndex((t: any) => t.id === tabId);
+    return `Navigating to: ${finalUrl} (opened in tab [${tabIndex}], now targeting it)\n💡 Page loaded. Call elements() to see interactive elements.`;
   }
 
   const wc = ctx.tabManager.activeWebTabWebContents;
   if (!wc) return 'No active tab.';
   wc.loadURL(finalUrl);
 
-  // Enrichment 1+2: Wait for page load, then detect page type and append hint
-  await waitForLoad(wc, 4000);
+  // Enrichment 1+2: Wait for page to render content, then detect page type and append hint
+  await waitForContent(wc, 6000);
   const pageType = await detectPageType(wc);
   const hint = pageTypeHint(pageType);
   return `Navigated to: ${finalUrl}\n${hint}`;
@@ -522,12 +552,18 @@ export async function bSearch(ctx: BrowserContext, args: string[]): Promise<stri
   if (activeId && activeId === ctx.tabManager.ariaTabId) {
     const tabId = ctx.tabManager.createTab(searchUrl, undefined, { background: true });
     ctx.tabManager.setAgentTarget(tabId); // Auto-target the new tab
-    return `Searching: "${query}" (${engine}) — opened in background tab\n\n💡 On SERPs, use elements({ grep: 'keyword' }) → click(index) for links. text() shows visual URLs (missing paths/params). elements() has full hrefs.`;
+    // Wait for search results to load
+    const newWc = ctx.tabManager.getWebContentsForTab(tabId);
+    if (newWc) await waitForContent(newWc, 6000);
+    const tabs = ctx.tabManager.getTabList();
+    const tabIndex = tabs.findIndex((t: any) => t.id === tabId);
+    return `Searching: "${query}" (${engine}) — opened in tab [${tabIndex}], now targeting it\n\n💡 On SERPs, use elements({ grep: 'keyword' }) → click(index) for links. text() shows visual URLs (missing paths/params). elements() has full hrefs.`;
   }
 
   const wc = ctx.tabManager.activeWebTabWebContents;
   if (!wc) return 'No active tab.';
   wc.loadURL(searchUrl);
+  await waitForLoad(wc, 4000);
   return `Searching: "${query}" (${engine})\n\n💡 On SERPs, use elements({ grep: 'keyword' }) → click(index) for links. text() shows visual URLs (missing paths/params). elements() has full hrefs.`;
 }
 
