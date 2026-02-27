@@ -99,6 +99,8 @@ export function withCodexProviderOptions(
       reasoningEffort: (providerOptions.openai && providerOptions.openai.reasoningEffort) || 'medium',
       // Required by direct ChatGPT Codex backend.
       instructions: resolvedInstructions,
+      // ChatGPT Codex backend rejects persisted responses for this integration.
+      store: false,
     },
   };
 }
