@@ -819,7 +819,7 @@ Timezone: ${tz}
       }
     };
 
-    // Codex path: LiteLLM runtime with robust streamed tool-call assembly.
+    // Codex path: direct Codex backend runtime with robust streamed tool-call assembly.
     let finalText = '';
     let fallbackSteps: any[] = [];
     let structuredResponseMessages: ChatMessage[] = [];
@@ -849,7 +849,7 @@ Timezone: ${tz}
       codexRecoveredByNonStreamRetry = codexRun.metrics.emptyToolIntentRetries > 0;
       structuredResponseMessages = (codexRun.responseMessages || []) as ChatMessage[];
 
-      console.log(`[sub-agent] ${agentTask.id} codex litellm metrics:`, JSON.stringify(codexRun.metrics));
+      console.log(`[sub-agent] ${agentTask.id} codex backend metrics:`, JSON.stringify(codexRun.metrics));
     } else {
       executionMode = 'generateText';
       const result = await generateText({

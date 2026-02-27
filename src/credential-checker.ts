@@ -309,7 +309,14 @@ export async function testConnection(provider: string, config: {
           return { success: false, message: 'Invalid ChatGPT OAuth token. Please sign in again.' };
         }
 
-        const resp = await fetch('https://chatgpt.com/backend-api/codex/models', {
+        const configured = (config.baseUrl || '').trim();
+        const baseUrl = configured || 'https://chatgpt.com/backend-api/codex/v1';
+        const normalized = baseUrl.replace(/\/+$/, '');
+        const modelsUrl = normalized.endsWith('/v1')
+          ? `${normalized.slice(0, -3)}/models`
+          : `${normalized}/models`;
+
+        const resp = await fetch(modelsUrl, {
           headers: {
             'Authorization': `Bearer ${token}`,
             'chatgpt-account-id': accountId,

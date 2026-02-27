@@ -77,7 +77,7 @@ export function logProviderRequestError(scope: string, err: any): void {
 }
 
 /**
- * Attach codex-specific provider options for the LiteLLM/OpenAI-compatible path.
+ * Attach codex-specific provider options for the Codex OpenAI-compatible path.
  *
  * Keep signature stable for existing call sites, but ignore legacy `instructions`
  * injection from the old ChatGPT Codex backend.
@@ -93,7 +93,7 @@ export function withCodexProviderOptions(
     ...providerOptions,
     openai: {
       ...(providerOptions.openai || {}),
-      // Codex via LiteLLM should run at high reasoning effort by default.
+      // Codex should run at medium/high reasoning effort by default.
       reasoningEffort: (providerOptions.openai && providerOptions.openai.reasoningEffort) || 'medium',
     },
   };
@@ -289,30 +289,22 @@ function parseOpenAIAuthClaims(token: string): Record<string, any> | null {
   }
 }
 
-function isLikelyLiteLLMUrl(raw: string): boolean {
+const DEFAULT_CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex/v1';
+
+function isLikelyCodexBaseUrl(raw: string): boolean {
   if (!raw) return false;
   const lowered = raw.toLowerCase();
-  if (lowered.includes('openrouter.ai') || lowered.includes('api.openai.com') || lowered.includes('chatgpt.com')) {
-    return false;
-  }
-  try {
-    const parsed = new URL(raw);
-    const host = parsed.hostname.toLowerCase();
-    if (host === '127.0.0.1' || host === 'localhost' || host === '0.0.0.0' || host === '::1') return true;
-    if (host.includes('litellm')) return true;
-    return parsed.pathname.includes('/v1');
-  } catch {
-    return lowered.includes('127.0.0.1') || lowered.includes('localhost') || lowered.includes('litellm');
-  }
+  if (lowered.includes('openrouter.ai') || lowered.includes('api.openai.com')) return false;
+  return lowered.includes('codex');
 }
 
-function getLiteLLMBaseUrl(config: LLMConfig): string {
-  const envRaw = process.env.LITELLM_BASE_URL || process.env.LITELLM_URL || '';
+function getCodexBaseUrl(config: LLMConfig): string {
+  const envRaw = (process.env.OPENAI_CODEX_BASE_URL || '').trim();
   const configRaw = (config.baseUrl || '').trim();
 
   const chosen = envRaw
-    || (isLikelyLiteLLMUrl(configRaw) ? configRaw : '')
-    || 'http://127.0.0.1:4000/v1';
+    || (isLikelyCodexBaseUrl(configRaw) ? configRaw : '')
+    || DEFAULT_CODEX_BASE_URL;
 
   const trimmed = chosen.replace(/\/+$/, '');
   return trimmed.endsWith('/v1') ? trimmed : `${trimmed}/v1`;
@@ -320,7 +312,8 @@ function getLiteLLMBaseUrl(config: LLMConfig): string {
 
 function buildCodexAuthHeaders(apiKey: string): Record<string, string> {
   const headers: Record<string, string> = {
-    'X-Provider': 'openai-codex',
+    'OpenAI-Beta': 'responses=experimental',
+    originator: 'codex_cli_rs',
   };
   const claims = parseOpenAIAuthClaims(apiKey);
   const chatgptAccountId = claims?.chatgpt_account_id;
@@ -334,7 +327,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isRetryableLiteLLMError(err: any): boolean {
+function isRetryableCodexNetworkError(err: any): boolean {
   const msg = String(err?.message || '').toLowerCase();
   const causeCode = String(err?.cause?.code || '').toLowerCase();
 
@@ -379,12 +372,12 @@ export function createModel(config: LLMConfig): LanguageModel {
     case 'openai-codex': {
       if (!apiKey) throw new Error('OpenAI Codex token required. Open Settings (⌘,) and sign in with ChatGPT.');
 
-      // Codex now runs through a LiteLLM OpenAI-compatible gateway.
+      // Codex runs against the dedicated Codex backend base URL (not OpenAI v1).
       // Reuse the existing decrypted OAuth/API key exactly as stored.
-      const litellmBaseUrl = getLiteLLMBaseUrl(config);
+      const codexBaseUrl = getCodexBaseUrl(config);
       const codex = createOpenAI({
         apiKey,
-        baseURL: litellmBaseUrl,
+        baseURL: codexBaseUrl,
         headers: buildCodexAuthHeaders(apiKey),
       });
       const normalizedModel = model || DEFAULT_MODELS['openai-codex'];
@@ -969,7 +962,7 @@ async function runLiteLLMStreamStep(params: {
   onTextDelta?: (delta: string) => void;
   onReasoningDelta?: (delta: string) => void;
 }): Promise<LiteLLMStepRawResult> {
-  const url = `${getLiteLLMBaseUrl(params.config)}/chat/completions`;
+  const url = `${getCodexBaseUrl(params.config)}/chat/completions`;
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -983,11 +976,11 @@ async function runLiteLLMStreamStep(params: {
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new Error(`LiteLLM stream error (${response.status}): ${body.slice(0, 2000)}`);
+    throw new Error(`Codex stream error (${response.status}): ${body.slice(0, 2000)}`);
   }
 
   if (!response.body) {
-    throw new Error('LiteLLM stream error: empty response body');
+    throw new Error('Codex stream error: empty response body');
   }
 
   const decoder = new TextDecoder();
@@ -1137,7 +1130,7 @@ async function runLiteLLMNonStreamStep(params: {
   stepNumber: number;
   abortSignal?: AbortSignal;
 }): Promise<LiteLLMStepRawResult> {
-  const url = `${getLiteLLMBaseUrl(params.config)}/chat/completions`;
+  const url = `${getCodexBaseUrl(params.config)}/chat/completions`;
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -1151,7 +1144,7 @@ async function runLiteLLMNonStreamStep(params: {
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new Error(`LiteLLM non-stream error (${response.status}): ${body.slice(0, 2000)}`);
+    throw new Error(`Codex non-stream error (${response.status}): ${body.slice(0, 2000)}`);
   }
 
   const payload = await response.json() as any;
@@ -1336,7 +1329,7 @@ export async function runLiteLLMCodexToolLoop(opts: LiteLLMRunOptions): Promise<
     throw new Error('runLiteLLMCodexToolLoop is only valid for provider=openai-codex');
   }
 
-  const logPrefix = opts.logPrefix || 'litellm-codex';
+  const logPrefix = opts.logPrefix || 'codex-backend';
   const maxSteps = Math.max(1, opts.maxSteps ?? 200);
   const tools = opts.tools || {};
   const toolSpecs = buildLiteLLMToolSpecs(tools);
@@ -1409,7 +1402,7 @@ export async function runLiteLLMCodexToolLoop(opts: LiteLLMRunOptions): Promise<
         break;
       } catch (err: any) {
         if (opts.abortSignal?.aborted) throw err;
-        const retryable = isRetryableLiteLLMError(err);
+        const retryable = isRetryableCodexNetworkError(err);
         if (!retryable || attempt >= streamRetries) throw err;
         const waitMs = 250 * (attempt + 1);
         console.warn(
@@ -1421,7 +1414,7 @@ export async function runLiteLLMCodexToolLoop(opts: LiteLLMRunOptions): Promise<
     }
 
     if (!stepStream) {
-      throw new Error(`LiteLLM step ${stepNumber + 1} failed: no stream response`);
+      throw new Error(`Codex step ${stepNumber + 1} failed: no stream response`);
     }
 
     usage.inputTokens += stepStream.usage.inputTokens;
@@ -1447,7 +1440,7 @@ export async function runLiteLLMCodexToolLoop(opts: LiteLLMRunOptions): Promise<
           break;
         } catch (err: any) {
           if (opts.abortSignal?.aborted) throw err;
-          const retryable = isRetryableLiteLLMError(err);
+          const retryable = isRetryableCodexNetworkError(err);
           if (!retryable || attempt >= nonStreamRetries) throw err;
           const waitMs = 250 * (attempt + 1);
           console.warn(
@@ -1459,7 +1452,7 @@ export async function runLiteLLMCodexToolLoop(opts: LiteLLMRunOptions): Promise<
       }
 
       if (!nonStream) {
-        throw new Error(`LiteLLM step ${stepNumber + 1} failed: no non-stream response`);
+        throw new Error(`Codex step ${stepNumber + 1} failed: no non-stream response`);
       }
 
       usage.inputTokens += nonStream.usage.inputTokens;

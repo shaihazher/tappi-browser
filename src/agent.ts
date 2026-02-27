@@ -513,7 +513,7 @@ Timezone: ${tz}
       console.log('[agent] Calling LLM:', llmConfig.provider, llmConfig.model, 'key:', llmConfig.apiKey.slice(0, 4) + '***');
       const providerOptions = buildProviderOptions(llmConfig);
 
-      // Codex (openai-codex) now routes through LiteLLM with OpenAI-compatible chat.
+      // Codex (openai-codex) routes through the dedicated Codex backend with OpenAI-compatible chat.
       // Keep provider-level reasoning defaults while preserving shared call path.
       const callProviderOptions: Record<string, any> = withCodexProviderOptions(
         llmConfig.provider,
@@ -680,7 +680,7 @@ Timezone: ${tz}
               reasoningText: event.reasoningText,
             });
           },
-          logPrefix: 'agent.codex.litellm',
+          logPrefix: 'agent.codex.backend',
         });
 
         if (codexReasoningBuffer.length > 0) {
@@ -688,7 +688,7 @@ Timezone: ${tz}
           conversationEvents.push({ role: 'thinking', content: codexReasoningBuffer });
         }
 
-        console.log(`[agent] Codex LiteLLM stream done — textChunks=${codexTextChunkCount}, reasoningChunks=${codexReasoningChunkCount}`);
+        console.log(`[agent] Codex backend stream done — textChunks=${codexTextChunkCount}, reasoningChunks=${codexReasoningChunkCount}`);
 
         codexLiteUsage = codexRun.usage;
         codexLiteMetrics = codexRun.metrics;
@@ -956,7 +956,7 @@ Timezone: ${tz}
           }
         }
       } else {
-        // LiteLLM codex path streams chunks + tool events directly via callbacks.
+        // Codex backend path streams chunks + tool events directly via callbacks.
       }
 
       console.log('[agent] Stream complete, response:', fullResponse.length, 'chars, tools:', toolsUsed.length, '| mode:', resultMode);

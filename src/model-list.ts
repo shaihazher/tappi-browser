@@ -82,8 +82,7 @@ export async function listOpenAIModels(apiKey: string): Promise<ModelListResult>
 }
 
 /**
- * OpenAI Codex: No direct models API.
- * Use LiteLLM gateway or enter manually.
+ * OpenAI Codex: model IDs are best entered manually for OAuth-based Codex backend.
  */
 export async function listCodexModels(_token: string): Promise<ModelListResult> {
   // Codex models change frequently; user should enter manually
