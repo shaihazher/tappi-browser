@@ -46,7 +46,7 @@ import {
   getWindow, getFullHistory, addMessage, addMessages,
   clearHistory as clearConversation,
   getUnsummarizedEvictedMessages, setEvictionSummary,
-  buildSummaryPrompt,
+  buildSummaryPrompt, sanitizeResponseMessages,
   type ChatMessage,
 } from './conversation';
 
@@ -534,6 +534,7 @@ Timezone: ${tz}
     let dupHintPending = false;
     let recentCalls: Array<{ tool: string; args: string }> = [];
     let idleCount = 0;
+    let emptyToolCallFinishCount = 0; // Counts steps where finishReason=tool-calls but 0 parsed calls
     let toolCallCount = 0;
 
     // Phase 9.15: direct Codex backend path now uses AI SDK streamText/Responses.
@@ -631,6 +632,12 @@ Timezone: ${tz}
             idleCount = 0;
           }
 
+          // Detect anomalous "finishReason=tool-calls but 0 actual calls" — always a bug
+          if (/tool/i.test(finishReason) && toolCalls.length === 0 && toolResults.length === 0) {
+            emptyToolCallFinishCount++;
+            console.warn(`[agent] Empty tool-call finish detected (count: ${emptyToolCallFinishCount})`);
+          }
+
           for (const tc of toolCalls) {
             try {
               agentEvents.emit('tool', {
@@ -713,6 +720,14 @@ Timezone: ${tz}
                   content: "[You're repeating the same action. Try a different approach.]",
                 } as any],
               };
+            }
+            // Detect "finishReason=tool-calls but 0 parsed calls" stall — abort after 2
+            if (emptyToolCallFinishCount >= 2) {
+              console.warn(`[agent] Tool-call finish with 0 parsed calls ${emptyToolCallFinishCount}x — aborting to prevent stall`);
+              stopReason = 'idle';
+              _lastStopReason = 'idle';
+              abortController.abort();
+              return undefined;
             }
             // Idle detection: 5 consecutive text-only turns → abort
             if (idleCount >= 5) {
@@ -826,6 +841,14 @@ Timezone: ${tz}
                   content: "[You're repeating the same action. Try a different approach.]",
                 }],
               };
+            }
+            // Detect "finishReason=tool-calls but 0 parsed calls" stall — abort after 2
+            if (emptyToolCallFinishCount >= 2) {
+              console.warn(`[agent] Tool-call finish with 0 parsed calls ${emptyToolCallFinishCount}x — aborting to prevent stall`);
+              stopReason = 'idle';
+              _lastStopReason = 'idle';
+              abortController.abort();
+              return undefined;
             }
             // Idle detection: 5 consecutive text-only turns → abort
             if (idleCount >= 5) {
@@ -1156,24 +1179,35 @@ Timezone: ${tz}
       console.error('[agent] Failed to get token usage:', usageErr?.message);
     }
 
-    try {
-      const response = await result?.response;
-      const responseMessages = response?.messages || [];
+    // If the LLM produced nothing (0 text, 0 tools), skip persisting response messages
+    // to prevent orphaned tool-call parts from poisoning conversation history.
+    if (!fullResponse && toolsUsed.length === 0) {
+      console.warn('[agent] Empty response with no tool calls — skipping message persistence to prevent stall');
+    } else {
+      try {
+        const response = await result?.response;
+        const responseMessages = response?.messages || [];
 
-      if (responseMessages && responseMessages.length > 0) {
-        // Persist all structured response messages (assistant + tool messages)
-        addMessages(sessionId, responseMessages as ChatMessage[]);
-        console.log('[agent] Persisted', responseMessages.length, 'response messages (structured, with tool calls/results)');
-      } else if (fullResponse) {
-        // Fallback: if no response messages available, save flat text
-        addMessage(sessionId, { role: 'assistant' as const, content: fullResponse });
-        console.log('[agent] Persisted flat text response (no structured messages available)');
-      }
-    } catch (persistErr: any) {
-      // If we can't get structured messages, fall back to flat text
-      console.error('[agent] Failed to get response messages, falling back to flat text:', persistErr?.message);
-      if (fullResponse) {
-        addMessage(sessionId, { role: 'assistant' as const, content: fullResponse });
+        if (responseMessages && responseMessages.length > 0) {
+          // Sanitize: strip orphaned tool-call parts (no matching tool-result by toolCallId)
+          const sanitized = sanitizeResponseMessages(responseMessages);
+          if (sanitized.length > 0) {
+            addMessages(sessionId, sanitized as ChatMessage[]);
+            console.log('[agent] Persisted', sanitized.length, 'response messages (sanitized from', responseMessages.length, 'raw)');
+          } else {
+            console.warn('[agent] All response messages were orphaned tool-calls — nothing to persist');
+          }
+        } else if (fullResponse) {
+          // Fallback: if no response messages available, save flat text
+          addMessage(sessionId, { role: 'assistant' as const, content: fullResponse });
+          console.log('[agent] Persisted flat text response (no structured messages available)');
+        }
+      } catch (persistErr: any) {
+        // If we can't get structured messages, fall back to flat text
+        console.error('[agent] Failed to get response messages, falling back to flat text:', persistErr?.message);
+        if (fullResponse) {
+          addMessage(sessionId, { role: 'assistant' as const, content: fullResponse });
+        }
       }
     }
 

@@ -33,7 +33,7 @@ import { createTools, TOOL_USAGE_GUIDE } from './tool-registry';
 import * as browserTools from './browser-tools';
 import * as httpTools from './http-tools';
 import type { BrowserContext } from './browser-tools';
-import { addMessage, addMessages, getWindow, getFullHistory, clearHistory, type ChatMessage } from './conversation';
+import { addMessage, addMessages, getWindow, getFullHistory, clearHistory, sanitizeResponseMessages, type ChatMessage } from './conversation';
 import { purgeSession } from './output-buffer';
 import { cleanupSession } from './shell-tools';
 
@@ -980,8 +980,10 @@ Timezone: ${tz}
 
     // Persist structured turns so future sub-agent redirects/reruns can carry
     // full tool-call and tool-result context in-session.
-    if (structuredResponseMessages.length > 0) {
-      addMessages(sessionId, structuredResponseMessages);
+    // Sanitize: strip orphaned tool-call parts (no matching tool-result by toolCallId)
+    const sanitized = sanitizeResponseMessages(structuredResponseMessages);
+    if (sanitized.length > 0) {
+      addMessages(sessionId, sanitized as ChatMessage[]);
     } else if (fullResponse.length > 0) {
       addMessage(sessionId, { role: 'assistant', content: fullResponse });
     }

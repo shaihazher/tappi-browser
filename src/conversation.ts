@@ -139,6 +139,54 @@ export function addMessages(sessionId: string, messages: ChatMessage[]) {
   }
 }
 
+/**
+ * Sanitize AI SDK response messages before persistence.
+ *
+ * Strips orphaned tool-call content parts (those with no matching tool-result
+ * by toolCallId). This prevents poisoned conversation history when the LLM
+ * returns finishReason: tool-calls but the SDK fails to parse/execute them.
+ */
+export function sanitizeResponseMessages(msgs: any[]): any[] {
+  // Collect all resolved tool-call IDs from tool (role='tool') messages
+  const resolvedCallIds = new Set<string>();
+  for (const msg of msgs) {
+    if (msg.role === 'tool' && Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (part && typeof part === 'object' && part.type === 'tool-result' && part.toolCallId) {
+          resolvedCallIds.add(part.toolCallId);
+        }
+      }
+    }
+  }
+
+  // For each assistant message, strip orphaned tool-call parts
+  const result: any[] = [];
+  for (const msg of msgs) {
+    if (msg.role !== 'assistant' || !Array.isArray(msg.content)) {
+      result.push(msg);
+      continue;
+    }
+
+    const cleanedContent = msg.content.filter((part: any) => {
+      if (part && typeof part === 'object' && part.type === 'tool-call') {
+        return resolvedCallIds.has(part.toolCallId);
+      }
+      return true; // keep text, reasoning, file, etc.
+    });
+
+    // If all content was orphaned tool-calls, skip the message entirely
+    if (cleanedContent.length === 0) continue;
+
+    if (cleanedContent.length < msg.content.length) {
+      result.push({ ...msg, content: cleanedContent });
+    } else {
+      result.push(msg);
+    }
+  }
+
+  return result;
+}
+
 /** Clear all history for a session. */
 export function clearHistory(sessionId: string) {
   conversations.delete(sessionId);
