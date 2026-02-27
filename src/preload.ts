@@ -199,6 +199,8 @@ contextBridge.exposeInMainWorld('tappi', {
   onVaultSavePrompt: (callback: (data: { domain: string; username: string }) => void) => {
     ipcRenderer.on('vault:save-prompt', (_e, data) => callback(data));
   },
+  confirmVaultSave: () => ipcRenderer.invoke('vault:confirm-save'),
+  dismissVaultSave: () => ipcRenderer.invoke('vault:dismiss-save'),
 
   // Permissions
   getSitePermission: (domain: string, perm: string) => ipcRenderer.invoke('permission:get', domain, perm),

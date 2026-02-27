@@ -32,8 +32,8 @@ import { initDatabase, getDb, closeDatabase, reinitDatabase, addHistory, searchH
 import { invalidateWorkspaceCache } from './file-tools';
 import { profileManager } from './profile-manager';
 import { sessionManager } from './session-manager';
-import { startAdBlocker, stopAdBlocker, isAdBlockerEnabled, getBlockedCount, resetBlockedCount, addSiteException, removeSiteException, toggleAdBlocker } from './ad-blocker';
-import { initDownloadManager, getDownloadsSummary, getAllDownloads, cancelDownload, clearCompleted, getActiveDownloads } from './download-manager';
+import { startAdBlocker, stopAdBlocker, isAdBlockerEnabled, getBlockedCount, resetBlockedCount, addSiteException, removeSiteException, toggleAdBlocker, applyAdBlockerToPartition } from './ad-blocker';
+import { initDownloadManager, getDownloadsSummary, getAllDownloads, cancelDownload, clearCompleted, getActiveDownloads, attachDownloadHandlerToPartition } from './download-manager';
 import { storePassword, getPasswordsForDomain, getPasswordForAutofill, removePassword, listSavedDomains, generatePassword, buildAutofillScript, listIdentities } from './password-vault';
 import { setLoginHint, clearLoginHint } from './login-state';
 import { checkCredentials, testConnection } from './credential-checker';
@@ -676,8 +676,9 @@ function createWindow() {
     layoutViews();
   });
 
-  // Initialize download manager
+  // Initialize download manager (default session + active profile session)
   initDownloadManager(mainWindow);
+  attachDownloadHandlerToPartition(profileManager.getSessionPartition());
 
   // Relay agent download_card events to Electron windows (belt-and-suspenders for Electron mode)
   agentEvents.on('download_card', (payload: any) => {
@@ -694,9 +695,10 @@ function createWindow() {
     } catch (e) { console.error('[main] Error sending to aria:', e); }
   });
 
-  // Start ad blocker if enabled in config
+  // Start ad blocker if enabled in config (apply to both default + profile session)
   if (currentConfig.features.adBlocker) {
     startAdBlocker().then(() => {
+      applyAdBlockerToPartition(profileManager.getSessionPartition());
       mainWindow?.webContents.send('adblock:count', getBlockedCount());
     });
   }
@@ -1812,9 +1814,10 @@ Rules:
     return profileManager.createProfile(name, email);
   });
 
-  ipcMain.handle('profile:switch', async (_e, name: string) => {
+  // Shared profile switch logic — used by both IPC and agent events
+  async function performProfileSwitch(name: string): Promise<{ success: boolean; error?: string; profile?: any; profiles?: any[] }> {
     const result = profileManager.switchProfile(name);
-    if ('error' in result) return result;
+    if ('error' in result) return { success: false, error: (result as any).error };
 
     // Close existing db, reopen with new profile's db path
     reinitDatabase(profileManager.getDatabasePath());
@@ -1826,6 +1829,23 @@ Rules:
       llm: { ...currentConfig.llm, apiKey: currentConfig.llm.apiKey ? '••••••••' : '' },
     });
 
+    // Attach download handler and ad blocker to the new profile's session
+    const partition = profileManager.getSessionPartition();
+    attachDownloadHandlerToPartition(partition);
+    applyAdBlockerToPartition(partition);
+
+    // Close all non-Aria tabs (they use the old profile's session partition)
+    // and open a fresh tab with the new partition
+    const allTabIds = tabManager.getAllTabIds();
+    for (const tabId of allTabIds) {
+      if (tabId !== tabManager.ariaTabId) {
+        tabManager.closeTab(tabId);
+      }
+    }
+    const newTabId = tabManager.createTab();
+    initTabMedia(newTabId);
+    layoutViews();
+
     // Notify UI of profile change
     mainWindow.webContents.send('profile:switched', { profile: result, profiles: profileManager.listProfiles() });
 
@@ -1835,6 +1855,16 @@ Rules:
 
     console.log(`[main] Switched to profile: ${name}`);
     return { success: true, profile: result, profiles: profileManager.listProfiles() };
+  }
+
+  ipcMain.handle('profile:switch', async (_e, name: string) => {
+    return performProfileSwitch(name);
+  });
+
+  // Agent-triggered profile switch via agentEvents bus
+  agentEvents.on('profile:switch-request', async (name: string, callback?: (result: any) => void) => {
+    const result = await performProfileSwitch(name);
+    if (callback) callback(result);
   });
 
   ipcMain.handle('profile:delete', (_e, name: string) => {
@@ -1885,17 +1915,7 @@ Rules:
         checked: p.name === active,
         click: async () => {
           if (p.name === active) return;
-          const result = profileManager.switchProfile(p.name);
-          if ('error' in result) return;
-          reinitDatabase(profileManager.getDatabasePath());
-          currentConfig = loadConfig();
-          mainWindow.webContents.send('config:loaded', {
-            ...currentConfig,
-            llm: { ...currentConfig.llm, apiKey: currentConfig.llm.apiKey ? '••••••••' : '' },
-          });
-          mainWindow.webContents.send('profile:switched', { profile: result, profiles: profileManager.listProfiles() });
-          clearHistory('default');
-          sessionManager.clearSiteIdentities();
+          await performProfileSwitch(p.name);
         },
       });
     }
@@ -2399,9 +2419,45 @@ Rules:
   });
 
   // Handle credential save prompts from content preload
-  ipcMain.on('vault:credential-detected', (_e, data: { domain: string; username: string }) => {
-    // Show save password prompt in the UI
-    mainWindow?.webContents.send('vault:save-prompt', data);
+  // Password is stored temporarily in main process memory (never sent to UI renderer)
+  let pendingCredentialSave: { domain: string; username: string; password: string; timestamp: number } | null = null;
+
+  ipcMain.on('vault:credential-detected', (_e, data: { domain: string; username: string; password: string }) => {
+    // Store credential temporarily in main process memory
+    pendingCredentialSave = {
+      domain: data.domain,
+      username: data.username,
+      password: data.password,
+      timestamp: Date.now(),
+    };
+    // Show save prompt in UI (password NOT sent to renderer)
+    mainWindow?.webContents.send('vault:save-prompt', { domain: data.domain, username: data.username });
+  });
+
+  // User confirmed saving the credential
+  ipcMain.handle('vault:confirm-save', () => {
+    if (!pendingCredentialSave) return { success: false, error: 'No pending credential' };
+    // Expire after 60 seconds
+    if (Date.now() - pendingCredentialSave.timestamp > 60000) {
+      pendingCredentialSave = null;
+      return { success: false, error: 'Credential save expired' };
+    }
+    try {
+      storePassword(pendingCredentialSave.domain, pendingCredentialSave.username, pendingCredentialSave.password);
+      const saved = { domain: pendingCredentialSave.domain, username: pendingCredentialSave.username };
+      pendingCredentialSave = null;
+      console.log(`[vault] Saved credentials for ${saved.domain} (${saved.username})`);
+      return { success: true, ...saved };
+    } catch (e: any) {
+      pendingCredentialSave = null;
+      return { success: false, error: e?.message || 'Failed to store password' };
+    }
+  });
+
+  // User dismissed the save prompt
+  ipcMain.handle('vault:dismiss-save', () => {
+    pendingCredentialSave = null;
+    return { success: true };
   });
 
   // ─── Login Detection IPC (Phase 8.4.3) ───

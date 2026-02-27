@@ -218,12 +218,13 @@ async function loadFilterList(): Promise<void> {
 
 // ─── Public API ───
 
+// Track all sessions the ad blocker has been applied to
+const attachedSessions = new Set<Electron.Session>();
+
 export async function startAdBlocker(): Promise<void> {
   if (enabled) return;
 
   await loadFilterList();
-
-  const ses = session.defaultSession;
 
   requestHandler = (details: any, callback: any) => {
     // Don't block main frame navigations
@@ -240,7 +241,9 @@ export async function startAdBlocker(): Promise<void> {
     }
   };
 
-  ses.webRequest.onBeforeRequest(requestHandler);
+  // Apply to default session
+  session.defaultSession.webRequest.onBeforeRequest(requestHandler);
+  attachedSessions.add(session.defaultSession);
   enabled = true;
   console.log(`[ad-blocker] Started (${domainBlocks.size} domains, ${blockRegexes.length} regexes)`);
 }
@@ -248,12 +251,23 @@ export async function startAdBlocker(): Promise<void> {
 export function stopAdBlocker(): void {
   if (!enabled) return;
 
-  const ses = session.defaultSession;
-  // Remove the handler by setting it to null
-  ses.webRequest.onBeforeRequest(null as any);
+  // Remove handler from all attached sessions
+  for (const ses of attachedSessions) {
+    try { ses.webRequest.onBeforeRequest(null as any); } catch {}
+  }
+  attachedSessions.clear();
   requestHandler = null;
   enabled = false;
   console.log('[ad-blocker] Stopped');
+}
+
+/** Apply ad blocker to a profile session partition. Call on profile switch. */
+export function applyAdBlockerToPartition(partition: string): void {
+  if (!enabled || !requestHandler) return;
+  const ses = session.fromPartition(partition);
+  if (attachedSessions.has(ses)) return;
+  ses.webRequest.onBeforeRequest(requestHandler);
+  attachedSessions.add(ses);
 }
 
 export function isAdBlockerEnabled(): boolean {

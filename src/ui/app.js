@@ -2380,14 +2380,20 @@ window.tappi.onVaultSavePrompt((data) => {
 
 document.getElementById('password-prompt-save').addEventListener('click', async () => {
   if (pendingCredential) {
-    // We only have domain + username here — the actual password save
-    // happens in the main process via credential interception
+    try {
+      await window.tappi.confirmVaultSave();
+    } catch (e) {
+      console.error('[vault] Failed to save credential:', e);
+    }
     passwordPrompt.classList.add('hidden');
     pendingCredential = null;
   }
 });
 
-document.getElementById('password-prompt-dismiss').addEventListener('click', () => {
+document.getElementById('password-prompt-dismiss').addEventListener('click', async () => {
+  try {
+    await window.tappi.dismissVaultSave();
+  } catch {}
   passwordPrompt.classList.add('hidden');
   pendingCredential = null;
 });

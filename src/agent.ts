@@ -195,6 +195,27 @@ function assembleContext(browserCtx: BrowserContext, llmConfig?: LLMConfig): str
     // Non-fatal
   }
 
+  // Recipe hint — if current page matches a recipe app, suggest available actions
+  try {
+    const wc = browserCtx.tabManager.activeWebContents;
+    if (wc) {
+      const url = wc.getURL();
+      if (url && url.startsWith('http')) {
+        const domain = new URL(url).hostname.replace(/^www\./, '');
+        const { ALL_RECIPES } = require('./recipes');
+        const matchingRecipe = ALL_RECIPES.find((r: any) =>
+          domain.includes(r.domain) || r.domainAliases?.some((d: string) => domain.includes(d))
+        );
+        if (matchingRecipe) {
+          const actions = matchingRecipe.actions.map((a: any) => `${matchingRecipe.app}:${a.name}`).join(', ');
+          parts.push('', `[📋 Recipes available for ${matchingRecipe.displayName}: ${actions}]`);
+        }
+      }
+    }
+  } catch {
+    // Non-fatal
+  }
+
   return parts.join('\n');
 }
 
@@ -418,6 +439,11 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
     const tools = createTools(browserCtx, sessionId, {
       developerMode, llmConfig, worktreeIsolation, agentBrowsingDataAccess, conversationId, projectWorkingDir,
       onSubAgentProgress: (data) => broadcast('agent:subagent-progress', data),
+      onProfileSwitch: (name: string) => new Promise((resolve) => {
+        agentEvents.emit('profile:switch-request', name, (result: any) => {
+          resolve(result);
+        });
+      }),
     });
 
     // ─── Coding Memory Bootstrap ───────────────────────────────────────────

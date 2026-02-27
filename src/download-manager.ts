@@ -31,13 +31,9 @@ let downloadDir: string;
 
 const DEFAULT_DOWNLOAD_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', 'Downloads');
 
-export function initDownloadManager(window: BrowserWindow, customDir?: string): void {
-  mainWindow = window;
-  downloadDir = customDir || DEFAULT_DOWNLOAD_DIR;
-
-  if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true });
-
-  session.defaultSession.on('will-download', (_event, item, _webContents) => {
+/** Attach the will-download handler to a session */
+function attachDownloadHandler(ses: Electron.Session): void {
+  ses.on('will-download', (_event, item, _webContents) => {
     const id = `dl-${++downloadCounter}`;
     const filename = item.getFilename();
     const safeName = path.basename(filename);
@@ -98,6 +94,28 @@ export function initDownloadManager(window: BrowserWindow, customDir?: string): 
 
     console.log(`[download] Started: ${filename} → ${savePath}`);
   });
+}
+
+// Track which partitions already have the download handler attached
+const attachedPartitions = new Set<string>();
+
+export function initDownloadManager(window: BrowserWindow, customDir?: string): void {
+  mainWindow = window;
+  downloadDir = customDir || DEFAULT_DOWNLOAD_DIR;
+
+  if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true });
+
+  // Attach to default session (fallback)
+  attachDownloadHandler(session.defaultSession);
+  attachedPartitions.add('default');
+}
+
+/** Attach download handler to a profile session partition. Call on profile switch. */
+export function attachDownloadHandlerToPartition(partition: string): void {
+  if (attachedPartitions.has(partition)) return;
+  const ses = session.fromPartition(partition);
+  attachDownloadHandler(ses);
+  attachedPartitions.add(partition);
 }
 
 function notifyUI(): void {

@@ -672,7 +672,61 @@ function setupCredentialDetection() {
     if (username && password) {
       ipcRenderer.send('vault:credential-detected', {
         domain: location.hostname,
-        username: username
+        username: username,
+        password: password
+      });
+    }
+  }, true);
+
+  // Click-based credential detection for SPA sites that use XHR/fetch instead of form submission.
+  // Detects clicks on submit-like buttons near password fields.
+  document.addEventListener('click', function(e) {
+    var target = e.target;
+    // Walk up to find the actual clicked element (might be an icon inside a button)
+    while (target && target !== document.body && target.tagName !== 'BUTTON' && target.tagName !== 'A' && target.type !== 'submit') {
+      target = target.parentElement;
+    }
+    if (!target || target === document.body) return;
+
+    var passwordField = document.querySelector('input[type="password"]');
+    if (!passwordField || !passwordField.value) return;
+
+    // Check if clicked element looks like a submit/login button
+    var text = (target.textContent || '').toLowerCase().trim();
+    var type = (target.type || '').toLowerCase();
+    var ariaLabel = (target.getAttribute('aria-label') || '').toLowerCase();
+    var isSubmitLike = type === 'submit' ||
+      text.match(/^(sign in|log in|login|submit|continue|next)$/i) ||
+      ariaLabel.match(/(sign in|log in|login|submit)/i);
+
+    if (!isSubmitLike) return;
+
+    // Find the username field — look in the same form or nearby
+    var form = passwordField.closest('form') || passwordField.parentElement?.parentElement?.parentElement;
+    var inputs = (form || document).querySelectorAll('input');
+    var username = '';
+
+    for (var i = 0; i < inputs.length; i++) {
+      var input = inputs[i];
+      var inputType = (input.type || '').toLowerCase();
+      var inputName = (input.name || '').toLowerCase();
+      var inputAuto = (input.autocomplete || '').toLowerCase();
+      var inputPlaceholder = (input.placeholder || '').toLowerCase();
+
+      if ((inputType === 'email' || inputType === 'text' || inputType === 'tel') &&
+          (inputAuto === 'username' || inputAuto === 'email' ||
+           inputName.indexOf('user') !== -1 || inputName.indexOf('email') !== -1 || inputName.indexOf('login') !== -1 ||
+           inputPlaceholder.indexOf('email') !== -1 || inputPlaceholder.indexOf('username') !== -1)) {
+        username = input.value;
+        break;
+      }
+    }
+
+    if (username && passwordField.value) {
+      ipcRenderer.send('vault:credential-detected', {
+        domain: location.hostname,
+        username: username,
+        password: passwordField.value
       });
     }
   }, true);

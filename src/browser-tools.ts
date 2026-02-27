@@ -10,6 +10,7 @@
 import { session, clipboard } from 'electron';
 import type { BrowserWindow, WebContents } from 'electron';
 import { TabManager } from './tab-manager';
+import { profileManager } from './profile-manager';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -215,10 +216,12 @@ export async function bDarkMode(ctx: BrowserContext, args: string[]): Promise<st
 export async function bCookies(ctx: BrowserContext, args: string[]): Promise<string> {
   const action = args[0]?.toLowerCase();
   const domain = args[1];
+  // Use the active profile's session for cookie isolation
+  const profileSession = session.fromPartition(profileManager.getSessionPartition());
 
   if (action === 'list') {
     const filter = domain ? { domain } : {};
-    const cookies = await session.defaultSession.cookies.get(filter);
+    const cookies = await profileSession.cookies.get(filter);
     if (cookies.length === 0) return domain ? `No cookies for ${domain}` : 'No cookies stored.';
     // Group by domain
     const grouped = new Map<string, number>();
@@ -239,13 +242,13 @@ export async function bCookies(ctx: BrowserContext, args: string[]): Promise<str
   if (action === 'delete') {
     if (!domain) return 'Usage: B2 delete <domain|all>';
     if (domain === 'all') {
-      await session.defaultSession.clearStorageData({ storages: ['cookies'] });
+      await profileSession.clearStorageData({ storages: ['cookies'] });
       return 'All cookies deleted.';
     }
-    const cookies = await session.defaultSession.cookies.get({ domain });
+    const cookies = await profileSession.cookies.get({ domain });
     for (const c of cookies) {
       const url = `http${c.secure ? 's' : ''}://${c.domain?.replace(/^\./, '') || domain}${c.path || '/'}`;
-      await session.defaultSession.cookies.remove(url, c.name);
+      await profileSession.cookies.remove(url, c.name);
     }
     return `Deleted ${cookies.length} cookies for ${domain}`;
   }

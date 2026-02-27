@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
 import { addHistory, addBookmark, removeBookmark as removeBookmarkFromDb } from './database';
+import { profileManager } from './profile-manager';
 
 export interface Tab {
   id: string;
@@ -143,6 +144,11 @@ export class TabManager {
     return this.order[index] ?? null;
   }
 
+  /** Get all tab IDs (copy of order array). */
+  getAllTabIds(): string[] {
+    return [...this.order];
+  }
+
   /** Phase 8.35: Create the non-closeable Aria tab at index 0. */
   createAriaTab(): string {
     const id = randomUUID();
@@ -256,9 +262,9 @@ export class TabManager {
       preload: this.contentPreloadPath,
       enableBlinkFeatures: 'FullscreenUnprefixed',
     };
-    if (partition) {
-      webPrefs.partition = partition;
-    }
+    // Use the active profile's session partition by default for cookie/storage isolation.
+    // Explicit partition (e.g. site-identity sessions) takes priority.
+    webPrefs.partition = partition || profileManager.getSessionPartition();
     const view = new WebContentsView({
       webPreferences: webPrefs,
     });

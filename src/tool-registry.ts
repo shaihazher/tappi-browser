@@ -30,6 +30,8 @@ import { WorktreeManager, createWorktreeManager } from './worktree-manager';
 import * as projectManager from './project-manager';
 import * as codingMemory from './coding-memory';
 import { loadUserProfileTxt, saveUserProfileTxt, getUserProfileTxtPath } from './user-profile';
+import { profileManager } from './profile-manager';
+import { createRecipeTools } from './recipes';
 import * as path from 'path';
 import * as os from 'os';
 import { getWorkspacePath, expandTilde, DEFAULT_WORKSPACE } from './workspace-resolver';
@@ -57,6 +59,7 @@ export interface ToolRegistryOptions {
   lockedTabId?: string;        // Sub-agent tab isolation: force all browser tools to this tab
   subAgentTaskType?: string;   // Sub-agent task type — used to filter tools down to what's needed
   onSubAgentProgress?: (data: any) => void;  // Progress callback for sub-agent UI chips
+  onProfileSwitch?: (name: string) => Promise<{ success: boolean; error?: string }>;  // Profile switch callback
 }
 
 export function createTools(browserCtx: BrowserContext, sessionId = 'default', options?: ToolRegistryOptions) {
@@ -1214,6 +1217,12 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
       },
     }),
 
+    // ═══ BROWSER PROFILE TOOLS (always available) ═══
+    ...createProfileTools(options),
+
+    // ═══ APP RECIPE TOOLS (always available) ═══
+    ...createRecipeTools(),
+
     // ═══ DOWNLOAD TOOLS (Phase 9.07 Track 5 — always available) ═══
 
     present_download: tool({
@@ -2306,6 +2315,63 @@ function createCodingMemoryTools() {
   };
 }
 
+// ─── Browser Profile Tools ───────────────────────────────────────────────────
+
+function createProfileTools(options?: ToolRegistryOptions) {
+  return {
+    browser_profile: tool({
+      description: 'Manage browser profiles. Profiles isolate bookmarks, passwords, cookies, and browsing data. Use to switch between work/personal contexts or manage multiple accounts.',
+      inputSchema: z.object({
+        action: z.enum(['list', 'active', 'create', 'switch', 'delete']).describe(
+          'list: show all profiles. active: get current profile info. create: make a new profile. switch: change active profile (reloads tabs). delete: remove a profile.'
+        ),
+        name: z.string().optional().describe('Profile name for create/switch/delete'),
+        email: z.string().optional().describe('Optional email for new profile'),
+      }),
+      execute: async ({ action, name, email }: { action: string; name?: string; email?: string }) => {
+        switch (action) {
+          case 'list': {
+            const profiles = profileManager.listProfiles();
+            if (profiles.length === 0) return 'No profiles found.';
+            return profiles.map((p: any) =>
+              `${p.isActive ? '→ ' : '  '}${p.displayName || p.name}${p.email ? ` (${p.email})` : ''} — last used ${(p.lastUsed || '').slice(0, 10)}${p.name === 'default' ? ' [default]' : ''}`
+            ).join('\n');
+          }
+          case 'active': {
+            const profiles = profileManager.listProfiles();
+            const active = profiles.find((p: any) => p.isActive);
+            if (!active) return 'No active profile.';
+            return `Active profile: ${active.displayName || active.name}${active.email ? ` (${active.email})` : ''}\nCreated: ${(active.createdAt || '').slice(0, 10)}\nLast used: ${(active.lastUsed || '').slice(0, 10)}`;
+          }
+          case 'create': {
+            if (!name) return '❌ Need a name to create a profile.';
+            const result = profileManager.createProfile(name, email);
+            if ('error' in result) return `❌ ${(result as any).error}`;
+            return `✓ Created profile "${(result as any).displayName || name}". Use browser_profile({ action: "switch", name: "${(result as any).name || name}" }) to activate it.`;
+          }
+          case 'switch': {
+            if (!name) return '❌ Need a profile name to switch to.';
+            if (options?.onProfileSwitch) {
+              const result = await options.onProfileSwitch(name);
+              if (!result.success) return `❌ ${result.error || 'Switch failed'}`;
+              return `✓ Switched to profile "${name}". All tabs reloaded with new profile data (bookmarks, passwords, cookies are now from this profile).`;
+            }
+            return '❌ Profile switching not available in this context.';
+          }
+          case 'delete': {
+            if (!name) return '❌ Need a profile name to delete.';
+            const result = profileManager.deleteProfile(name);
+            if ('error' in (result as any)) return `❌ ${(result as any).error}`;
+            return `✓ Deleted profile "${name}".`;
+          }
+          default:
+            return '❌ Unknown action.';
+        }
+      },
+    }),
+  };
+}
+
 export const TOOL_USAGE_GUIDE = `
 ## How to use Tappi Browser tools
 
@@ -2485,6 +2551,33 @@ DO NOT USE FOR: Temporary context (just mention in conversation).
 - Use "append" for new facts; use "update" only for restructuring/condensing
 - Profile is included in EVERY conversation — keep it concise and relevant
 - Good for: preferences, contact info, recurring context the user doesn't want to repeat
+
+### BROWSER PROFILES
+USE WHEN: User wants to switch between work/personal, manage multiple accounts, or isolate browsing data.
+DO NOT USE FOR: Changing user preferences (use update_user_profile instead).
+
+**Workflow:**
+1. \`browser_profile({ action: "list" })\` → see all profiles
+2. \`browser_profile({ action: "create", name: "work", email: "me@company.com" })\` → create profile
+3. \`browser_profile({ action: "switch", name: "work" })\` → switch (reloads all tabs with new data)
+4. \`browser_profile({ action: "delete", name: "old-profile" })\` → remove
+
+**What's isolated per profile:** bookmarks, saved passwords, cookies, browsing history, downloads.
+**Note:** Switching profiles closes all open tabs and opens a fresh tab. The conversation continues but browsing context changes completely.
+
+### APP RECIPES (GUIDED WORKFLOWS)
+USE WHEN: Performing common tasks on supported apps (Gmail, Sheets, YouTube, etc.).
+DO NOT USE FOR: Simple navigation or one-click actions — just use navigate/click directly.
+
+**Workflow:**
+1. \`app_recipe({ action: "list" })\` → see all available recipes
+2. \`app_recipe({ action: "gmail:compose", params: { to: "...", subject: "...", body: "..." } })\` → get step-by-step guide
+3. Follow the returned steps using browser tools (navigate, elements, click, type, keys)
+
+**Key concept:** Recipes return INSTRUCTIONS, not automation. You execute each step using your browser tools.
+This is more reliable than scripted automation because you can adapt to page changes, popups, and errors.
+
+**Available apps:** Google Sheets, Google Docs, Google Maps, Gmail, Instagram, YouTube, Twitter/X, LinkedIn, Reddit
 
 ### ERROR RECOVERY
 - "Element not found" or wrong index → call \`elements()\` again (indexes shift after page changes)
