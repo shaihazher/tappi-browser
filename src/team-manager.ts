@@ -549,7 +549,7 @@ async function runTeammateSession(
       system: systemPrompt,
       messages: teammateMessages as any,
       tools,
-      maxOutputTokens: 30000,
+      ...(tmConfig.provider !== 'openai-codex' ? { maxOutputTokens: 30000 } : {}),
       ...(Object.keys(tmCallProviderOptions).length > 0 ? { providerOptions: tmCallProviderOptions } : {}),
       // Phase 9.096f: Match main agent step limit (200). 100 was cutting teammates short.
       stopWhen: stepCountIs(200),
@@ -990,7 +990,7 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
       system: systemPrompt,
       messages: resumedMessages as any,
       tools,
-      maxOutputTokens: 30000, // universal cap
+      ...(provider !== 'openai-codex' ? { maxOutputTokens: 30000 } : {}), // universal cap
       ...(Object.keys(resumeCallProviderOptions).length > 0 ? { providerOptions: resumeCallProviderOptions } : {}),
       stopWhen: stepCountIs(200), // Phase 9.096f: match main agent
       abortSignal: abortController.signal,

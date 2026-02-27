@@ -1259,7 +1259,7 @@ Rules:
         model,
         system: systemPrompt,
         messages: [{ role: 'user', content: prompt + contextBlock }],
-        maxOutputTokens: maxTokens,
+        ...(currentConfig.llm.provider !== 'openai-codex' ? { maxOutputTokens: maxTokens } : {}),
       });
 
       return { enhanced: result.text, mode };

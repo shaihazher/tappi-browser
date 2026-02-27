@@ -857,7 +857,7 @@ Timezone: ${tz}
         system: systemPrompt,
         messages: llmMessages as any,
         tools,
-        maxOutputTokens: 30000,
+        ...(llmConfig.provider !== 'openai-codex' ? { maxOutputTokens: 30000 } : {}),
         ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
         stopWhen: stepCountIs(MAX_STEPS),
         abortSignal,
