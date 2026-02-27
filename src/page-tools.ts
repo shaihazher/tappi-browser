@@ -28,6 +28,66 @@ async function callPreload(wc: WebContents, fn: string, ...args: any[]): Promise
   }
 }
 
+// ─── Canvas app shortcut hints ───
+
+function getCanvasAppHint(app: string): string {
+  switch (app) {
+    case 'sheets':
+      return [
+        '📊 Google Sheets detected. The grid is canvas-rendered but toolbar/menus/tabs are indexed above.',
+        'CELL NAVIGATION: keys("ctrl+g") or Name Box to go to cell. Arrow keys to move. Enter to confirm & move down. Tab to move right.',
+        'CELL EDITING: F2 or double_click_xy to edit cell. Type content then Enter. Escape to cancel.',
+        'SELECTION: Shift+arrow to select range. Ctrl+Shift+End for to-end selection. Ctrl+A to select all.',
+        'COMMON: Ctrl+C/V/X (copy/paste/cut), Ctrl+Z/Y (undo/redo), Ctrl+B/I/U (bold/italic/underline).',
+        'SHEETS: Click sheet tabs at bottom or right-click for sheet menu. Ctrl+Shift+PageDown/PageUp to switch sheets.',
+        'FORMATTING: Ctrl+1 (format cells), Alt+Shift+5 (strikethrough), Ctrl+Shift+1 (number format).',
+      ].join('\n');
+    case 'docs':
+      return [
+        '📝 Google Docs detected. The document body and toolbar are DOM-accessible.',
+        'NAVIGATION: Ctrl+Home/End (start/end of doc), Ctrl+G (go to page), Ctrl+F (find).',
+        'EDITING: Just type in the document body. Ctrl+A (select all), Ctrl+Z/Y (undo/redo).',
+        'FORMATTING: Ctrl+B/I/U (bold/italic/underline), Ctrl+Shift+7 (numbered list), Ctrl+Shift+8 (bullet list).',
+        'STYLES: Ctrl+Alt+1-6 for Heading 1-6. Ctrl+Alt+0 for Normal text.',
+        'INSERT: Ctrl+K (link), Ctrl+Alt+M (comment), Insert menu for images/tables.',
+      ].join('\n');
+    case 'figma':
+      return [
+        '🎨 Figma detected. The design canvas is WebGL but toolbar/panels/layers are DOM-indexed above.',
+        'CANVAS: The design surface requires coordinate-based interaction. Use screenshot() to see the canvas, then click_xy/double_click_xy.',
+        'TOOLS: V (move), F (frame), R (rectangle), O (ellipse), T (text), P (pen), L (line).',
+        'SELECTION: Click to select. Shift+click for multi-select. Ctrl+A (select all). Double-click to enter group/edit text.',
+        'ZOOM: Ctrl+scroll or Ctrl++ / Ctrl+-. Ctrl+0 (zoom to 100%). Ctrl+1 (zoom to fit). Z+click (zoom in).',
+        'LAYERS: Tab/Shift+Tab (next/prev sibling). Enter (select child). Escape (select parent).',
+        'COMMON: Ctrl+C/V/X, Ctrl+Z/Y, Ctrl+D (duplicate), Ctrl+G (group), Ctrl+Shift+G (ungroup).',
+        'ARRANGE: Ctrl+] (bring forward), Ctrl+[ (send backward), Ctrl+Shift+] (bring to front).',
+      ].join('\n');
+    case 'excalidraw':
+      return [
+        '✏️ Excalidraw detected. Use screenshot() to see canvas state. Most actions work via keyboard shortcuts.',
+        'TOOLS: 1 (select), 2 (rectangle), 3 (diamond), 4 (ellipse), 5 (arrow), 6 (line), 7 (text), 8 (image).',
+        'CANVAS: Ctrl+scroll to zoom. Space+drag to pan. Ctrl+A (select all).',
+        'COMMON: Ctrl+C/V/X, Ctrl+Z/Y, Ctrl+D (duplicate), Ctrl+G (group), Delete (remove).',
+      ].join('\n');
+    case 'canva':
+      return [
+        '🖼️ Canva detected. Design canvas is rendered — use screenshot() + click_xy for canvas elements.',
+        'Toolbar and side panels are DOM-accessible (indexed above).',
+        'COMMON: Ctrl+C/V/X, Ctrl+Z/Y, Ctrl+D (duplicate), Delete (remove selected).',
+        'TEXT: T (add text), double-click text to edit.',
+      ].join('\n');
+    case 'miro':
+      return [
+        '📋 Miro detected. Board canvas requires coordinate-based interaction.',
+        'Toolbar and side panels are DOM-accessible (indexed above).',
+        'TOOLS: V (select), S (sticky note), T (text), P (pen), L (line), F (frame).',
+        'CANVAS: Ctrl+scroll to zoom. Space+drag to pan. Ctrl+A (select all).',
+      ].join('\n');
+    default:
+      return '⚠️ Canvas app detected. Use keys() for keyboard shortcuts, screenshot() + click_xy/double_click_xy for visual interaction.';
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
@@ -55,7 +115,7 @@ export async function pageElements(wc: WebContents, filter?: string, _unused = f
       'Possible causes:',
       '• Page still loading → wait(1000) then elements() again',
       '• Content below fold → scroll("down") then elements()',
-      '• Canvas-rendered page → use keys for interaction, screenshot for visual state',
+      '• Canvas-rendered page → screenshot() to see canvas, keys() for shortcuts, click_xy/double_click_xy for interaction',
       '• Modal/overlay blocking → elements({ grep: "close" }) to find dismiss button',
     ].join('\n');
   }
@@ -70,6 +130,12 @@ export async function pageElements(wc: WebContents, filter?: string, _unused = f
     const hints: string[] = [];
     if (meta.offscreen > 0) hints.push(`${meta.offscreen} offscreen`);
     if (hints.length > 0) lines.push(`(${hints.join(', ')} — use elements({ grep: "..." }) to search)`);
+  }
+
+  // Canvas app hints — append actionable guidance when on a canvas app
+  if (meta.canvasApp) {
+    lines.push('');
+    lines.push(getCanvasAppHint(meta.canvasApp));
   }
 
   return lines.join('\n');
@@ -450,6 +516,30 @@ export async function pageClickXY(wc: WebContents, x: number, y: number): Promis
   // DOM-native: works for React, Angular, Vue, vanilla JS event listeners
   await callPreload(wc, 'clickAtPoint', x, y);
   return `Clicked at (${x}, ${y})`;
+}
+
+export async function pageDoubleClickXY(wc: WebContents, x: number, y: number): Promise<string> {
+  // Chromium-native double-click: works for canvas apps (Sheets cell edit, Figma text edit, Maps zoom)
+  wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 } as any);
+  await sleep(30);
+  wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 } as any);
+  await sleep(50);
+  wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 2 } as any);
+  await sleep(30);
+  wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 2 } as any);
+  // DOM-native: fire dblclick for JS framework listeners
+  await callPreload(wc, 'doubleClickAtPoint', x, y);
+  return `Double-clicked at (${x}, ${y})`;
+}
+
+export async function pageRightClickXY(wc: WebContents, x: number, y: number): Promise<string> {
+  // Chromium-native right-click: triggers context menus in canvas apps
+  wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'right', clickCount: 1 } as any);
+  await sleep(30);
+  wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'right', clickCount: 1 } as any);
+  // DOM-native: fire contextmenu event
+  await callPreload(wc, 'rightClickAtPoint', x, y);
+  return `Right-clicked at (${x}, ${y}). Check elements() for context menu items.`;
 }
 
 export async function pageHoverXY(wc: WebContents, x: number, y: number): Promise<string> {

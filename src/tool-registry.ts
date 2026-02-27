@@ -124,7 +124,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     // ═══ PAGE TOOLS ═══
 
     elements: tool({
-      description: `ESSENTIAL: Call this FIRST to see clickable elements on any page. Returns a numbered list like "[0] Submit button", "[1] Email input... Use these index numbers with click({ index: N }) or type({ index: N, text: "..." }). Default: viewport only (~20-40 elements). Use grep: "submit" to find elements by text (searches entire page including offscreen). Use tab: 2 to target a specific tab without switching. After navigation or page changes, indexes shift — call elements() again.`,
+      description: `ESSENTIAL: Call this FIRST on any page. Returns numbered interactive elements like "[0] Submit button". Use indexes with click/type/paste. Default: viewport only. Use grep to search all elements. CANVAS APPS (Sheets, Docs, Figma): Automatically harvests toolbar buttons, menus, and accessibility overlays from canvas apps — these appear as normal indexed elements. Also shows app-specific keyboard shortcut hints at the bottom. After navigation or page changes, indexes shift — call elements() again.`,
       inputSchema: z.object({
         filter: z.string().optional().describe('CSS selector to scope indexing'),
         grep: z.string().optional().describe('Search all elements (including offscreen) for this text'),
@@ -247,7 +247,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     keys: tool({
-      description: `Send keyboard input. ESSENTIAL FOR: canvas apps (Google Sheets, Docs, Figma) where click/type don't work. NO PREREQUISITE: Works without elements(). Special keys: enter, tab, escape, backspace, up, down. Combos: ctrl+c, cmd+b, ctrl+shift+s. Pass single combo or array. Example: keys({ sequence: "ctrl+a" }) or keys({ sequence: ["ctrl+a", "delete"] }).`,
+      description: `Send keyboard input. ESSENTIAL FOR: canvas apps (Google Sheets, Docs, Figma) where click/type don't work on the canvas surface. NO PREREQUISITE: Works without elements(). Special keys: enter, tab, escape, backspace, up, down, left, right, space, f2, delete, home, end, pageup, pagedown. Combos: ctrl+c, cmd+b, ctrl+shift+s. Pass single combo or array. CANVAS APP SHORTCUTS — Sheets: F2 (edit cell), arrow keys (navigate), Enter (confirm), Ctrl+G (go to cell). Figma: V (move), R (rect), T (text), Enter (enter child), Escape (parent). Docs: Ctrl+B/I/U, Ctrl+Alt+1-6 (headings). Call elements() first to see app-specific shortcut hints.`,
       inputSchema: z.object({
         sequence: z.union([z.string(), z.array(z.string())]).describe('Key combo or array of actions'),
       }),
@@ -263,7 +263,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     screenshot: tool({
-      description: `Capture a screenshot for visual review. USE CASES: visual layout verification, canvas apps (Figma, Excalidraw), or when user asks to "see the page". NOTE: Requires vision model to interpret (~1K tokens vs ~200 tokens for elements()). FOR FINDING/CLICKING: Prefer elements() — it returns clickable indexes directly. Example: screenshot({ filePath: "~/Desktop/page.png" }).`,
+      description: `Capture a screenshot for visual review. ESSENTIAL FOR CANVAS APPS: Take a screenshot to see canvas content (Sheets cells, Figma design, Maps), then use click_xy/double_click_xy on what you see. For DOM elements, prefer elements() (indexed refs in ~200 tokens vs ~1K tokens for vision). Example: screenshot({ filePath: "~/Desktop/page.png" }).`,
       inputSchema: z.object({
         filePath: z.string().optional().describe('File path to save PNG (default: temp dir)'),
       }),
@@ -274,12 +274,30 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     click_xy: tool({
-      description: `Click at specific pixel coordinates. FALLBACK: Use only when elements() doesn't show the target element (overlays, canvas elements, cross-origin iframes). PREREQUISITE: Take a screenshot first to determine coordinates. Example: click_xy({ x: 150, y: 300 }).`,
+      description: `Click at specific pixel coordinates. FOR CANVAS APPS: Use to click cells in Google Sheets, objects in Figma, locations on Maps. Also works for overlays, cross-origin iframes. PREREQUISITE: Take a screenshot first to determine coordinates. For cell editing in Sheets, use double_click_xy instead. Example: click_xy({ x: 150, y: 300 }).`,
       inputSchema: z.object({
         x: z.number().describe('X coordinate'),
         y: z.number().describe('Y coordinate'),
       }),
       execute: async ({ x, y }: { x: number; y: number }) => pageTools.pageClickXY(getWC(), x, y),
+    }),
+
+    double_click_xy: tool({
+      description: `Double-click at pixel coordinates. ESSENTIAL FOR CANVAS APPS: Google Sheets (edit cell), Figma (enter group/edit text), Maps (zoom in), Excalidraw (edit shape). PREREQUISITE: Take a screenshot first to determine coordinates. Example: double_click_xy({ x: 150, y: 300 }).`,
+      inputSchema: z.object({
+        x: z.number().describe('X coordinate'),
+        y: z.number().describe('Y coordinate'),
+      }),
+      execute: async ({ x, y }: { x: number; y: number }) => pageTools.pageDoubleClickXY(getWC(), x, y),
+    }),
+
+    right_click_xy: tool({
+      description: `Right-click at pixel coordinates to open context menus. USE FOR: Canvas apps (Sheets cell context menu, Figma object options), custom right-click menus. After right-clicking, call elements() to see the context menu items. PREREQUISITE: Take a screenshot first. Example: right_click_xy({ x: 200, y: 150 }).`,
+      inputSchema: z.object({
+        x: z.number().describe('X coordinate'),
+        y: z.number().describe('Y coordinate'),
+      }),
+      execute: async ({ x, y }: { x: number; y: number }) => pageTools.pageRightClickXY(getWC(), x, y),
     }),
 
     hover_xy: tool({

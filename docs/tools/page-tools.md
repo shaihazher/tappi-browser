@@ -33,6 +33,7 @@ Index interactive elements on the page.
 - `grep` disables the viewport cap and searches all interactive elements.
 - Dialog overlays are flagged with `[Dialog active]` at the top.
 - Use `filter` with a CSS selector to scope to a specific region of the page.
+- **Canvas apps** (Google Sheets, Docs, Figma): Automatically detects accessibility overlays and harvests toolbar buttons, menu items, formula bar inputs, and sheet tabs. These appear as normal indexed elements. App-specific keyboard shortcut hints are appended at the bottom of the output.
 
 ---
 
@@ -184,7 +185,16 @@ keys({ sequence: ["tab", "tab", "enter"] })
 keys({ sequence: "cmd+shift+k" })
 ```
 
-**Notes:** Essential for canvas apps (Google Sheets, Figma, VS Code web) where `click`/`type` don't work. Use arrays for sequences.
+**Notes:** Essential for canvas apps (Google Sheets, Figma, VS Code web) where `click`/`type` don't work on the canvas surface. Use arrays for sequences.
+
+**Canvas app shortcuts (quick reference):**
+
+| App | Navigate | Edit | Select | Common |
+|-----|----------|------|--------|--------|
+| **Sheets** | Arrow keys, Ctrl+G (go to), Tab | F2 (edit cell), Enter (confirm) | Shift+arrows, Ctrl+A | Ctrl+C/V/X/Z/Y |
+| **Docs** | Ctrl+Home/End, Ctrl+G | Just type, Ctrl+B/I/U | Shift+arrows, Ctrl+A | Ctrl+Z/Y, Ctrl+K (link) |
+| **Figma** | Click canvas, Tab/Shift+Tab (siblings) | V/R/T/P (tools), Enter (child), Esc (parent) | Shift+click, Ctrl+A | Ctrl+D (dup), Ctrl+G (group) |
+| **Excalidraw** | Click canvas, Space+drag (pan) | 1-8 (tools), double-click (edit text) | Shift+click, Ctrl+A | Ctrl+D (dup), Delete |
 
 ---
 
@@ -239,7 +249,52 @@ Click at specific pixel coordinates.
 
 **Returns:** Confirmation string.
 
-**Notes:** Use as a fallback when `elements` doesn't index the target (e.g. canvas elements, custom widgets). Coordinates are relative to the tab's viewport.
+**Notes:** Use for canvas elements (Sheets cells, Figma objects, Maps locations) or when `elements` doesn't index the target. Coordinates are relative to the tab's viewport. Take a `screenshot` first to determine coordinates.
+
+---
+
+## `double_click_xy`
+
+Double-click at specific pixel coordinates.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `x` | number | Yes | X coordinate (pixels from left) |
+| `y` | number | Yes | Y coordinate (pixels from top) |
+
+**Returns:** Confirmation string.
+
+**Essential for canvas apps:**
+- **Google Sheets:** Double-click a cell to enter edit mode (then type content, press Enter).
+- **Figma:** Double-click to enter a group or edit text content.
+- **Google Maps:** Double-click to zoom in at a location.
+- **Excalidraw:** Double-click a shape to edit its text.
+
+**Example workflow (Sheets):**
+```
+screenshot()                    → See the spreadsheet
+double_click_xy({ x: 200, y: 150 })  → Enter cell edit mode
+keys({ sequence: ["ctrl+a", "delete"] }) → Clear cell
+keys({ sequence: "Hello World" })        → Type new content (won't work — use next line)
+// For typing text into a canvas cell, use keys() with individual characters
+// or the formula bar (which IS a DOM element — use type() on it)
+keys({ sequence: "enter" })              → Confirm and move to next row
+```
+
+---
+
+## `right_click_xy`
+
+Right-click at specific pixel coordinates to open a context menu.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `x` | number | Yes | X coordinate (pixels from left) |
+| `y` | number | Yes | Y coordinate (pixels from top) |
+
+**Returns:** Confirmation string.
+
+**Notes:** After right-clicking, call `elements()` to see the context menu items — they appear as regular DOM elements. Useful for canvas apps (Sheets cell options, Figma object menu) and any page with custom context menus.
 
 ---
 
@@ -269,6 +324,68 @@ Wait for a specified number of milliseconds.
 **Returns:** Confirmation string.
 
 **Notes:** Use sparingly. Prefer re-running `elements` or `text` to detect readiness rather than arbitrary waits. Useful after triggering animations or waiting for a rate-limited API response.
+
+---
+
+---
+
+## Working with Canvas Apps
+
+Canvas-based web apps (Google Sheets, Figma, Excalidraw, Maps) render their main content on `<canvas>` or WebGL — meaning the interactive surface isn't made of DOM elements. Tappi handles this with a layered approach:
+
+### Layer 1: Accessibility Overlays (automatic)
+
+Many canvas apps render invisible DOM overlays for screen readers. `elements()` automatically detects and harvests these:
+
+- **Google Sheets:** Toolbar buttons, menu bar, formula bar, sheet tabs
+- **Google Docs:** Toolbar, menu bar, document editing surface
+- **Figma:** Toolbar, property panels, layer tree
+
+These appear as regular indexed elements — click/type them normally.
+
+### Layer 2: Keyboard Shortcuts (primary interaction)
+
+For the canvas surface itself, keyboard shortcuts are the most reliable interaction method. When `elements()` detects a canvas app, it appends a shortcut reference at the bottom of its output.
+
+**General workflow:**
+1. Call `elements()` — see indexed DOM elements + shortcut hints
+2. Use `keys()` for canvas interaction (navigation, editing, tool selection)
+3. Use `screenshot()` when you need to see the visual state
+
+### Layer 3: Coordinate-Based Interaction (visual fallback)
+
+When keyboard shortcuts aren't enough:
+1. `screenshot()` — see what's on the canvas
+2. `click_xy()` — click a specific location
+3. `double_click_xy()` — enter edit mode (Sheets cells, Figma text, etc.)
+4. `right_click_xy()` — open context menus, then `elements()` to see menu items
+
+### Example: Editing a Google Sheets Cell
+
+```
+elements()          → See toolbar, formula bar, sheet tabs + shortcut hints
+screenshot()        → See the cell grid visually
+click_xy(200, 150)  → Select cell at those coordinates
+keys("f2")          → Enter edit mode (or double_click_xy)
+keys("Hello")       → Won't work for text — use the formula bar instead:
+  elements()        → Find the formula bar input
+  type(N, "Hello")  → Type into the formula bar by index
+  keys("enter")     → Confirm the cell value
+```
+
+### Example: Working in Figma
+
+```
+elements()                  → See toolbar buttons, panels, layers
+screenshot()                → See the design canvas
+keys("v")                   → Switch to Move tool
+click_xy(400, 300)          → Select an object on canvas
+keys("enter")               → Enter the group
+double_click_xy(400, 300)   → Edit text content
+keys(["ctrl+a", "delete"])  → Clear text
+keys("New label text")      → Type (in active text edit mode)
+keys("escape")              → Exit text edit, back to selection
+```
 
 ---
 

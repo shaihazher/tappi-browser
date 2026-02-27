@@ -77,6 +77,85 @@ function isInViewport(el) {
   return cx >= -50 && cx <= vw + 50 && cy >= -50 && cy <= vh + 50;
 }
 
+// ─── Canvas app detection ───
+
+function detectCanvasApp() {
+  var url = location.href;
+  if (/docs\.google\.com\/spreadsheets/.test(url)) return 'sheets';
+  if (/docs\.google\.com\/(document|presentation)/.test(url)) return 'docs';
+  if (/figma\.com\/(file|design|board)/.test(url)) return 'figma';
+  if (/excalidraw\.com/.test(url)) return 'excalidraw';
+  if (/canva\.com\/design/.test(url)) return 'canva';
+  if (/miro\.com\/app/.test(url)) return 'miro';
+  return null;
+}
+
+// ─── Accessibility overlay harvesting ───
+// Google Sheets, Docs, Slides render invisible DOM overlays for screen readers
+// on top of their <canvas>. These contain structured, interactive elements
+// (cells, menu items, toolbar buttons) that our normal indexer can find —
+// IF we know where to look. This function finds those overlay containers
+// and returns their elements so the main indexer can include them.
+
+function harvestAccessibilityOverlay() {
+  var app = detectCanvasApp();
+  var results = [];
+
+  if (app === 'sheets') {
+    // Google Sheets: The accessibility grid overlay uses role="grid" with role="row" > role="gridcell"
+    // The toolbar uses role="toolbar" with real buttons
+    // The formula bar is an accessible input
+    // Also harvest the sheet tab bar at the bottom
+
+    // Toolbar buttons — these are real DOM elements overlaying the canvas
+    var toolbarBtns = document.querySelectorAll('[role="toolbar"] [role="button"], [role="toolbar"] button, .goog-toolbar-button');
+    toolbarBtns.forEach(function(el) { results.push(el); });
+
+    // Menu bar items
+    var menuItems = document.querySelectorAll('[role="menubar"] [role="menuitem"], .menu-button');
+    menuItems.forEach(function(el) { results.push(el); });
+
+    // Formula bar / Name box
+    var formulaInputs = document.querySelectorAll('#formula-bar-name-box, .cell-input, [role="textbox"]');
+    formulaInputs.forEach(function(el) { results.push(el); });
+
+    // Sheet tabs at the bottom
+    var sheetTabs = document.querySelectorAll('.docs-sheet-tab, [role="tab"]');
+    sheetTabs.forEach(function(el) { results.push(el); });
+
+    // Active cell editor (appears when editing)
+    var cellEditors = document.querySelectorAll('.cell-input, .waffle-name-box');
+    cellEditors.forEach(function(el) { results.push(el); });
+
+  } else if (app === 'docs') {
+    // Google Docs: toolbar, menu bar, and editing surface are DOM-accessible
+    var docToolbar = document.querySelectorAll('[role="toolbar"] [role="button"], [role="toolbar"] button');
+    docToolbar.forEach(function(el) { results.push(el); });
+
+    var docMenus = document.querySelectorAll('[role="menubar"] [role="menuitem"]');
+    docMenus.forEach(function(el) { results.push(el); });
+
+    // The document body is usually contenteditable
+    var docBody = document.querySelectorAll('[role="textbox"][contenteditable="true"], .kix-appview-editor');
+    docBody.forEach(function(el) { results.push(el); });
+
+  } else if (app === 'figma') {
+    // Figma: the toolbar and panels are real DOM; only the design canvas is WebGL
+    var figmaToolbar = document.querySelectorAll('[class*="toolbar"] button, [class*="toolbar"] [role="button"]');
+    figmaToolbar.forEach(function(el) { results.push(el); });
+
+    // Left panel (layers), right panel (properties)
+    var figmaPanels = document.querySelectorAll('[class*="panel"] button, [class*="panel"] input, [class*="panel"] [role="treeitem"]');
+    figmaPanels.forEach(function(el) { results.push(el); });
+
+    // Top bar menus
+    var figmaMenus = document.querySelectorAll('[class*="menu"] [role="menuitem"], [data-testid] button');
+    figmaMenus.forEach(function(el) { results.push(el); });
+  }
+
+  return results;
+}
+
 // ─── Indexer ───
 
 function indexElements(filter, grep) {
@@ -87,6 +166,18 @@ function indexElements(filter, grep) {
   if (!root) return JSON.stringify({ error: 'Selector not found: ' + filter });
 
   const interactive = deepQueryAll(root, INTERACTIVE_SELECTORS);
+
+  // Harvest accessibility overlay elements from canvas apps
+  // These are real DOM elements (toolbar buttons, menus, tabs) that sit on top of the canvas
+  var canvasApp = detectCanvasApp();
+  if (canvasApp) {
+    var overlayElements = harvestAccessibilityOverlay();
+    for (var oi = 0; oi < overlayElements.length; oi++) {
+      if (interactive.indexOf(overlayElements[oi]) === -1) {
+        interactive.push(overlayElements[oi]);
+      }
+    }
+  }
 
   // Detect topmost modal/dialog for scoped de-duplication
   const allDialogs = [...document.querySelectorAll('[role=dialog], [role=presentation], [aria-modal=true]')]
@@ -201,6 +292,7 @@ function indexElements(filter, grep) {
   const meta = {};
   if (offscreen > 0) meta.offscreen = offscreen;
   if (topDialog) meta.dialog = true;
+  if (canvasApp) meta.canvasApp = canvasApp;
 
   return JSON.stringify({ elements: results, meta: meta });
 }
@@ -889,6 +981,36 @@ function clickAtPoint(x, y) {
 }
 
 /**
+ * Dispatch DOM dblclick MouseEvent at a given point.
+ * Used in dual-dispatch pattern alongside wc.sendInputEvent for double-click.
+ */
+function doubleClickAtPoint(x, y) {
+  var el = document.elementFromPoint(x, y);
+  if (!el) return JSON.stringify({ error: 'No element at (' + x + ', ' + y + ')' });
+
+  var opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, detail: 2 };
+  el.dispatchEvent(new MouseEvent('dblclick', opts));
+
+  return JSON.stringify({ ok: true, tag: el.tagName.toLowerCase() });
+}
+
+/**
+ * Dispatch DOM contextmenu MouseEvent at a given point.
+ * Used in dual-dispatch pattern alongside wc.sendInputEvent for right-click.
+ */
+function rightClickAtPoint(x, y) {
+  var el = document.elementFromPoint(x, y);
+  if (!el) return JSON.stringify({ error: 'No element at (' + x + ', ' + y + ')' });
+
+  var opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2 };
+  el.dispatchEvent(new MouseEvent('mousedown', opts));
+  el.dispatchEvent(new MouseEvent('mouseup', opts));
+  el.dispatchEvent(new MouseEvent('contextmenu', opts));
+
+  return JSON.stringify({ ok: true, tag: el.tagName.toLowerCase() });
+}
+
+/**
  * Dispatch DOM hover MouseEvents at a given point.
  * Used in dual-dispatch pattern alongside wc.sendInputEvent for hover.
  */
@@ -919,7 +1041,10 @@ contextBridge.exposeInMainWorld('__tappi', {
   fireInputEvents: fireInputEvents,
   dispatchKeyEvent: dispatchKeyEvent,
   clickAtPoint: clickAtPoint,
+  doubleClickAtPoint: doubleClickAtPoint,
+  rightClickAtPoint: rightClickAtPoint,
   hoverAtPoint: hoverAtPoint,
+  detectCanvasApp: detectCanvasApp,
   // Phase 8.4.3: login state for polling
   getLoginState: function() {
     return JSON.stringify({

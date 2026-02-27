@@ -166,11 +166,15 @@ async function detectPageType(wc: WebContents): Promise<string> {
 function pageTypeHint(pageType: string): string {
   switch (pageType) {
     case 'canvas:sheets':
+      return '📊 Google Sheets — elements() indexes toolbar, menus, tabs, and formula bar. For the cell grid: use keys() (arrow keys, F2 to edit, Enter to confirm) and screenshot() + click_xy/double_click_xy for visual interaction.';
     case 'canvas:figma':
+      return '🎨 Figma — elements() indexes toolbar, panels, and layer tree. For the design canvas: use screenshot() + click_xy/double_click_xy, and keys() for tool shortcuts (V/R/T/P).';
     case 'canvas:draw':
+      return '✏️ Excalidraw — elements() indexes the toolbar. For canvas: use keys() (1-8 for tools) and screenshot() + click_xy for shapes.';
     case 'canvas:canva':
+      return '🖼️ Canva — elements() indexes side panels and toolbar. For design canvas: screenshot() + click_xy/double_click_xy.';
     case 'canvas:generic':
-      return '⚠️ Canvas-rendered page — elements() will return limited results. Use keys for interaction (arrow keys, tab, shortcuts), screenshot for visual state.';
+      return '⚠️ Canvas-rendered page — elements() indexes any DOM overlays. For canvas content: keys() for shortcuts, screenshot() + click_xy/double_click_xy for visual interaction.';
     case 'login':
       return '🔐 Login form detected. Use elements() to see form fields.';
     case 'media':
