@@ -112,9 +112,9 @@ interface TappiConfig {
     endpoint?: string;       // Azure: resource endpoint URL
     baseUrl?: string;        // Ollama/OpenRouter: custom base URL
     // Secondary model fields (Phase 8.85)
-    secondaryProvider?: string;  // defaults to same as primary
-    secondaryModel?: string;     // if unset, secondary == primary (no separate secondary)
-    secondaryApiKey?: string;    // encrypted; defaults to same as primary
+    secondaryProvider?: string;  // deprecated (Phase 9.14): ignored, always primary
+    secondaryModel?: string;     // deprecated (Phase 9.14): ignored, always primary
+    secondaryApiKey?: string;    // deprecated (Phase 9.14): ignored, always primary
     // Timeout fields (Phase 8.40)
     agentTimeoutMs?: number;      // main agent timeout (default: 1800000 = 30 min)
     teammateTimeoutMs?: number;   // per-teammate timeout (default: 1800000 = 30 min)
@@ -143,18 +143,36 @@ const DEFAULT_CONFIG: TappiConfig = {
   workspacePath: undefined,  // undefined = use platform default
 };
 
+function normalizeLoadedConfig(raw: any): TappiConfig {
+  const merged: TappiConfig = {
+    ...DEFAULT_CONFIG,
+    ...raw,
+    llm: { ...DEFAULT_CONFIG.llm, ...(raw?.llm || {}) },
+    features: { ...DEFAULT_CONFIG.features, ...(raw?.features || {}) },
+    privacy: { ...DEFAULT_CONFIG.privacy, ...(raw?.privacy || {}) },
+    developerMode: raw?.developerMode ?? false,
+  };
+
+  // Phase 9.14: secondary model routing removed — always use primary.
+  merged.llm.secondaryProvider = undefined;
+  merged.llm.secondaryModel = undefined;
+  merged.llm.secondaryApiKey = undefined;
+
+  return merged;
+}
+
 function loadConfig(): TappiConfig {
   try {
     // Try profile-relative path first
     const profileConfigPath = getConfigPath();
     if (fs.existsSync(profileConfigPath)) {
       const raw = JSON.parse(fs.readFileSync(profileConfigPath, 'utf-8'));
-      return { ...DEFAULT_CONFIG, ...raw, llm: { ...DEFAULT_CONFIG.llm, ...raw.llm }, features: { ...DEFAULT_CONFIG.features, ...raw.features }, privacy: { ...DEFAULT_CONFIG.privacy, ...raw.privacy }, developerMode: raw.developerMode ?? false };
+      return normalizeLoadedConfig(raw);
     }
     // Fallback to legacy path (pre-profile-manager)
     if (fs.existsSync(CONFIG_PATH_LEGACY)) {
       const raw = JSON.parse(fs.readFileSync(CONFIG_PATH_LEGACY, 'utf-8'));
-      return { ...DEFAULT_CONFIG, ...raw, llm: { ...DEFAULT_CONFIG.llm, ...raw.llm }, features: { ...DEFAULT_CONFIG.features, ...raw.features }, privacy: { ...DEFAULT_CONFIG.privacy, ...raw.privacy }, developerMode: raw.developerMode ?? false };
+      return normalizeLoadedConfig(raw);
     }
   } catch (e) {
     console.error('[config] load failed:', e);
@@ -708,14 +726,10 @@ function createWindow() {
     const profileApiKey = decryptApiKey(currentConfig.llm.apiKey);
     if (profileApiKey) {
       const profileDb = getDb();
-      // Use secondary model for profile generation (Phase 8.85 — lightweight task)
-      const secProfileApiKey = currentConfig.llm.secondaryApiKey
-        ? decryptApiKey(currentConfig.llm.secondaryApiKey)
-        : profileApiKey;
       scheduleProfileUpdate(profileDb, {
-        provider: currentConfig.llm.secondaryModel ? (currentConfig.llm.secondaryProvider || currentConfig.llm.provider) : currentConfig.llm.provider,
-        model: currentConfig.llm.secondaryModel || currentConfig.llm.model,
-        apiKey: secProfileApiKey,
+        provider: currentConfig.llm.provider,
+        model: currentConfig.llm.model,
+        apiKey: profileApiKey,
         thinking: false, // No thinking needed for profile generation
         region: currentConfig.llm.region,
         projectId: currentConfig.llm.projectId,
@@ -1667,9 +1681,9 @@ Rules:
       if ((updates.llm as any).thinkingEffort !== undefined) currentConfig.llm.thinkingEffort = (updates.llm as any).thinkingEffort;
       if ((updates.llm as any).codingMode !== undefined) currentConfig.llm.codingMode = (updates.llm as any).codingMode;
       if ((updates.llm as any).worktreeIsolation !== undefined) currentConfig.llm.worktreeIsolation = (updates.llm as any).worktreeIsolation;
-      // Secondary model fields (Phase 8.85)
-      if (updates.llm.secondaryProvider !== undefined) currentConfig.llm.secondaryProvider = updates.llm.secondaryProvider || undefined;
-      if (updates.llm.secondaryModel !== undefined) currentConfig.llm.secondaryModel = updates.llm.secondaryModel || undefined;
+      // Phase 9.14: secondary model routing removed — always use primary.
+      currentConfig.llm.secondaryProvider = undefined;
+      currentConfig.llm.secondaryModel = undefined;
     }
     if ((updates as any).rawApiKey !== undefined) {
       const rawKey = (updates as any).rawApiKey;
@@ -1681,12 +1695,8 @@ Rules:
         currentConfig.llm.providerApiKeys[currentConfig.llm.provider] = encrypted;
       }
     }
-    // Secondary API key (Phase 8.85)
-    if ((updates as any).rawSecondaryApiKey !== undefined) {
-      const rawSecKey = (updates as any).rawSecondaryApiKey;
-      // Empty string means "same as primary" (clear the override)
-      currentConfig.llm.secondaryApiKey = rawSecKey ? encryptApiKey(rawSecKey) : undefined;
-    }
+    // Phase 9.14: secondary API key removed with secondary routing.
+    currentConfig.llm.secondaryApiKey = undefined;
     if (updates.searchEngine) currentConfig.searchEngine = updates.searchEngine;
     if (updates.features) {
       currentConfig.features = { ...currentConfig.features, ...updates.features };
@@ -1708,14 +1718,10 @@ Rules:
       if (!prevAccess && newAccess) {
         const profileApiKey = decryptApiKey(currentConfig.llm.apiKey);
         if (profileApiKey) {
-          // Use secondary model for profile generation (Phase 8.85)
-          const secApiKey = currentConfig.llm.secondaryApiKey
-            ? decryptApiKey(currentConfig.llm.secondaryApiKey)
-            : profileApiKey;
           scheduleProfileUpdate(getDb(), {
-            provider: currentConfig.llm.secondaryModel ? (currentConfig.llm.secondaryProvider || currentConfig.llm.provider) : currentConfig.llm.provider,
-            model: currentConfig.llm.secondaryModel || currentConfig.llm.model,
-            apiKey: secApiKey,
+            provider: currentConfig.llm.provider,
+            model: currentConfig.llm.model,
+            apiKey: profileApiKey,
             thinking: false,
             region: currentConfig.llm.region,
             projectId: currentConfig.llm.projectId,
@@ -2423,14 +2429,11 @@ Rules:
     }
     const apiKey = decryptApiKey(currentConfig.llm.apiKey);
     if (!apiKey) return { error: 'No API key configured.' };
-    const secApiKey = currentConfig.llm.secondaryApiKey
-      ? decryptApiKey(currentConfig.llm.secondaryApiKey)
-      : apiKey;
     try {
       const result = await generateProfile(getDb(), {
-        provider: currentConfig.llm.secondaryModel ? (currentConfig.llm.secondaryProvider || currentConfig.llm.provider) : currentConfig.llm.provider,
-        model: currentConfig.llm.secondaryModel || currentConfig.llm.model,
-        apiKey: secApiKey,
+        provider: currentConfig.llm.provider,
+        model: currentConfig.llm.model,
+        apiKey,
         thinking: false,
         region: currentConfig.llm.region,
         projectId: currentConfig.llm.projectId,

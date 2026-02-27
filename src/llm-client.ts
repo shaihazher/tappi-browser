@@ -112,9 +112,9 @@ export interface LLMConfig {
   endpoint?: string;       // Azure: resource endpoint URL
   baseUrl?: string;        // Ollama/OpenRouter: custom base URL
   // Secondary model fields (Phase 8.85) — for background tasks
-  secondaryProvider?: string;  // defaults to same as primary
-  secondaryModel?: string;     // if unset, secondary = primary (no-op)
-  secondaryApiKey?: string;    // defaults to same as primary
+  secondaryProvider?: string;  // deprecated (Phase 9.14): ignored, always primary
+  secondaryModel?: string;     // deprecated (Phase 9.14): ignored, always primary
+  secondaryApiKey?: string;    // deprecated (Phase 9.14): ignored, always primary
   // Timeout fields (Phase 8.40) — configurable execution timeouts
   agentTimeoutMs?: number;      // main agent timeout (default: 1800000 = 30 min)
   teammateTimeoutMs?: number;   // per-teammate timeout (default: 1800000 = 30 min)
@@ -127,38 +127,12 @@ export interface LLMConfig {
  * This is the central routing function for model selection (Phase 8.85).
  */
 export function getModelConfig(
-  purpose: 'primary' | 'secondary',
+  _purpose: 'primary' | 'secondary',
   config: LLMConfig,
 ): LLMConfig {
-  if (purpose === 'primary' || !config.secondaryModel) {
-    // No secondary configured → everything uses primary
-    return config;
-  }
-
-  const secondaryProvider = config.secondaryProvider || config.provider;
-  const secondaryModel = config.secondaryModel;
-
-  // Guard against stale/mismatched legacy config.
-  // Example: provider=openai-codex + secondaryModel=x-ai/grok-4.1-fast
-  // (left over from older OpenRouter secondary settings).
-  // In that case, fall back to primary so background secondary calls
-  // (titles/summaries/teammates) don't explode while primary chat still works.
-  if (secondaryProvider === 'openai-codex' && secondaryModel.includes('/')) {
-    return {
-      ...config,
-      thinking: false,
-    };
-  }
-
-  // Phase 9.12: Secondary model gets thinking OFF by default for cost efficiency.
-  // Sub-agents and teammates override this via their depth/config as needed.
-  return {
-    ...config,
-    provider: secondaryProvider,
-    model: secondaryModel,
-    apiKey: config.secondaryApiKey || config.apiKey,
-    thinking: false,
-  };
+  // Phase 9.14: Secondary model routing removed.
+  // All calls (primary + secondary tasks) use the same provider/model/api key.
+  return config;
 }
 
 /**
