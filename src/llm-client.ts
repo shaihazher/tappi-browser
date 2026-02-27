@@ -239,14 +239,16 @@ export function buildProviderOptions(config: LLMConfig): Record<string, any> {
       // OpenRouter passes through to underlying provider
       // Check model prefix to determine which provider options to use
       if (model.startsWith('anthropic/')) {
+        // Prompt caching works for system messages via OpenRouter (90% read discount, 5min TTL).
+        // contextManagement is skipped — it's an Anthropic-specific server-side feature
+        // that OpenRouter doesn't forward.
+        const opts: Record<string, any> = {
+          cacheControl: { type: 'ephemeral' },
+        };
         if (thinkingEnabled) {
-          return {
-            anthropic: {
-              thinking: { type: 'adaptive' },
-            },
-          };
+          opts.thinking = { type: 'adaptive' };
         }
-        return {};
+        return { anthropic: opts };
       }
       if (model.startsWith('openai/') && /^openai\/(o1|o3|o4|gpt-5)/.test(model)) {
         // OpenAI reasoning models via OpenRouter
