@@ -644,7 +644,7 @@ async function runSubAgent(
     browserCtx.tabManager.setAgentTarget(assignedTabId);
   }
 
-  let executionMode: 'streamText' | 'generateText' = llmConfig.provider === 'openai-codex' ? 'streamText' : 'generateText';
+  let executionMode: 'streamText' | 'generateText' = 'generateText';
   let codexToolIntentSteps = 0;
   let codexParsedToolCalls = 0;
   let codexExecutedToolResults = 0;
@@ -824,7 +824,7 @@ Timezone: ${tz}
     let fallbackSteps: any[] = [];
     let structuredResponseMessages: ChatMessage[] = [];
 
-    if (llmConfig.provider === 'openai-codex') {
+    if (false && llmConfig.provider === 'openai-codex') {
       executionMode = 'streamText';
       const codexRun = await runLiteLLMCodexToolLoop({
         config: llmConfig,

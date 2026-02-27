@@ -1702,7 +1702,7 @@ function updateProviderFields(provider) {
   // Update placeholders per provider
   const placeholders = {
     anthropic: { key: 'sk-ant-...', model: 'claude-sonnet-4-6' },
-    'openai-codex': { key: 'sk-...', model: 'gpt-5.3-codex', baseUrl: 'https://chatgpt.com/backend-api/codex/v1' },
+    'openai-codex': { key: 'sk-...', model: 'gpt-5.3-codex', baseUrl: 'https://chatgpt.com/backend-api/codex' },
     openai: { key: 'sk-...', model: 'gpt-4o' },
     google: { key: 'AI...', model: 'gemini-2.0-flash' },
     openrouter: { key: 'sk-or-...', model: 'anthropic/claude-sonnet-4-6' },

@@ -200,7 +200,7 @@ const RAW_PREFIX = 'raw:';
 const OPENAI_OAUTH_ISSUER = 'https://auth.openai.com';
 const OPENAI_CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const OPENAI_CODEX_ORIGINATOR = 'codex_cli_rs';
-const OPENAI_CODEX_BASE_URL = process.env.OPENAI_CODEX_BASE_URL || 'https://chatgpt.com/backend-api/codex/v1';
+const OPENAI_CODEX_BASE_URL = process.env.OPENAI_CODEX_BASE_URL || 'https://chatgpt.com/backend-api/codex';
 
 function encryptApiKey(key: string): string {
   if (!key) return '';

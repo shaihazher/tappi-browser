@@ -310,11 +310,13 @@ export async function testConnection(provider: string, config: {
         }
 
         const configured = (config.baseUrl || '').trim();
-        const baseUrl = configured || 'https://chatgpt.com/backend-api/codex/v1';
+        const baseUrl = configured || 'https://chatgpt.com/backend-api/codex';
         const normalized = baseUrl.replace(/\/+$/, '');
-        const modelsUrl = normalized.endsWith('/v1')
-          ? `${normalized.slice(0, -3)}/models`
-          : `${normalized}/models`;
+        const modelsUrl = normalized.endsWith('/codex')
+          ? `${normalized}/models`
+          : normalized.endsWith('/codex/v1')
+            ? `${normalized.slice(0, -3)}/models`
+            : normalized.replace(/\/responses$/, '/models');
 
         const resp = await fetch(modelsUrl, {
           headers: {

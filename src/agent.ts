@@ -445,7 +445,9 @@ Timezone: ${tz}
     let idleCount = 0;
     let toolCallCount = 0;
 
-    const isCodex = llmConfig.provider === 'openai-codex';
+    // Phase 9.15: direct Codex backend path now uses AI SDK streamText/Responses.
+    // Keep legacy manual codex loop disabled for compatibility while preserving code for fallback.
+    const isCodex = false && llmConfig.provider === 'openai-codex';
     let codexNeedsNonStreamRetry = false;
     let codexToolFailureCount = 0;
     let codexToolIntentSteps = 0;

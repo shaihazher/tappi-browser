@@ -289,7 +289,7 @@ function parseOpenAIAuthClaims(token: string): Record<string, any> | null {
   }
 }
 
-const DEFAULT_CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex/v1';
+const DEFAULT_CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex';
 
 function isLikelyCodexBaseUrl(raw: string): boolean {
   if (!raw) return false;
@@ -306,8 +306,7 @@ function getCodexBaseUrl(config: LLMConfig): string {
     || (isLikelyCodexBaseUrl(configRaw) ? configRaw : '')
     || DEFAULT_CODEX_BASE_URL;
 
-  const trimmed = chosen.replace(/\/+$/, '');
-  return trimmed.endsWith('/v1') ? trimmed : `${trimmed}/v1`;
+  return chosen.replace(/\/+$/, '');
 }
 
 function buildCodexAuthHeaders(apiKey: string): Record<string, string> {
@@ -381,7 +380,7 @@ export function createModel(config: LLMConfig): LanguageModel {
         headers: buildCodexAuthHeaders(apiKey),
       });
       const normalizedModel = model || DEFAULT_MODELS['openai-codex'];
-      return codex.chat(normalizedModel as any);
+      return codex(normalizedModel as any);
     }
 
     case 'openai': {
