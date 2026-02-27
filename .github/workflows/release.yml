@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -124,5 +125,19 @@ jobs:
             release-artifacts/windows-builds/*
             release-artifacts/linux-builds/*
           generate_release_notes: true
+          body: |
+            ## Platform binaries
+            - macOS: `.dmg` and `.zip`
+            - Windows: `.exe`
+            - Linux: `.AppImage`, `.deb`, `.rpm`
+
+            ## macOS note (Gatekeeper / quarantine)
+            If macOS blocks launch with messages like “app is damaged” or “cannot be opened”, clear quarantine attributes:
+
+            ```bash
+            xattr -cr /Applications/Tappi.app
+            ```
+
+            Then reopen the app.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

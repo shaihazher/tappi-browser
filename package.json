@@ -1,7 +1,7 @@
 {
   "name": "tappi",
   "productName": "Tappi",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "AI-native browser with built-in agent",
   "author": {
     "name": "SynthWorx",
