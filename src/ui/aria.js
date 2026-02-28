@@ -98,6 +98,8 @@ let currentModelConfig = {
   thinking: true,
   secondaryModel: '',
   secondaryProvider: '',
+  claudeCodeMode: 'full',
+  claudeCodeAuth: 'oauth',
 };
 let availableModels = [];
 let modelDropdownOpen = false;
@@ -204,6 +206,8 @@ async function loadModelConfig() {
       currentModelConfig.thinking = config.llm.thinking !== false;
       currentModelConfig.secondaryModel = config.llm.secondaryModel || '';
       currentModelConfig.secondaryProvider = config.llm.secondaryProvider || '';
+      currentModelConfig.claudeCodeMode = config.llm.claudeCodeMode || 'full';
+      currentModelConfig.claudeCodeAuth = config.llm.claudeCodeAuth || 'oauth';
     }
     updateModelButton();
     updateThinkingButton();
@@ -338,13 +342,9 @@ async function saveModelConfig(options = {}) {
       llmUpdate.provider = currentModelConfig.provider;
     }
 
-    // Include Claude Code settings if applicable
-    if (currentModelConfig.claudeCodeMode) {
-      llmUpdate.claudeCodeMode = currentModelConfig.claudeCodeMode;
-    }
-    if (currentModelConfig.claudeCodeAuth) {
-      llmUpdate.claudeCodeAuth = currentModelConfig.claudeCodeAuth;
-    }
+    // Always include Claude Code settings so they persist
+    llmUpdate.claudeCodeMode = currentModelConfig.claudeCodeMode || 'full';
+    llmUpdate.claudeCodeAuth = currentModelConfig.claudeCodeAuth || 'oauth';
 
     await window.aria.saveConfig({ llm: llmUpdate });
   } catch (e) {
@@ -410,6 +410,13 @@ async function openModelDropdown() {
   const ccWrap = document.getElementById('aria-cc-mode-wrap');
   if (ccWrap) ccWrap.classList.toggle('hidden', !isCC);
   if (ariaModelDropdown) ariaModelDropdown.classList.toggle('cc-active', isCC);
+
+  // Sync Claude Code dropdowns from saved config
+  const ccModeSelect = document.getElementById('aria-cc-mode-select');
+  if (ccModeSelect) ccModeSelect.value = currentModelConfig.claudeCodeMode || 'full';
+  const ccAuthSelect = document.getElementById('aria-cc-auth-select');
+  if (ccAuthSelect) ccAuthSelect.value = currentModelConfig.claudeCodeAuth || 'oauth';
+
   if (isCC) updateClaudeCodeStatus();
 
   fetchModelsForProvider(currentModelConfig.provider);

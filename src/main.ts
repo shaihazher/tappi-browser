@@ -1162,8 +1162,10 @@ function createWindow() {
       try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-start', {}); } catch {}
       try { mainWindow.webContents.send('agent:stream-start', {}); } catch {}
 
-      // Wire up chunk events
+      // Wire up chunk events — accumulate response for persistence
+      let ccResponseBuffer = '';
       const onChunk = (data: { text: string; done: boolean }) => {
+        if (data.text) ccResponseBuffer += data.text;
         try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', data); } catch {}
         try { mainWindow.webContents.send('agent:stream-chunk', data); } catch {}
       };
@@ -1184,6 +1186,10 @@ function createWindow() {
       // Send to Claude Code
       try {
         await activeClaudeCodeProvider.sendMessage(message);
+        // Persist assistant response to conversation store
+        if (ccResponseBuffer.trim()) {
+          addConversationMessage(effectiveConvId, 'assistant', ccResponseBuffer);
+        }
         // If plan mode completed, notify UI so it can show approve/edit buttons
         if (activeClaudeCodeProvider.isPlanPending) {
           try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('aria:cc-plan-complete', { conversationId: effectiveConvId }); } catch {}
@@ -1241,9 +1247,12 @@ function createWindow() {
   ipcMain.handle('aria:cc-approve-plan', async () => {
     if (!activeClaudeCodeProvider) return;
     const ariaWC = tabManager?.ariaWebContents;
+    const effectiveConvId = activeConversationId || 'default';
 
-    // Wire up streaming events (same pattern as sendMessage)
+    // Wire up streaming events — accumulate response for persistence
+    let ccResponseBuffer = '';
     const onChunk = (data: { text: string; done: boolean }) => {
+      if (data.text) ccResponseBuffer += data.text;
       try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', data); } catch {}
       try { mainWindow.webContents.send('agent:stream-chunk', data); } catch {}
     };
@@ -1263,7 +1272,10 @@ function createWindow() {
 
     try {
       await activeClaudeCodeProvider.approvePlan();
-      // No plan-complete after execution — this was the approval
+      // Persist the execution response
+      if (ccResponseBuffer.trim()) {
+        addConversationMessage(effectiveConvId, 'assistant', ccResponseBuffer);
+      }
     } catch (err: any) {
       console.error('[main] cc-approve-plan error:', err);
       onError(err.message || 'Plan execution failed');
@@ -1273,8 +1285,12 @@ function createWindow() {
   ipcMain.handle('aria:cc-edit-plan', async (_e, { feedback }: { feedback: string }) => {
     if (!activeClaudeCodeProvider) return;
     const ariaWC = tabManager?.ariaWebContents;
+    const effectiveConvId = activeConversationId || 'default';
 
+    // Accumulate response for persistence
+    let ccResponseBuffer = '';
     const onChunk = (data: { text: string; done: boolean }) => {
+      if (data.text) ccResponseBuffer += data.text;
       try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', data); } catch {}
       try { mainWindow.webContents.send('agent:stream-chunk', data); } catch {}
     };
@@ -1293,7 +1309,13 @@ function createWindow() {
     try { mainWindow.webContents.send('agent:stream-start', {}); } catch {}
 
     try {
+      // Persist user feedback
+      addConversationMessage(effectiveConvId, 'user', feedback);
       await activeClaudeCodeProvider.sendPlanFeedback(feedback);
+      // Persist updated plan response
+      if (ccResponseBuffer.trim()) {
+        addConversationMessage(effectiveConvId, 'assistant', ccResponseBuffer);
+      }
       // If plan mode completed again, notify UI for another round
       if (activeClaudeCodeProvider.isPlanPending) {
         try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('aria:cc-plan-complete', {}); } catch {}
@@ -2098,6 +2120,8 @@ Rules:
       if ((updates.llm as any).thinkingEffort !== undefined) currentConfig.llm.thinkingEffort = (updates.llm as any).thinkingEffort;
       if ((updates.llm as any).codingMode !== undefined) currentConfig.llm.codingMode = (updates.llm as any).codingMode;
       if ((updates.llm as any).worktreeIsolation !== undefined) currentConfig.llm.worktreeIsolation = (updates.llm as any).worktreeIsolation;
+      if ((updates.llm as any).claudeCodeMode !== undefined) (currentConfig.llm as any).claudeCodeMode = (updates.llm as any).claudeCodeMode;
+      if ((updates.llm as any).claudeCodeAuth !== undefined) (currentConfig.llm as any).claudeCodeAuth = (updates.llm as any).claudeCodeAuth;
       // Phase 10: Secondary model routing re-enabled — no longer force-clearing.
     }
     if ((updates as any).rawApiKey !== undefined) {
