@@ -521,6 +521,11 @@ export class ClaudeCodeProvider extends EventEmitter {
   private sessionId: string | null = null;
   private pendingPlanApproval: boolean = false;
 
+  // Pending tool_use state for streaming tool blocks
+  private _pendingToolName?: string;
+  private _pendingToolId?: string;
+  private _pendingToolInput: string = '';
+
   constructor(config: CCProviderConfig) {
     super();
     this.config = config;
@@ -673,10 +678,13 @@ export class ClaudeCodeProvider extends EventEmitter {
   /**
    * Parse a stream-json message from the `claude --output-format stream-json` output.
    *
-   * Message types:
+   * Message types handled:
    * - { type: "system", subtype: "init", session_id: "..." }
-   * - { type: "assistant", message: { content: [{ type: "text", text: "..." }] } }
-   * - { type: "content_block_delta", delta: { type: "text_delta", text: "..." } }
+   * - { type: "assistant", message: { content: [{ type: "text"|"tool_use", ... }] } }
+   * - { type: "content_block_start", content_block: { type: "tool_use", name, id } }
+   * - { type: "content_block_delta", delta: { type: "text_delta"|"input_json_delta", ... } }
+   * - { type: "content_block_stop" }
+   * - { type: "tool_result", content: "..." }
    * - { type: "result", result: "...", session_id: "..." }
    */
   private _handleCliStreamMessage(msg: any): void {
@@ -694,11 +702,63 @@ export class ClaudeCodeProvider extends EventEmitter {
       return;
     }
 
-    // Full assistant message
+    // Streaming tool input delta — accumulate JSON input chunks
+    if (msg.type === 'content_block_delta' && msg.delta?.type === 'input_json_delta') {
+      this._pendingToolInput += msg.delta.partial_json || '';
+      return;
+    }
+
+    // Full assistant message — handle both text and tool_use content blocks
     if (msg.type === 'assistant' && msg.message?.content) {
       for (const block of msg.message.content) {
         if (block.type === 'text' && block.text) {
           this.emit('chunk', { text: block.text, done: false } as CCChunkEvent);
+        } else if (block.type === 'tool_use') {
+          const toolMd = this._formatToolUse(block.name, block.input);
+          this.emit('chunk', { text: toolMd, done: false } as CCChunkEvent);
+        }
+      }
+      return;
+    }
+
+    // Streaming tool_use start — emit tool header, begin accumulating input
+    if (msg.type === 'content_block_start' && msg.content_block?.type === 'tool_use') {
+      const block = msg.content_block;
+      this._pendingToolName = block.name;
+      this._pendingToolId = block.id;
+      this._pendingToolInput = '';
+      this.emit('chunk', { text: `\n\n> **🔧 ${block.name}**\n`, done: false } as CCChunkEvent);
+      return;
+    }
+
+    // Content block finished — if tool_use, emit the formatted input details
+    if (msg.type === 'content_block_stop') {
+      if (this._pendingToolName && this._pendingToolInput) {
+        try {
+          const input = JSON.parse(this._pendingToolInput);
+          const detail = this._formatToolInput(this._pendingToolName, input);
+          if (detail) {
+            this.emit('chunk', { text: detail, done: false } as CCChunkEvent);
+          }
+        } catch { /* partial JSON — skip detail formatting */ }
+      }
+      this._pendingToolName = undefined;
+      this._pendingToolId = undefined;
+      this._pendingToolInput = '';
+      return;
+    }
+
+    // Tool result — show output of tool execution
+    if (msg.type === 'tool_result' || (msg.role === 'user' && msg.content && Array.isArray(msg.content))) {
+      const content = msg.content;
+      if (typeof content === 'string' && content.trim()) {
+        this.emit('chunk', { text: `\n> _Result:_ ${this._truncate(content, 500)}\n\n`, done: false } as CCChunkEvent);
+      } else if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block.type === 'tool_result' && block.content) {
+            const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+            this.emit('chunk', { text: `\n> _Result:_ ${this._truncate(text, 500)}\n\n`, done: false } as CCChunkEvent);
+          }
         }
       }
       return;
@@ -711,6 +771,45 @@ export class ClaudeCodeProvider extends EventEmitter {
       }
       return;
     }
+  }
+
+  /** Format a tool_use block from a complete assistant message as markdown */
+  private _formatToolUse(name: string, input: any): string {
+    let md = `\n\n> **🔧 ${name}**\n`;
+    md += this._formatToolInput(name, input) || '';
+    return md;
+  }
+
+  /** Format tool input details based on tool name */
+  private _formatToolInput(name: string, input: any): string {
+    if (!input) return '';
+    switch (name) {
+      case 'Write':
+      case 'Read':
+        return `> \`${input.file_path || ''}\`\n\n`;
+      case 'Edit':
+        return `> \`${input.file_path || ''}\`\n\n`;
+      case 'Bash':
+        return `> \`\`\`\n> ${this._truncate(input.command || '', 200)}\n> \`\`\`\n\n`;
+      case 'Glob':
+        return `> Pattern: \`${input.pattern || ''}\`\n\n`;
+      case 'Grep':
+        return `> Pattern: \`${input.pattern || ''}\`${input.path ? ` in \`${input.path}\`` : ''}\n\n`;
+      case 'TodoWrite':
+        return `> Updating task list\n\n`;
+      default: {
+        // Generic: show first meaningful key
+        const keys = Object.keys(input).slice(0, 2);
+        const summary = keys.map(k => `${k}: ${this._truncate(String(input[k] ?? ''), 100)}`).join(', ');
+        return summary ? `> ${summary}\n\n` : '';
+      }
+    }
+  }
+
+  /** Truncate text to maxLen with ellipsis */
+  private _truncate(text: string, maxLen: number): string {
+    if (text.length <= maxLen) return text;
+    return text.slice(0, maxLen) + '…';
   }
 
   /**
