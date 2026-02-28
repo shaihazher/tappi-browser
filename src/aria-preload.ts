@@ -101,8 +101,21 @@ contextBridge.exposeInMainWorld('aria', {
   },
 
   // ─── Prompt Enhancement (Phase 9.098) ───
-  enhancePrompt: (prompt: string, webSearch: boolean, mode?: 'quick' | 'deep') =>
-    ipcRenderer.invoke('aria:enhance-prompt', prompt, webSearch, mode),
+  enhancePrompt: (prompt: string, webSearch: boolean, mode?: 'quick' | 'deep', conversationId?: string) =>
+    ipcRenderer.invoke('aria:enhance-prompt', prompt, webSearch, mode, conversationId),
+
+  // ─── Claude Code Provider ───
+  checkClaudeCodeInstalled: (authMethod?: 'api-key' | 'oauth') =>
+    ipcRenderer.invoke('claude-code:check-installed', authMethod),
+  installClaudeCode: (authMethod?: 'api-key' | 'oauth') =>
+    ipcRenderer.invoke('claude-code:install', authMethod),
+  checkClaudeAuth: () =>
+    ipcRenderer.invoke('claude-code:check-auth'),
+  loginClaudeCode: () =>
+    ipcRenderer.invoke('claude-code:login'),
+  onClaudeCodeOAuthStatus: (cb: (data: { phase: string; message: string }) => void) => {
+    ipcRenderer.on('oauth:claude-code:status', (_e, data) => cb(data));
+  },
 
   onTeammateTool: (cb: (data: { name: string; toolName: string; display: string }) => void) => {
     ipcRenderer.on('team:teammate-tool', (_e, data) => cb(data));

@@ -299,6 +299,7 @@ const DEFAULT_MODELS: Record<string, string> = {
   bedrock: 'anthropic.claude-sonnet-4-6-v2:0',
   vertex: 'gemini-2.0-flash',
   azure: 'gpt-4o',
+  'claude-code': 'claude-code',
 };
 
 export function getDefaultModel(provider: string): string {
@@ -515,7 +516,7 @@ function extractAzureResourceName(endpoint: string): string {
  * Check if a provider requires an API key (vs auto-detection).
  */
 export function requiresApiKey(provider: string): boolean {
-  return ['anthropic', 'openai-codex', 'openai', 'google', 'openrouter'].includes(provider);
+  return ['anthropic', 'openai-codex', 'openai', 'google', 'openrouter', 'claude-code'].includes(provider);
 }
 
 /**

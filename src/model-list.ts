@@ -343,6 +343,13 @@ export async function listModelsForProvider(
     case 'azure':
       return listAzureModels(config.endpoint || '', config.apiKey || '');
 
+    case 'claude-code':
+      return {
+        success: true,
+        models: [{ id: 'claude-code', name: 'Claude Code (managed)', supportsThinking: true }],
+        fallback: false,
+      };
+
     default:
       return {
         success: false,

@@ -216,8 +216,13 @@ function updateModelButton() {
   if (!ariaModelBtn) return;
   const modelName = ariaModelBtn.querySelector('.model-name');
   const providerIcon = ariaModelBtn.querySelector('.model-provider-icon');
-  
-  if (modelName) modelName.textContent = currentModelConfig.model;
+
+  // Show friendly name for Claude Code provider
+  if (modelName) {
+    modelName.textContent = currentModelConfig.provider === 'claude-code'
+      ? 'Claude Code'
+      : currentModelConfig.model;
+  }
   if (providerIcon) providerIcon.dataset.provider = currentModelConfig.provider;
 }
 
@@ -316,6 +321,14 @@ async function saveModelConfig(options = {}) {
       llmUpdate.provider = currentModelConfig.provider;
     }
 
+    // Include Claude Code settings if applicable
+    if (currentModelConfig.claudeCodeMode) {
+      llmUpdate.claudeCodeMode = currentModelConfig.claudeCodeMode;
+    }
+    if (currentModelConfig.claudeCodeAuth) {
+      llmUpdate.claudeCodeAuth = currentModelConfig.claudeCodeAuth;
+    }
+
     await window.aria.saveConfig({ llm: llmUpdate });
   } catch (e) {
     console.error('[aria] Failed to save model config:', e);
@@ -408,9 +421,164 @@ function bindModelPickerEvents() {
   ariaProviderSelect?.addEventListener('change', () => {
     currentModelConfig.provider = ariaProviderSelect.value;
     providerChangedInPicker = true;
-    fetchModelsForProvider(ariaProviderSelect.value);
+
+    // Show/hide Claude Code mode selector
+    const ccWrap = document.getElementById('aria-cc-mode-wrap');
+    if (ccWrap) {
+      ccWrap.classList.toggle('hidden', ariaProviderSelect.value !== 'claude-code');
+    }
+
+    if (ariaProviderSelect.value === 'claude-code') {
+      // Set model to claude-code and show info instead of model list
+      currentModelConfig.model = 'claude-code';
+      if (ariaModelList) {
+        ariaModelList.innerHTML = '<div class="model-list-empty"><p>Claude Code manages its own model selection.</p></div>';
+      }
+      // Check install status based on current auth method
+      updateClaudeCodeStatus();
+    } else {
+      fetchModelsForProvider(ariaProviderSelect.value);
+    }
   });
-  
+
+  /**
+   * Update the Claude Code install + auth status UI.
+   * Both paths auto-install to dedicated Tappi-managed directories:
+   * - OAuth:   CLI at ~/.tappi-browser/claude-code-cli/
+   * - API Key: SDK at ~/.tappi-browser/claude-code/
+   */
+  function updateClaudeCodeStatus() {
+    const authSelect = document.getElementById('aria-cc-auth-select');
+    const installBtn = document.getElementById('aria-cc-install-btn');
+    const loginBtn = document.getElementById('aria-cc-login-btn');
+    const ccStatus = document.getElementById('aria-cc-status');
+    const authMethod = authSelect?.value || 'oauth';
+    const label = authMethod === 'oauth' ? 'Claude Code CLI' : 'Agent SDK';
+
+    // Hide login button for API key auth (no OAuth needed)
+    if (loginBtn) loginBtn.classList.toggle('hidden', authMethod !== 'oauth');
+
+    if (window.aria.checkClaudeCodeInstalled) {
+      window.aria.checkClaudeCodeInstalled(authMethod).then(installed => {
+        if (installBtn) installBtn.classList.toggle('hidden', installed);
+        if (installBtn) installBtn.textContent = `Install ${label}`;
+
+        if (!installed) {
+          if (ccStatus) {
+            ccStatus.textContent = `${label} will auto-install on first use`;
+            ccStatus.classList.remove('hidden', 'error');
+          }
+          if (loginBtn) loginBtn.classList.add('hidden'); // Can't login until installed
+          return;
+        }
+
+        // Installed — check auth status for OAuth
+        if (authMethod === 'oauth' && window.aria.checkClaudeAuth) {
+          window.aria.checkClaudeAuth().then(auth => {
+            if (ccStatus) {
+              if (auth.loggedIn) {
+                ccStatus.textContent = auth.email
+                  ? `✓ Signed in as ${auth.email}`
+                  : '✓ Signed in';
+                ccStatus.classList.remove('hidden', 'error');
+                if (loginBtn) loginBtn.classList.add('hidden');
+              } else {
+                ccStatus.textContent = '✓ CLI installed — will sign in on first use';
+                ccStatus.classList.remove('hidden', 'error');
+                if (loginBtn) loginBtn.classList.remove('hidden');
+              }
+            }
+          }).catch(() => {
+            if (ccStatus) {
+              ccStatus.textContent = `✓ ${label} installed`;
+              ccStatus.classList.remove('hidden', 'error');
+            }
+          });
+        } else {
+          if (ccStatus) {
+            ccStatus.textContent = `✓ ${label} installed`;
+            ccStatus.classList.remove('hidden', 'error');
+          }
+        }
+      }).catch(() => {});
+    }
+  }
+
+  // Claude Code install button — installs the right component for the selected auth method
+  document.getElementById('aria-cc-install-btn')?.addEventListener('click', async () => {
+    const authSelect = document.getElementById('aria-cc-auth-select');
+    const installBtn = document.getElementById('aria-cc-install-btn');
+    const ccStatus = document.getElementById('aria-cc-status');
+    const authMethod = authSelect?.value || 'oauth';
+    const label = authMethod === 'oauth' ? 'Claude Code CLI' : 'Agent SDK';
+
+    if (installBtn) installBtn.disabled = true;
+    if (ccStatus) {
+      ccStatus.textContent = `Installing ${label}...`;
+      ccStatus.classList.remove('hidden', 'error');
+    }
+    try {
+      await window.aria.installClaudeCode(authMethod);
+      if (installBtn) installBtn.classList.add('hidden');
+      if (ccStatus) ccStatus.textContent = `✓ ${label} installed successfully!`;
+      // Refresh full status (will check auth for OAuth)
+      updateClaudeCodeStatus();
+    } catch (err) {
+      if (ccStatus) {
+        ccStatus.textContent = 'Install failed: ' + (err.message || err);
+        ccStatus.classList.add('error');
+      }
+    } finally {
+      if (installBtn) installBtn.disabled = false;
+    }
+  });
+
+  // Claude Code sign-in button — triggers OAuth login flow
+  document.getElementById('aria-cc-login-btn')?.addEventListener('click', async () => {
+    const loginBtn = document.getElementById('aria-cc-login-btn');
+    const ccStatus = document.getElementById('aria-cc-status');
+
+    if (loginBtn) loginBtn.disabled = true;
+    if (ccStatus) {
+      ccStatus.textContent = 'Opening sign-in...';
+      ccStatus.classList.remove('hidden', 'error');
+    }
+    try {
+      const result = await window.aria.loginClaudeCode();
+      if (result.success) {
+        if (ccStatus) ccStatus.textContent = '✓ Signed in successfully!';
+        if (loginBtn) loginBtn.classList.add('hidden');
+      } else {
+        if (ccStatus) {
+          ccStatus.textContent = 'Sign-in failed: ' + (result.error || 'Unknown error');
+          ccStatus.classList.add('error');
+        }
+      }
+    } catch (err) {
+      if (ccStatus) {
+        ccStatus.textContent = 'Sign-in failed: ' + (err.message || err);
+        ccStatus.classList.add('error');
+      }
+    } finally {
+      if (loginBtn) loginBtn.disabled = false;
+    }
+  });
+
+  // Claude Code mode select change
+  document.getElementById('aria-cc-mode-select')?.addEventListener('change', (e) => {
+    const mode = e.target.value;
+    currentModelConfig.claudeCodeMode = mode;
+    saveModelConfig({ includeProvider: true });
+  });
+
+  // Claude Code auth select change — also refresh install status
+  document.getElementById('aria-cc-auth-select')?.addEventListener('change', (e) => {
+    const auth = e.target.value;
+    currentModelConfig.claudeCodeAuth = auth;
+    saveModelConfig({ includeProvider: true });
+    updateClaudeCodeStatus();
+  });
+
   // Model search
   ariaModelSearch?.addEventListener('input', renderModelList);
   
@@ -1632,7 +1800,7 @@ async function enhancePrompt(mode) {
   originalPromptText = text;
 
   try {
-    const result = await window.aria.enhancePrompt(text, false, mode);
+    const result = await window.aria.enhancePrompt(text, false, mode, currentConversationId);
 
     if (result.error) {
       throw new Error(result.error);

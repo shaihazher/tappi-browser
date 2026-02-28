@@ -53,6 +53,7 @@ import {
   deleteConversation as deleteConvFromStore,
   updateConversationTitle,
   getConversationMessages,
+  addConversationMessage,
   searchConversations,
   getConversation,
 } from './conversation-store';
@@ -119,6 +120,9 @@ interface TappiConfig {
     agentTimeoutMs?: number;      // main agent timeout (default: 1800000 = 30 min)
     teammateTimeoutMs?: number;   // per-teammate timeout (default: 1800000 = 30 min)
     subtaskTimeoutMs?: number;    // per subtask timeout (default: 300000 = 5 min)
+    // Claude Code provider fields
+    claudeCodeMode?: 'plan' | 'ask' | 'full';  // CC permission mode (default: ask)
+    claudeCodeAuth?: 'api-key' | 'oauth';       // CC auth method (default: oauth — uses CC's built-in login)
   };
   searchEngine: string;
   features: {
@@ -1012,9 +1016,14 @@ function createWindow() {
   });
 
   // ─── Aria Tab IPC (Phase 8.35) ───
+  // ─── Claude Code Provider State ──────────────────────────────────────────
+  let activeClaudeCodeProvider: any = null;
+
   ipcMain.on('aria:send', async (_e, message: string, conversationId?: string, codingMode?: boolean) => {
     const apiKey = decryptApiKey(currentConfig.llm.apiKey);
-    if (!apiKey) {
+    // Claude Code with OAuth doesn't need an API key — it handles its own auth
+    const isClaudeCodeOAuth = currentConfig.llm.provider === 'claude-code' && (currentConfig.llm as any).claudeCodeAuth !== 'api-key';
+    if (!apiKey && !isClaudeCodeOAuth) {
       try {
         const ariaWC = tabManager?.ariaWebContents;
         if (ariaWC) ariaWC.send('agent:stream-chunk', { text: '⚙️ No API key configured. Add one in Settings.', done: true });
@@ -1055,6 +1064,107 @@ function createWindow() {
       generateQuickTitle(activeConversationId, message, llmConfigForTitle, tabManager?.ariaWebContents).catch(() => {});
     }
 
+    // ─── Claude Code Provider Routing ──────────────────────────────────────
+    if (currentConfig.llm.provider === 'claude-code') {
+      const { ClaudeCodeProvider, isClaudeCodeInstalled, installClaudeCode: installCC } = await import('./claude-code-provider');
+      const { TOOL_USAGE_GUIDE } = await import('./tool-registry');
+      const { ensureApiToken } = await import('./api-server');
+
+      const ccMode = (currentConfig.llm as any).claudeCodeMode || 'ask';
+      const ccAuth: 'api-key' | 'oauth' = (currentConfig.llm as any).claudeCodeAuth || 'oauth';
+      const ariaWC = tabManager?.ariaWebContents;
+
+      // Auto-install if not present
+      const installed = await isClaudeCodeInstalled(ccAuth);
+      if (!installed) {
+        const label = ccAuth === 'oauth' ? 'Claude Code CLI' : 'Claude Agent SDK';
+        try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', { text: `⚙️ Installing ${label}...`, done: false }); } catch {}
+        try {
+          await installCC(ccAuth, (msg) => {
+            console.log('[claude-code] install:', msg);
+            try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', { text: `\n${msg}`, done: false }); } catch {}
+          });
+          try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', { text: `\n✓ ${label} installed. Processing your message...\n\n`, done: false }); } catch {}
+        } catch (installErr: any) {
+          console.error('[claude-code] auto-install error:', installErr);
+          try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', { text: `\n\n❌ Failed to install ${label}: ${installErr.message || installErr}`, done: true }); } catch {}
+          return;
+        }
+      }
+
+      // Auto-login for OAuth if not authenticated
+      if (ccAuth === 'oauth') {
+        const { checkClaudeAuthStatus } = await import('./claude-code-provider');
+        const authStatus = await checkClaudeAuthStatus();
+        if (!authStatus.loggedIn) {
+          try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', { text: '🔑 Claude Code needs authentication. Opening sign-in...', done: false }); } catch {}
+          const loginResult = await runCCOAuthLogin();
+          if (!loginResult.success) {
+            try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', { text: `\n\n❌ Sign-in failed: ${loginResult.error || 'Unknown error'}`, done: true }); } catch {}
+            return;
+          }
+          try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', { text: '\n✓ Signed in. Processing your message...\n\n', done: false }); } catch {}
+        }
+      }
+
+      const apiToken = ensureApiToken();
+
+      // Reuse or create provider (preserves session for multi-turn)
+      if (!activeClaudeCodeProvider) {
+        activeClaudeCodeProvider = new ClaudeCodeProvider({
+          authMethod: ccAuth,
+          apiKey: ccAuth === 'api-key' ? apiKey : undefined,
+          mode: ccMode,
+          tappiApiToken: apiToken,
+          workingDir: (currentConfig as any).workspacePath || require('os').homedir(),
+        });
+      } else {
+        // Update mode/auth in case they changed
+        activeClaudeCodeProvider.config = {
+          ...activeClaudeCodeProvider.config,
+          authMethod: ccAuth,
+          apiKey: ccAuth === 'api-key' ? apiKey : undefined,
+          mode: ccMode,
+          tappiApiToken: apiToken,
+        };
+      }
+
+      const effectiveConvId = convId || activeConversationId || 'default';
+
+      // Broadcast stream start
+      try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-start', {}); } catch {}
+      try { mainWindow.webContents.send('agent:stream-start', {}); } catch {}
+
+      // Wire up chunk events
+      const onChunk = (data: { text: string; done: boolean }) => {
+        try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', data); } catch {}
+        try { mainWindow.webContents.send('agent:stream-chunk', data); } catch {}
+      };
+      const onError = (error: string) => {
+        const errChunk = { text: `\n\n❌ ${error}`, done: true };
+        try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', errChunk); } catch {}
+        try { mainWindow.webContents.send('agent:stream-chunk', errChunk); } catch {}
+      };
+
+      activeClaudeCodeProvider.removeAllListeners('chunk');
+      activeClaudeCodeProvider.removeAllListeners('error');
+      activeClaudeCodeProvider.on('chunk', onChunk);
+      activeClaudeCodeProvider.on('error', onError);
+
+      // Persist user message
+      addConversationMessage(effectiveConvId, 'user', message);
+
+      // Send to Claude Code
+      try {
+        await activeClaudeCodeProvider.sendMessage(message, TOOL_USAGE_GUIDE);
+      } catch (err: any) {
+        console.error('[main] claude-code send error:', err);
+        onError(err.message || 'Claude Code failed');
+      }
+      return;
+    }
+
+    // ─── Standard Agent Routing ────────────────────────────────────────────
     const browserCtx: BrowserContext = { window: mainWindow, tabManager, config: currentConfig };
     runAgent({
       userMessage: message,
@@ -1087,7 +1197,13 @@ function createWindow() {
     });
   });
 
-  ipcMain.on('aria:stop', () => { stopAgent(); });
+  ipcMain.on('aria:stop', () => {
+    stopAgent();
+    // Also stop active Claude Code provider
+    if (activeClaudeCodeProvider) {
+      try { activeClaudeCodeProvider.stop(); } catch {}
+    }
+  });
 
   ipcMain.handle('aria:new-chat', () => {
     // Create a new conversation and switch to it
@@ -1142,10 +1258,144 @@ function createWindow() {
     return activeConversationId;
   });
 
+  // ─── Claude Code Provider IPC ────────────────────────────────────────────────
+
+  ipcMain.handle('claude-code:check-installed', async (_e, authMethod?: 'api-key' | 'oauth') => {
+    const { isClaudeCodeInstalled } = await import('./claude-code-provider');
+    return isClaudeCodeInstalled(authMethod || 'oauth');
+  });
+
+  ipcMain.handle('claude-code:install', async (_e, authMethod?: 'api-key' | 'oauth') => {
+    const { installClaudeCode } = await import('./claude-code-provider');
+    try {
+      await installClaudeCode(authMethod || 'oauth', (msg) => console.log('[claude-code] install:', msg));
+      return { success: true };
+    } catch (err: any) {
+      console.error('[claude-code] install error:', err);
+      return { success: false, error: err.message || 'Installation failed' };
+    }
+  });
+
+  ipcMain.handle('claude-code:check-auth', async () => {
+    const { checkClaudeAuthStatus } = await import('./claude-code-provider');
+    return checkClaudeAuthStatus();
+  });
+
+  // ─── Claude Code OAuth Login Flow ──────────────────────────────────────────
+
+  let ccOAuthPopup: BrowserWindow | null = null;
+  let ccOAuthInFlight = false;
+  let ccOAuthTimeout: NodeJS.Timeout | null = null;
+
+  const finishCCOAuthFlow = () => {
+    ccOAuthInFlight = false;
+    if (ccOAuthTimeout) {
+      clearTimeout(ccOAuthTimeout);
+      ccOAuthTimeout = null;
+    }
+    if (ccOAuthPopup && !ccOAuthPopup.isDestroyed()) {
+      try { ccOAuthPopup.close(); } catch {}
+    }
+    ccOAuthPopup = null;
+  };
+
+  const emitCCOAuthStatus = (phase: 'started' | 'progress' | 'success' | 'error', message: string) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send('oauth:claude-code:status', { phase, message, ts: Date.now() });
+    // Also send to aria webcontents
+    const ariaWC = tabManager?.ariaWebContents;
+    if (ariaWC && !ariaWC.isDestroyed()) {
+      try { ariaWC.send('oauth:claude-code:status', { phase, message, ts: Date.now() }); } catch {}
+    }
+  };
+
+  /**
+   * Internal function to run the Claude Code OAuth login flow.
+   * Opens a BrowserWindow popup for the OAuth page (never the system browser).
+   * Returns a promise that resolves when login completes or fails.
+   */
+  const runCCOAuthLogin = async (): Promise<{ success: boolean; error?: string }> => {
+    if (ccOAuthInFlight) {
+      return { success: false, error: 'OAuth flow already in progress.' };
+    }
+
+    const { checkClaudeAuthStatus, loginClaudeCode } = await import('./claude-code-provider');
+
+    // Already logged in? Return early.
+    const status = await checkClaudeAuthStatus();
+    if (status.loggedIn) {
+      return { success: true };
+    }
+
+    ccOAuthInFlight = true;
+    emitCCOAuthStatus('started', 'Starting Claude Code sign-in...');
+
+    // 10-minute timeout
+    ccOAuthTimeout = setTimeout(() => {
+      emitCCOAuthStatus('error', 'OAuth timed out after 10 minutes. Please try again.');
+      finishCCOAuthFlow();
+    }, 10 * 60 * 1000);
+
+    try {
+      const result = await loginClaudeCode((url) => {
+        // This callback fires when Claude Code emits the OAuth URL.
+        // Open it in a Tappi BrowserWindow popup instead of the system browser.
+        emitCCOAuthStatus('progress', 'Sign-in window opening...');
+
+        ccOAuthPopup = new BrowserWindow({
+          width: 980,
+          height: 760,
+          parent: mainWindow,
+          modal: false,
+          autoHideMenuBar: true,
+          title: 'Claude Code Sign In',
+          webPreferences: {
+            contextIsolation: true,
+            sandbox: true,
+            nodeIntegration: false,
+          },
+        });
+
+        ccOAuthPopup.on('closed', () => {
+          ccOAuthPopup = null;
+          // Don't finish the flow here — the login process may still complete
+          // via the localhost callback even after the popup closes.
+        });
+
+        ccOAuthPopup.loadURL(url);
+        ccOAuthPopup.focus();
+
+        emitCCOAuthStatus('progress', 'Sign-in window opened. Complete login in the popup.');
+      });
+
+      finishCCOAuthFlow();
+
+      if (result.success) {
+        emitCCOAuthStatus('success', 'Claude Code sign-in complete.');
+      } else {
+        emitCCOAuthStatus('error', result.error || 'Sign-in failed.');
+      }
+
+      return result;
+    } catch (err: any) {
+      finishCCOAuthFlow();
+      const msg = err.message || 'Sign-in failed';
+      emitCCOAuthStatus('error', msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  ipcMain.handle('claude-code:login', async () => {
+    return runCCOAuthLogin();
+  });
+
   // ─── Prompt Enhancement (Phase 9.098) ───────────────────────────────────────
-  ipcMain.handle('aria:enhance-prompt', async (_e, prompt: string, webSearch: boolean, mode: 'quick' | 'deep' = 'quick') => {
+  ipcMain.handle('aria:enhance-prompt', async (_e, prompt: string, webSearch: boolean, mode: 'quick' | 'deep' = 'quick', conversationId?: string) => {
     const { generateText, streamText } = await import('ai');
     const { createModel, buildProviderOptions, withCodexProviderOptions } = await import('./llm-client');
+    const { SYSTEM_PROMPT } = await import('./agent');
+    const { TOOL_USAGE_GUIDE } = await import('./tool-registry');
+    const { getConversationMessages } = await import('./conversation-store');
 
     if (!currentConfig.llm?.apiKey) {
       return { error: 'No API key configured' };
@@ -1153,7 +1403,7 @@ function createWindow() {
 
     const apiKey = decryptApiKey(currentConfig.llm.apiKey);
 
-    const QUICK_ENHANCEMENT_PROMPT = `You are a prompt enhancement assistant. Your job is to rewrite user prompts to be clearer and more actionable for an AI agent.
+    const QUICK_ENHANCEMENT_PROMPT = `You are a prompt enhancement assistant. Your job is to rewrite user prompts to be clearer and more actionable for an AI agent that controls a web browser.
 
 Rewrite the user's prompt using this structure:
 
@@ -1170,9 +1420,13 @@ Rules:
 - Add clarity where ambiguous
 - If searching the web, include relevant context you found
 - Keep it concise (under 300 words)
-- Don't add requirements they didn't mention`;
+- Don't add requirements they didn't mention
+- You will receive [Agent Capabilities], [Available Tools], and [Recent Conversation] sections — use these to tailor the enhancement to what the agent can actually do
+- Reference specific tool names when the user's intent maps to available tools
+- If there's conversation context, build on what's been discussed
+- Always end the enhanced prompt with: "First understand this request clearly. Then figure out how to fulfill this request. Then solve the problem or fulfill this request."`;
 
-    const DEEP_ENHANCEMENT_PROMPT = `You are a prompt enhancement assistant. Rewrite the user's prompt to be clearer AND more robust by considering multiple perspectives.
+    const DEEP_ENHANCEMENT_PROMPT = `You are a prompt enhancement assistant. Rewrite the user's prompt to be clearer AND more robust by considering multiple perspectives. The prompt is for an AI agent that controls a web browser.
 
 Think through:
 - Caveats and edge cases
@@ -1200,7 +1454,11 @@ Rules:
 - Bake all improvements into the Prompt section
 - Only list considerations that genuinely matter
 - Keep the enhanced prompt under 300 words
-- Be specific, not generic`;
+- Be specific, not generic
+- You will receive [Agent Capabilities], [Available Tools], and [Recent Conversation] sections — use these to make the enhancement specific to the agent's actual capabilities
+- Reference specific tool names when the user's intent maps to available tools
+- If there's conversation context, tailor the enhancement to build on what's been discussed
+- Always end the enhanced prompt with: "First understand this request clearly. Then figure out how to fulfill this request. Then solve the problem or fulfill this request."`;
 
     // Quick web search helper (uses DuckDuckGo instant answers - no API key needed)
     async function quickWebSearch(query: string): Promise<string> {
@@ -1245,17 +1503,38 @@ Rules:
       });
 
       let contextBlock = '';
-      
+
       // If web search is enabled, fetch context
       if (webSearch) {
         const searchContext = await quickWebSearch(prompt);
         if (searchContext) {
-          contextBlock = `\n\n[Web Context]\n${searchContext}`;
+          contextBlock += `\n\n[Web Context]\n${searchContext}`;
+        }
+      }
+
+      // Add agent capabilities context for richer enhancement
+      contextBlock += `\n\n[Agent Capabilities]\n${SYSTEM_PROMPT.slice(0, 500)}`;
+      contextBlock += `\n\n[Available Tools]\n${TOOL_USAGE_GUIDE.slice(0, 1000)}`;
+
+      // Add recent conversation context if available
+      if (conversationId) {
+        try {
+          const recentMsgs = getConversationMessages(conversationId, 0, 100);
+          const lastMessages = recentMsgs.slice(-10);
+          if (lastMessages.length > 0) {
+            const convSummary = lastMessages.map(m => {
+              const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+              return `[${m.role}]: ${content.slice(0, 200)}`;
+            }).join('\n');
+            contextBlock += `\n\n[Recent Conversation]\n${convSummary}`;
+          }
+        } catch {
+          // Non-fatal — conversation may not exist yet
         }
       }
 
       const systemPrompt = mode === 'deep' ? DEEP_ENHANCEMENT_PROMPT : QUICK_ENHANCEMENT_PROMPT;
-      const maxTokens = mode === 'deep' ? 600 : 500;
+      const maxTokens = mode === 'deep' ? 800 : 600;
 
       const providerOptions = buildProviderOptions({
         provider: currentConfig.llm.provider,

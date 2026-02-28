@@ -2942,6 +2942,43 @@ body.coding-mode .team-redirect-send {
   background: var(--bg-secondary);
 }
 
+/* Claude Code Mode Selector */
+.cc-mode-wrap {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+.cc-mode-wrap.hidden { display: none; }
+.cc-mode-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+.cc-mode-wrap select {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.cc-mode-wrap .small-btn {
+  margin-top: 8px;
+  width: 100%;
+}
+.cc-status {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.cc-status.hidden { display: none; }
+.cc-status.error { color: var(--accent-error, #e53e3e); }
+
 /* Custom Model Modal */
 .custom-model-modal {
   position: absolute;
