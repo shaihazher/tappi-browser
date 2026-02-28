@@ -390,14 +390,12 @@ async function openModelDropdown() {
   }
   if (ariaProviderSelect) ariaProviderSelect.value = currentModelConfig.provider;
 
-  // Show/hide Claude Code settings based on current provider
+  // Show/hide Claude Code settings and shrink model list when CC is active
+  const isCC = currentModelConfig.provider === 'claude-code';
   const ccWrap = document.getElementById('aria-cc-mode-wrap');
-  if (ccWrap) {
-    ccWrap.classList.toggle('hidden', currentModelConfig.provider !== 'claude-code');
-  }
-  if (currentModelConfig.provider === 'claude-code') {
-    updateClaudeCodeStatus();
-  }
+  if (ccWrap) ccWrap.classList.toggle('hidden', !isCC);
+  if (ariaModelDropdown) ariaModelDropdown.classList.toggle('cc-active', isCC);
+  if (isCC) updateClaudeCodeStatus();
 
   fetchModelsForProvider(currentModelConfig.provider);
   if (ariaModelSearch) ariaModelSearch.focus();
@@ -406,7 +404,10 @@ async function openModelDropdown() {
 function closeModelDropdown() {
   modelDropdownOpen = false;
   providerChangedInPicker = false;
-  if (ariaModelDropdown) ariaModelDropdown.classList.add('hidden');
+  if (ariaModelDropdown) {
+    ariaModelDropdown.classList.add('hidden');
+    ariaModelDropdown.classList.remove('cc-active');
+  }
   hideCustomModelInput();
 }
 
@@ -434,13 +435,13 @@ function bindModelPickerEvents() {
     currentModelConfig.provider = ariaProviderSelect.value;
     providerChangedInPicker = true;
 
-    // Show/hide Claude Code mode selector
+    // Show/hide Claude Code mode selector and toggle cc-active class
+    const isCC = ariaProviderSelect.value === 'claude-code';
     const ccWrap = document.getElementById('aria-cc-mode-wrap');
-    if (ccWrap) {
-      ccWrap.classList.toggle('hidden', ariaProviderSelect.value !== 'claude-code');
-    }
+    if (ccWrap) ccWrap.classList.toggle('hidden', !isCC);
+    if (ariaModelDropdown) ariaModelDropdown.classList.toggle('cc-active', isCC);
 
-    if (ariaProviderSelect.value === 'claude-code') {
+    if (isCC) {
       // Default to sonnet if current model isn't a Claude model
       if (!currentModelConfig.model || currentModelConfig.model === 'claude-code') {
         currentModelConfig.model = 'claude-sonnet-4-6';

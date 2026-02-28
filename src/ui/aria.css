@@ -2821,7 +2821,7 @@ body.coding-mode .team-redirect-send {
   right: 16px;
   width: auto;
   max-width: 400px;
-  max-height: 420px;
+  max-height: 520px;
   background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -2829,6 +2829,11 @@ body.coding-mode .team-redirect-send {
   z-index: 1000;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+/* When Claude Code is active, shrink model list to make room for CC settings */
+.model-dropdown.cc-active .model-list {
+  max-height: 180px;
 }
 
 .model-dropdown.hidden {
