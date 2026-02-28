@@ -1053,15 +1053,22 @@ function createWindow() {
 
     // Phase 9.13: Generate title in parallel for new conversations
     if (isNewConversation && activeConversationId) {
-      const llmConfigForTitle = {
-        provider: currentConfig.llm.provider,
-        model: currentConfig.llm.model,
-        apiKey,
-        secondaryProvider: currentConfig.llm.secondaryProvider,
-        secondaryModel: currentConfig.llm.secondaryModel,
-        secondaryApiKey: currentConfig.llm.secondaryApiKey ? decryptApiKey(currentConfig.llm.secondaryApiKey) : undefined,
-      };
-      generateQuickTitle(activeConversationId, message, llmConfigForTitle, tabManager?.ariaWebContents).catch(() => {});
+      // Claude Code uses Anthropic models — remap provider for title generation
+      const titleProvider = currentConfig.llm.provider === 'claude-code' ? 'anthropic' : currentConfig.llm.provider;
+      const titleModel = currentConfig.llm.model === 'claude-code' ? 'claude-sonnet-4-6' : currentConfig.llm.model;
+      // Skip title gen for Claude Code OAuth without API key (can't call Anthropic API directly)
+      const canGenerateTitle = titleProvider !== 'anthropic' || apiKey;
+      if (canGenerateTitle) {
+        const llmConfigForTitle = {
+          provider: titleProvider,
+          model: titleModel,
+          apiKey,
+          secondaryProvider: currentConfig.llm.secondaryProvider,
+          secondaryModel: currentConfig.llm.secondaryModel,
+          secondaryApiKey: currentConfig.llm.secondaryApiKey ? decryptApiKey(currentConfig.llm.secondaryApiKey) : undefined,
+        };
+        generateQuickTitle(activeConversationId, message, llmConfigForTitle, tabManager?.ariaWebContents).catch(() => {});
+      }
     }
 
     // ─── Claude Code Provider Routing ──────────────────────────────────────
@@ -1495,9 +1502,13 @@ Rules:
     }
 
     try {
+      // Claude Code uses Anthropic models — remap provider for enhancement
+      const enhanceProvider = currentConfig.llm.provider === 'claude-code' ? 'anthropic' : currentConfig.llm.provider;
+      const enhanceModel = currentConfig.llm.model === 'claude-code' ? 'claude-sonnet-4-6' : currentConfig.llm.model;
+
       const model = createModel({
-        provider: currentConfig.llm.provider,
-        model: currentConfig.llm.model,
+        provider: enhanceProvider,
+        model: enhanceModel,
         apiKey,
         region: currentConfig.llm.region,
         projectId: currentConfig.llm.projectId,
@@ -1541,20 +1552,20 @@ Rules:
       const maxTokens = mode === 'deep' ? 800 : 600;
 
       const providerOptions = buildProviderOptions({
-        provider: currentConfig.llm.provider,
-        model: currentConfig.llm.model,
+        provider: enhanceProvider,
+        model: enhanceModel,
         apiKey,
         thinking: currentConfig.llm.thinking,
         thinkingEffort: currentConfig.llm.thinkingEffort,
       });
       const callProviderOptions: Record<string, any> = withCodexProviderOptions(
-        currentConfig.llm.provider,
+        enhanceProvider,
         { ...providerOptions },
         systemPrompt,
         systemPrompt,
       );
 
-      if (currentConfig.llm.provider === 'openai-codex') {
+      if (enhanceProvider === 'openai-codex') {
         const streamed = streamText({
           model,
           system: systemPrompt,

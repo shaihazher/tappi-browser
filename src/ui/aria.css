@@ -2827,7 +2827,8 @@ body.coding-mode .team-redirect-send {
   border-radius: 8px;
   box-shadow: var(--shadow-lg);
   z-index: 1000;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .model-dropdown.hidden {
