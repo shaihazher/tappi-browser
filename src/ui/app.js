@@ -497,10 +497,15 @@ const bookmarksBarContent = document.getElementById('bookmarks-bar-content');
 let bookmarksBarItems = [];
 let bookmarksBarLoading = false;
 let bookmarksBarInitialized = false;
+let bookmarksBarPendingReload = false;
 
 async function loadBookmarksBar() {
-  if (bookmarksBarLoading) return;
+  if (bookmarksBarLoading) {
+    bookmarksBarPendingReload = true;
+    return;
+  }
   bookmarksBarLoading = true;
+  bookmarksBarPendingReload = false;
   try {
     const bookmarks = await window.tappi.getAllBookmarks();
     bookmarksBarItems = bookmarks || [];
@@ -508,6 +513,10 @@ async function loadBookmarksBar() {
   } finally {
     bookmarksBarLoading = false;
     bookmarksBarInitialized = true;
+    if (bookmarksBarPendingReload) {
+      bookmarksBarPendingReload = false;
+      loadBookmarksBar();
+    }
   }
 }
 
@@ -2307,10 +2316,14 @@ window.tappi.onConfigLoaded((config) => {
   updateDevModeIndicator(config.developerMode || false);
 });
 
-// Bookmarks bar refresh on update
-window.tappi.onBookmarksUpdated(async () => {
-  await new Promise(r => setTimeout(r, 50));
-  await loadBookmarksBar();
+// Bookmarks bar refresh on update — use provided bookmarks directly to avoid IPC delay
+window.tappi.onBookmarksUpdated((data) => {
+  if (data && data.bookmarks) {
+    bookmarksBarItems = data.bookmarks;
+    renderBookmarksBar();
+  } else {
+    loadBookmarksBar();
+  }
 });
 
 // ═══════════════════════════════════════════
@@ -3495,6 +3508,8 @@ window.tappi.onProfileSwitched((data) => {
         document.getElementById('settings-profiles').classList.contains('active')) {
       renderProfilesSettingsTab(currentProfiles);
     }
+    // Reload bookmarks bar for the new profile
+    loadBookmarksBar();
   }
 });
 

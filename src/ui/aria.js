@@ -417,9 +417,9 @@ async function openModelDropdown() {
   const ccAuthSelect = document.getElementById('aria-cc-auth-select');
   if (ccAuthSelect) ccAuthSelect.value = currentModelConfig.claudeCodeAuth || 'oauth';
 
-  if (isCC) updateClaudeCodeStatus();
+  if (isCC) await updateClaudeCodeStatus();
 
-  fetchModelsForProvider(currentModelConfig.provider);
+  await fetchModelsForProvider(currentModelConfig.provider);
   if (ariaModelSearch) ariaModelSearch.focus();
 }
 
@@ -484,7 +484,7 @@ function bindModelPickerEvents() {
    * - OAuth:   CLI at ~/.tappi-browser/claude-code-cli/
    * - API Key: SDK at ~/.tappi-browser/claude-code/
    */
-  function updateClaudeCodeStatus() {
+  async function updateClaudeCodeStatus() {
     const authSelect = document.getElementById('aria-cc-auth-select');
     const installBtn = document.getElementById('aria-cc-install-btn');
     const loginBtn = document.getElementById('aria-cc-login-btn');
@@ -495,50 +495,52 @@ function bindModelPickerEvents() {
     // Hide login button for API key auth (no OAuth needed)
     if (loginBtn) loginBtn.classList.toggle('hidden', authMethod !== 'oauth');
 
-    if (window.aria.checkClaudeCodeInstalled) {
-      window.aria.checkClaudeCodeInstalled(authMethod).then(installed => {
-        if (installBtn) installBtn.classList.toggle('hidden', installed);
-        if (installBtn) installBtn.textContent = `Install ${label}`;
+    if (!window.aria.checkClaudeCodeInstalled) return;
 
-        if (!installed) {
-          if (ccStatus) {
-            ccStatus.textContent = `${label} will auto-install on first use`;
-            ccStatus.classList.remove('hidden', 'error');
-          }
-          if (loginBtn) loginBtn.classList.add('hidden'); // Can't login until installed
-          return;
+    try {
+      const installed = await window.aria.checkClaudeCodeInstalled(authMethod);
+      if (installBtn) installBtn.classList.toggle('hidden', installed);
+      if (installBtn) installBtn.textContent = `Install ${label}`;
+
+      if (!installed) {
+        if (ccStatus) {
+          ccStatus.textContent = `${label} will auto-install on first use`;
+          ccStatus.classList.remove('hidden', 'error');
         }
+        if (loginBtn) loginBtn.classList.add('hidden'); // Can't login until installed
+        return;
+      }
 
-        // Installed — check auth status for OAuth
-        if (authMethod === 'oauth' && window.aria.checkClaudeAuth) {
-          window.aria.checkClaudeAuth().then(auth => {
-            if (ccStatus) {
-              if (auth.loggedIn) {
-                ccStatus.textContent = auth.email
-                  ? `✓ Signed in as ${auth.email}`
-                  : '✓ Signed in';
-                ccStatus.classList.remove('hidden', 'error');
-                if (loginBtn) loginBtn.classList.add('hidden');
-              } else {
-                ccStatus.textContent = '✓ CLI installed — will sign in on first use';
-                ccStatus.classList.remove('hidden', 'error');
-                if (loginBtn) loginBtn.classList.remove('hidden');
-              }
-            }
-          }).catch(() => {
-            if (ccStatus) {
-              ccStatus.textContent = `✓ ${label} installed`;
+      // Installed — check auth status for OAuth
+      if (authMethod === 'oauth' && window.aria.checkClaudeAuth) {
+        try {
+          const auth = await window.aria.checkClaudeAuth();
+          if (ccStatus) {
+            if (auth.loggedIn) {
+              ccStatus.textContent = auth.email
+                ? `✓ Signed in as ${auth.email}`
+                : '✓ Signed in';
               ccStatus.classList.remove('hidden', 'error');
+              if (loginBtn) loginBtn.classList.add('hidden');
+            } else {
+              ccStatus.textContent = '✓ CLI installed — will sign in on first use';
+              ccStatus.classList.remove('hidden', 'error');
+              if (loginBtn) loginBtn.classList.remove('hidden');
             }
-          });
-        } else {
+          }
+        } catch {
           if (ccStatus) {
             ccStatus.textContent = `✓ ${label} installed`;
             ccStatus.classList.remove('hidden', 'error');
           }
         }
-      }).catch(() => {});
-    }
+      } else {
+        if (ccStatus) {
+          ccStatus.textContent = `✓ ${label} installed`;
+          ccStatus.classList.remove('hidden', 'error');
+        }
+      }
+    } catch {}
   }
 
   // Claude Code install button — installs the right component for the selected auth method

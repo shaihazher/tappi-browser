@@ -61,7 +61,7 @@ export class TabManager {
     this.newtabPath = path.join(__dirname, 'ui', 'newtab.html');
     this.contentPreloadPath = path.join(__dirname, 'content-preload.js');
     this.ariaPreloadPath = path.join(__dirname, 'aria-preload.js');
-    this.loadBookmarks();
+    this.reloadBookmarks();
   }
 
   get tabCount() { return this.tabs.size; }
@@ -199,7 +199,7 @@ export class TabManager {
     return id;
   }
 
-  private loadBookmarks() {
+  reloadBookmarks() {
     try {
       if (fs.existsSync(this.bookmarksPath)) {
         const data = JSON.parse(fs.readFileSync(this.bookmarksPath, 'utf-8'));

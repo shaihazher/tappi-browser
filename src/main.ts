@@ -900,8 +900,9 @@ function createWindow() {
   // ─── Bookmark IPC ───
   ipcMain.on('bookmark:toggle', (_e, url: string) => {
     const added = tabManager.toggleBookmark(url);
-    // Notify UI to refresh bookmarks bar
-    mainWindow?.webContents.send('bookmarks:updated', { url, added });
+    // Notify UI with fresh bookmarks list so bar updates immediately
+    const bookmarks = getAllBookmarks();
+    mainWindow?.webContents.send('bookmarks:updated', { url, added, bookmarks });
   });
 
   // ─── Navigation IPC ───
@@ -1332,6 +1333,10 @@ function createWindow() {
     activeConversationId = conv.id;
     // Clear in-memory history for the new session
     clearHistory('default');
+    // Reset Claude Code session so new chat starts fresh
+    if (activeClaudeCodeProvider) {
+      activeClaudeCodeProvider.resetSession();
+    }
     // Notify Aria tab
     try {
       const ariaWC = tabManager?.ariaWebContents;
@@ -1344,6 +1349,10 @@ function createWindow() {
     activeConversationId = conversationId;
     // Clear in-memory history so next agent run starts fresh with the loaded conv
     clearHistory('default');
+    // Reset Claude Code session — each conversation is independent
+    if (activeClaudeCodeProvider) {
+      activeClaudeCodeProvider.resetSession();
+    }
     return { success: true, conversationId };
   });
 
@@ -2252,8 +2261,13 @@ Rules:
     initTabMedia(newTabId);
     layoutViews();
 
-    // Notify UI of profile change
+    // Reload bookmarks for new profile's database
+    tabManager.reloadBookmarks();
+
+    // Notify UI of profile change (includes fresh bookmarks for the bar)
+    const freshBookmarks = getAllBookmarks();
     mainWindow.webContents.send('profile:switched', { profile: result, profiles: profileManager.listProfiles() });
+    mainWindow.webContents.send('bookmarks:updated', { url: '', added: false, bookmarks: freshBookmarks });
 
     // Clear in-memory agent history
     clearHistory('default');

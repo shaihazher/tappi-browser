@@ -435,6 +435,7 @@ export async function generateTitleViaCli(
   const args: string[] = [
     '--print',
     '--output-format', 'stream-json',
+    '--verbose',
     '--model', 'claude-haiku-4-5',
     titlePrompt,
   ];
