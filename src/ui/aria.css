@@ -3014,6 +3014,21 @@ body.coding-mode .team-redirect-send {
   color: var(--text-dim);
 }
 
+/* Scrollbar for model dropdown */
+.model-dropdown::-webkit-scrollbar {
+  width: 6px;
+}
+.model-dropdown::-webkit-scrollbar-track {
+  background: transparent;
+}
+.model-dropdown::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+.model-dropdown::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
 /* Scrollbar for model list */
 .model-list::-webkit-scrollbar {
   width: 6px;

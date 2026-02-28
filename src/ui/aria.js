@@ -389,6 +389,16 @@ async function openModelDropdown() {
     console.error('[aria] ariaModelDropdown element not found!');
   }
   if (ariaProviderSelect) ariaProviderSelect.value = currentModelConfig.provider;
+
+  // Show/hide Claude Code settings based on current provider
+  const ccWrap = document.getElementById('aria-cc-mode-wrap');
+  if (ccWrap) {
+    ccWrap.classList.toggle('hidden', currentModelConfig.provider !== 'claude-code');
+  }
+  if (currentModelConfig.provider === 'claude-code') {
+    updateClaudeCodeStatus();
+  }
+
   fetchModelsForProvider(currentModelConfig.provider);
   if (ariaModelSearch) ariaModelSearch.focus();
 }
