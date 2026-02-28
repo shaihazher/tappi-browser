@@ -1110,21 +1110,25 @@ function createWindow() {
       const apiToken = ensureApiToken();
 
       // Reuse or create provider (preserves session for multi-turn)
+      const ccModel = currentConfig.llm.model !== 'claude-code' ? currentConfig.llm.model : undefined;
+
       if (!activeClaudeCodeProvider) {
         activeClaudeCodeProvider = new ClaudeCodeProvider({
           authMethod: ccAuth,
           apiKey: ccAuth === 'api-key' ? apiKey : undefined,
           mode: ccMode,
+          model: ccModel,
           tappiApiToken: apiToken,
           workingDir: (currentConfig as any).workspacePath || require('os').homedir(),
         });
       } else {
-        // Update mode/auth in case they changed
+        // Update mode/auth/model in case they changed
         activeClaudeCodeProvider.config = {
           ...activeClaudeCodeProvider.config,
           authMethod: ccAuth,
           apiKey: ccAuth === 'api-key' ? apiKey : undefined,
           mode: ccMode,
+          model: ccModel,
           tappiApiToken: apiToken,
         };
       }

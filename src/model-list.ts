@@ -346,7 +346,12 @@ export async function listModelsForProvider(
     case 'claude-code':
       return {
         success: true,
-        models: [{ id: 'claude-code', name: 'Claude Code (managed)', supportsThinking: true }],
+        models: [
+          { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', supportsThinking: true },
+          { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', supportsThinking: true },
+          { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', supportsThinking: true },
+          { id: 'claude-sonnet-4-5-20250514', name: 'Claude Sonnet 4.5', supportsThinking: true },
+        ],
         fallback: false,
       };
 

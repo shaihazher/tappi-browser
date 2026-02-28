@@ -217,11 +217,13 @@ function updateModelButton() {
   const modelName = ariaModelBtn.querySelector('.model-name');
   const providerIcon = ariaModelBtn.querySelector('.model-provider-icon');
 
-  // Show friendly name for Claude Code provider
   if (modelName) {
-    modelName.textContent = currentModelConfig.provider === 'claude-code'
-      ? 'Claude Code'
-      : currentModelConfig.model;
+    if (currentModelConfig.provider === 'claude-code') {
+      const m = currentModelConfig.model === 'claude-code' ? 'claude-sonnet-4-6' : currentModelConfig.model;
+      modelName.textContent = m;
+    } else {
+      modelName.textContent = currentModelConfig.model;
+    }
   }
   if (providerIcon) providerIcon.dataset.provider = currentModelConfig.provider;
 }
@@ -429,12 +431,11 @@ function bindModelPickerEvents() {
     }
 
     if (ariaProviderSelect.value === 'claude-code') {
-      // Set model to claude-code and show info instead of model list
-      currentModelConfig.model = 'claude-code';
-      if (ariaModelList) {
-        ariaModelList.innerHTML = '<div class="model-list-empty"><p>Claude Code manages its own model selection.</p></div>';
+      // Default to sonnet if current model isn't a Claude model
+      if (!currentModelConfig.model || currentModelConfig.model === 'claude-code') {
+        currentModelConfig.model = 'claude-sonnet-4-6';
       }
-      // Check install status based on current auth method
+      fetchModelsForProvider('claude-code');
       updateClaudeCodeStatus();
     } else {
       fetchModelsForProvider(ariaProviderSelect.value);

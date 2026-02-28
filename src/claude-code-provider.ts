@@ -35,6 +35,7 @@ export interface CCProviderConfig {
   authMethod: CCAuthMethod;
   apiKey?: string;           // Only used when authMethod === 'api-key'
   mode: CCMode;
+  model?: string;            // e.g. 'claude-sonnet-4-6' — passed via --model flag
   tappiApiToken?: string;
   workingDir?: string;
 }
@@ -563,6 +564,7 @@ export class ClaudeCodeProvider extends EventEmitter {
       abortController: this.abortController,
       maxTurns: 30,
       includePartialMessages: true,
+      ...(this.config.model ? { model: this.config.model } : {}),
     };
 
     if (this.config.mode === 'full') {
@@ -649,6 +651,7 @@ export class ClaudeCodeProvider extends EventEmitter {
       '--print',                        // Non-interactive, print result
       '--output-format', 'stream-json', // Streaming JSON lines
       '--verbose',                      // Include tool use info
+      ...(this.config.model ? ['--model', this.config.model] : []),
       ...getCliModeArgs(this.config.mode),
       message,
     ];
