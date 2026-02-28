@@ -231,8 +231,12 @@ function updateModelButton() {
 
 function updateThinkingButton() {
   if (!ariaThinkingBtn) return;
-  ariaThinkingBtn.classList.toggle('on', currentModelConfig.thinking);
-  ariaThinkingBtn.title = `Thinking: ${currentModelConfig.thinking ? 'ON' : 'OFF'}`;
+  const isCC = currentModelConfig.provider === 'claude-code';
+  ariaThinkingBtn.classList.toggle('on', !isCC && currentModelConfig.thinking);
+  ariaThinkingBtn.classList.toggle('cc-disabled', isCC);
+  ariaThinkingBtn.title = isCC
+    ? 'Thinking is managed internally by Claude Code'
+    : `Thinking: ${currentModelConfig.thinking ? 'ON' : 'OFF'}`;
 }
 
 function updateEnhanceButton() {
@@ -434,8 +438,9 @@ function bindModelPickerEvents() {
     await toggleModelDropdown();
   });
   
-  // Thinking toggle
+  // Thinking toggle (disabled for Claude Code — it handles thinking internally)
   ariaThinkingBtn?.addEventListener('click', async () => {
+    if (currentModelConfig.provider === 'claude-code') return;
     currentModelConfig.thinking = !currentModelConfig.thinking;
     await saveModelConfig({ includeProvider: false });
     updateThinkingButton();
@@ -446,6 +451,7 @@ function bindModelPickerEvents() {
     currentModelConfig.provider = ariaProviderSelect.value;
     providerChangedInPicker = true;
     updateEnhanceButton();
+    updateThinkingButton();
 
     // Show/hide Claude Code mode selector and toggle cc-active class
     const isCC = ariaProviderSelect.value === 'claude-code';

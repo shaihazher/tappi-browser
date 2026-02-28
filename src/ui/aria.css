@@ -2813,6 +2813,11 @@ body.coding-mode .team-redirect-send {
   border-color: var(--lotus);
 }
 
+.thinking-toggle.cc-disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
 /* Model Dropdown */
 .model-dropdown {
   position: absolute;
