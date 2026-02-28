@@ -4,6 +4,26 @@
 
 Tappi is a Chrome-based desktop browser with a built-in AI agent that uses **3-10x fewer tokens** than competitors. No subscription. No cloud lock-in. Bring your own API key.
 
+---
+
+### **Native Claude Code Integration**
+
+**Tappi Browser now ships with native Claude Code CLI integration** — bringing Anthropic's world-class agentic orchestration directly into your browser.
+
+**Claude Code empowers Tappi** with battle-tested agentic capabilities: adaptive thinking, intelligent tool use, multi-turn session management, and the same autonomous problem-solving engine trusted by developers worldwide.
+
+**Tappi empowers Claude Code** with native browser tools — real tab control, element indexing, page interaction, shell access, and a local HTTP API — giving Claude Code the hands it needs to operate a full browser environment.
+
+The result: a symbiotic integration where Claude Code handles the intelligence and orchestration while Tappi provides the browser-native execution layer. No wrappers. No adapters. Just direct CLI-to-browser power.
+
+- **Two auth paths** — Sign in with `claude login` (OAuth) or bring your own Anthropic API key
+- **Plan mode** — Claude Code analyzes first, you review and approve before execution
+- **Full mode** — Unrestricted agentic execution with zero permission friction
+- **Session continuity** — Multi-turn conversations that persist context across turns
+- **Your own Claude Code, managed separately** — Tappi installs its own CLI, never interfering with your personal installation
+
+---
+
 ## Screenshots
 
 | Aria Agent | Real Conversation |
@@ -209,6 +229,7 @@ Bring your own key. No lock-in.
 
 | Provider | Auth | Models |
 |----------|------|--------|
+| **Claude Code** | OAuth or API key | **Native CLI integration** — full agentic orchestration |
 | **Anthropic** | API key | Claude Opus 4.6, Sonnet 4.6, Haiku 4.5 |
 | **OpenAI** | API key | GPT-5.2, o3, o4, GPT-4o |
 | **Google Gemini** | API key | Gemini 2.5 Pro, 2.0 Flash |
