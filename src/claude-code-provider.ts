@@ -547,6 +547,9 @@ export class ClaudeCodeProvider extends EventEmitter {
    * Both auth methods (OAuth and API key) use the CLI.
    */
   async sendMessage(message: string): Promise<void> {
+    // Reset plan approval state before each message — prevents stale plan
+    // buttons from appearing when the user switches from plan to full mode
+    this.pendingPlanApproval = false;
     return this._sendViaCli(message);
   }
 

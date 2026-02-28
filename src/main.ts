@@ -902,6 +902,7 @@ function createWindow() {
     const added = tabManager.toggleBookmark(url);
     // Notify UI with fresh bookmarks list so bar updates immediately
     const bookmarks = getAllBookmarks();
+    console.log(`[bookmark:toggle] url=${url} added=${added} bookmarks=${bookmarks.length}`);
     mainWindow?.webContents.send('bookmarks:updated', { url, added, bookmarks });
   });
 
@@ -1325,6 +1326,15 @@ function createWindow() {
       console.error('[main] cc-edit-plan error:', err);
       onError(err.message || 'Plan feedback failed');
     }
+  });
+
+  // Reset Claude Code plan state (e.g. when user switches permission mode)
+  ipcMain.handle('aria:cc-reset-plan', () => {
+    if (activeClaudeCodeProvider) {
+      activeClaudeCodeProvider.resetPlanState();
+      activeClaudeCodeProvider.resetSession(); // Don't resume old plan-mode session
+    }
+    return { success: true };
   });
 
   ipcMain.handle('aria:new-chat', () => {

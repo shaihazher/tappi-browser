@@ -398,18 +398,12 @@ async function openModelDropdown() {
   modelDropdownOpen = true;
   if (ariaModelDropdown) {
     ariaModelDropdown.classList.remove('hidden');
-    console.log('[aria] Dropdown classes:', ariaModelDropdown.className);
-    console.log('[aria] Dropdown display:', window.getComputedStyle(ariaModelDropdown).display);
   } else {
     console.error('[aria] ariaModelDropdown element not found!');
   }
   if (ariaProviderSelect) ariaProviderSelect.value = currentModelConfig.provider;
 
-  // Show/hide Claude Code settings and shrink model list when CC is active
   const isCC = currentModelConfig.provider === 'claude-code';
-  const ccWrap = document.getElementById('aria-cc-mode-wrap');
-  if (ccWrap) ccWrap.classList.toggle('hidden', !isCC);
-  if (ariaModelDropdown) ariaModelDropdown.classList.toggle('cc-active', isCC);
 
   // Sync Claude Code dropdowns from saved config
   const ccModeSelect = document.getElementById('aria-cc-mode-select');
@@ -417,9 +411,18 @@ async function openModelDropdown() {
   const ccAuthSelect = document.getElementById('aria-cc-auth-select');
   if (ccAuthSelect) ccAuthSelect.value = currentModelConfig.claudeCodeAuth || 'oauth';
 
+  // Fetch and render models FIRST — before applying cc-active CSS constraints
+  // so the model list DOM is populated before layout is constrained
+  await fetchModelsForProvider(currentModelConfig.provider);
+  console.log('[aria] Models rendered, availableModels:', availableModels.length);
+
+  // THEN show/hide Claude Code settings and apply layout constraints
+  const ccWrap = document.getElementById('aria-cc-mode-wrap');
+  if (ccWrap) ccWrap.classList.toggle('hidden', !isCC);
+  if (ariaModelDropdown) ariaModelDropdown.classList.toggle('cc-active', isCC);
+
   if (isCC) await updateClaudeCodeStatus();
 
-  await fetchModelsForProvider(currentModelConfig.provider);
   if (ariaModelSearch) ariaModelSearch.focus();
 }
 
@@ -608,6 +611,10 @@ function bindModelPickerEvents() {
     const mode = e.target.value;
     currentModelConfig.claudeCodeMode = mode;
     saveModelConfig({ includeProvider: true });
+    // Reset plan state and session when switching modes — prevents stale plan
+    // buttons from appearing when changing from plan to full permission mode
+    if (window.aria.resetCCPlan) window.aria.resetCCPlan();
+    _removePlanActionBar();
   });
 
   // Claude Code auth select change — also refresh install status

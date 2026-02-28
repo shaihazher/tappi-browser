@@ -522,15 +522,16 @@ async function loadBookmarksBar() {
 
 function renderBookmarksBar() {
   if (!bookmarksBarContent) return;
-  
+
   const activeTab = currentTabs.find(t => t.isActive);
-  
+  console.log('[bookmarks] renderBookmarksBar: items=' + bookmarksBarItems.length + ' activeTab=' + (activeTab?.url || 'none') + ' isAria=' + !!activeTab?.isAria);
+
   if (bookmarksBarItems.length === 0) {
     bookmarksBar.style.visibility = 'hidden';
     bookmarksBarContent.innerHTML = '';
     return;
   }
-  
+
   // Always render content even if bar might be hidden (for Aria tab)
   // This ensures content is ready when user switches tabs
   bookmarksBarContent.innerHTML = bookmarksBarItems.map(item => {
@@ -544,7 +545,7 @@ function renderBookmarksBar() {
       </button>
     `;
   }).join('');
-  
+
   // Add click handlers
   bookmarksBarContent.querySelectorAll('.bookmarks-bar-item').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -552,13 +553,14 @@ function renderBookmarksBar() {
       window.tappi.openUrl(url);
     });
   });
-  
+
   // Set visibility based on active tab (hide for Aria)
   if (activeTab?.isAria) {
     bookmarksBar.style.visibility = 'hidden';
   } else {
     bookmarksBar.style.visibility = 'visible';
   }
+  console.log('[bookmarks] renderBookmarksBar: visibility=' + bookmarksBar.style.visibility + ' childCount=' + bookmarksBarContent.children.length);
 }
 
 // Initial load
@@ -2318,6 +2320,7 @@ window.tappi.onConfigLoaded((config) => {
 
 // Bookmarks bar refresh on update — use provided bookmarks directly to avoid IPC delay
 window.tappi.onBookmarksUpdated((data) => {
+  console.log('[bookmarks] onBookmarksUpdated received:', data?.bookmarks?.length, 'bookmarks, added:', data?.added);
   if (data && data.bookmarks) {
     bookmarksBarItems = data.bookmarks;
     renderBookmarksBar();

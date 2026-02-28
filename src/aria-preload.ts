@@ -145,6 +145,7 @@ contextBridge.exposeInMainWorld('aria', {
   // ─── Claude Code Plan Mode ───
   approvePlan: () => ipcRenderer.invoke('aria:cc-approve-plan'),
   editPlan: (feedback: string) => ipcRenderer.invoke('aria:cc-edit-plan', { feedback }),
+  resetCCPlan: () => ipcRenderer.invoke('aria:cc-reset-plan'),
   onPlanComplete: (cb: (data: any) => void) => {
     ipcRenderer.on('aria:cc-plan-complete', (_e, data) => cb(data));
   },
