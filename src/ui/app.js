@@ -524,7 +524,6 @@ function renderBookmarksBar() {
   if (!bookmarksBarContent) return;
 
   const activeTab = currentTabs.find(t => t.isActive);
-  console.log('[bookmarks] renderBookmarksBar: items=' + bookmarksBarItems.length + ' activeTab=' + (activeTab?.url || 'none') + ' isAria=' + !!activeTab?.isAria);
 
   if (bookmarksBarItems.length === 0) {
     bookmarksBar.style.visibility = 'hidden';
@@ -560,7 +559,6 @@ function renderBookmarksBar() {
   } else {
     bookmarksBar.style.visibility = 'visible';
   }
-  console.log('[bookmarks] renderBookmarksBar: visibility=' + bookmarksBar.style.visibility + ' childCount=' + bookmarksBarContent.children.length);
 }
 
 // Initial load
@@ -2254,16 +2252,9 @@ window.tappi.onApiServicesUpdated(() => {
 // ═══════════════════════════════════════════
 
 document.addEventListener('keydown', (e) => {
-  // Cmd+D / Ctrl+D — Toggle Bookmark
-  if ((e.metaKey || e.ctrlKey) && e.key === 'd') {
-    e.preventDefault();
-    const active = currentTabs.find(t => t.isActive);
-    if (active && active.url) {
-      window.tappi.toggleBookmark(active.url);
-    }
-    return;
-  }
-  
+  // Cmd+D is handled by the menu accelerator in main.ts (not here)
+  // to avoid double-toggling when both handlers fire.
+
   // Escape — close panels
   if (e.key === 'Escape') {
     if (!settingsOverlay.classList.contains('hidden')) {
@@ -2320,7 +2311,6 @@ window.tappi.onConfigLoaded((config) => {
 
 // Bookmarks bar refresh on update — use provided bookmarks directly to avoid IPC delay
 window.tappi.onBookmarksUpdated((data) => {
-  console.log('[bookmarks] onBookmarksUpdated received:', data?.bookmarks?.length, 'bookmarks, added:', data?.added);
   if (data && data.bookmarks) {
     bookmarksBarItems = data.bookmarks;
     renderBookmarksBar();

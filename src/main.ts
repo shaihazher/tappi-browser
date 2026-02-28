@@ -472,7 +472,17 @@ function buildAppMenu() {
           accelerator: 'CmdOrCtrl+D',
           click: () => {
             const wc = tabManager?.activeWebContents;
-            if (wc) tabManager.toggleBookmark(wc.getURL());
+            if (wc) {
+              const url = wc.getURL();
+              tabManager.toggleBookmark(url);
+              // Send bookmarks:updated so the bookmarks bar refreshes
+              const bookmarks = getAllBookmarks();
+              mainWindow?.webContents.send('bookmarks:updated', {
+                url,
+                added: tabManager.isBookmarked(url),
+                bookmarks,
+              });
+            }
           },
         },
         {
@@ -900,9 +910,7 @@ function createWindow() {
   // ─── Bookmark IPC ───
   ipcMain.on('bookmark:toggle', (_e, url: string) => {
     const added = tabManager.toggleBookmark(url);
-    // Notify UI with fresh bookmarks list so bar updates immediately
     const bookmarks = getAllBookmarks();
-    console.log(`[bookmark:toggle] url=${url} added=${added} bookmarks=${bookmarks.length}`);
     mainWindow?.webContents.send('bookmarks:updated', { url, added, bookmarks });
   });
 
