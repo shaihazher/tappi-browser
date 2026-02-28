@@ -142,6 +142,13 @@ contextBridge.exposeInMainWorld('aria', {
   interruptAgent: (target: string, targetName: string | null, message: string) =>
     ipcRenderer.invoke('agent:interrupt', { target, targetName, message }),
 
+  // ─── Claude Code Plan Mode ───
+  approvePlan: () => ipcRenderer.invoke('aria:cc-approve-plan'),
+  editPlan: (feedback: string) => ipcRenderer.invoke('aria:cc-edit-plan', { feedback }),
+  onPlanComplete: (cb: (data: any) => void) => {
+    ipcRenderer.on('aria:cc-plan-complete', (_e, data) => cb(data));
+  },
+
   // ─── Projects (Phase 9.07) ───
   listProjects: (includeArchived?: boolean) =>
     ipcRenderer.invoke('projects:list', includeArchived ?? false),

@@ -24,7 +24,7 @@ import { EventEmitter } from 'events';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type CCMode = 'plan' | 'ask' | 'full';
+export type CCMode = 'plan' | 'full';
 
 export type CCAuthMethod = 'api-key' | 'oauth';
 
@@ -59,7 +59,6 @@ const TAPPI_CLAUDE_BIN = path.join(CLI_INSTALL_DIR, 'node_modules', '.bin', 'cla
 function getCliModeArgs(mode: CCMode): string[] {
   switch (mode) {
     case 'plan': return ['--permission-mode', 'plan'];
-    case 'ask': return ['--permission-mode', 'default'];
     case 'full': return ['--dangerously-skip-permissions'];
   }
 }
@@ -520,10 +519,21 @@ export class ClaudeCodeProvider extends EventEmitter {
   config: CCProviderConfig;
   private activeProcess: ChildProcess | null = null;
   private sessionId: string | null = null;
+  private pendingPlanApproval: boolean = false;
 
   constructor(config: CCProviderConfig) {
     super();
     this.config = config;
+  }
+
+  /** Whether the last plan-mode turn completed and is awaiting user review. */
+  get isPlanPending(): boolean {
+    return this.pendingPlanApproval;
+  }
+
+  /** Reset plan approval state (e.g. when starting a new conversation). */
+  resetPlanState(): void {
+    this.pendingPlanApproval = false;
   }
 
   /**
@@ -640,6 +650,12 @@ export class ClaudeCodeProvider extends EventEmitter {
           }
         }
 
+        // If plan mode completed successfully, signal that plan is ready for review
+        if (this.config.mode === 'plan' && (code === 0 || code === null)) {
+          this.pendingPlanApproval = true;
+          this.emit('plan-complete');
+        }
+
         this.emit('chunk', { text: '', done: true } as CCChunkEvent);
         resolve();
       });
@@ -695,6 +711,29 @@ export class ClaudeCodeProvider extends EventEmitter {
       }
       return;
     }
+  }
+
+  /**
+   * Approve the pending plan and execute it with full permissions.
+   * Temporarily switches mode to 'full' for this turn, then restores 'plan'.
+   */
+  async approvePlan(): Promise<void> {
+    this.pendingPlanApproval = false;
+    const savedMode = this.config.mode;
+    this.config.mode = 'full';
+    try {
+      await this._sendViaCli('Approved. Execute the plan.');
+    } finally {
+      this.config.mode = savedMode;
+    }
+  }
+
+  /**
+   * Send user feedback on the plan. Stays in plan mode so CC updates the plan.
+   */
+  async sendPlanFeedback(feedback: string): Promise<void> {
+    this.pendingPlanApproval = false;
+    await this._sendViaCli(feedback);
   }
 
   /**

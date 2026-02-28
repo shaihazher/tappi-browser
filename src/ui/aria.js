@@ -1682,6 +1682,9 @@ async function sendMessage(text) {
 
   const trimmed = text.trim();
 
+  // Remove plan action bar if present (user is sending a new message)
+  _removePlanActionBar();
+
   // Hide welcome screen if visible
   hideWelcome();
 
@@ -2034,6 +2037,115 @@ function _finalizeStreamBubble() {
   _streamTextSavedUpTo = 0;
   streamBuffer = '';
 }
+
+// ─── Claude Code Plan Action Bar ──────────────────────────────────────────────
+
+/** Remove any existing plan action bar from the chat. */
+function _removePlanActionBar() {
+  const existing = document.getElementById('aria-cc-plan-actions');
+  if (existing) existing.remove();
+  const existingFeedback = document.getElementById('aria-cc-plan-feedback');
+  if (existingFeedback) existingFeedback.remove();
+}
+
+/** Inject the plan action bar (Approve & Edit) below the last assistant message. */
+function _showPlanActionBar() {
+  _removePlanActionBar();
+
+  const bar = document.createElement('div');
+  bar.id = 'aria-cc-plan-actions';
+  bar.className = 'cc-plan-actions';
+  bar.innerHTML = `
+    <button class="cc-plan-edit-btn" id="aria-cc-plan-edit">✏️ Edit Plan</button>
+    <button class="cc-plan-approve-btn" id="aria-cc-plan-approve">✅ Approve & Execute</button>
+  `;
+
+  const messagesEl = document.getElementById('aria-messages');
+  if (messagesEl) {
+    messagesEl.appendChild(bar);
+    scrollToBottom();
+  }
+}
+
+/** Replace action bar with inline feedback textarea. */
+function _showPlanFeedbackArea() {
+  _removePlanActionBar();
+
+  const area = document.createElement('div');
+  area.id = 'aria-cc-plan-feedback';
+  area.className = 'cc-plan-feedback';
+  area.innerHTML = `
+    <textarea id="aria-cc-plan-feedback-input" placeholder="Describe what to change..." rows="3"></textarea>
+    <div class="cc-plan-feedback-btns">
+      <button id="aria-cc-plan-feedback-cancel" class="cc-plan-feedback-cancel">Cancel</button>
+      <button id="aria-cc-plan-feedback-send" class="cc-plan-feedback-send">Send Feedback</button>
+    </div>
+  `;
+
+  const messagesEl = document.getElementById('aria-messages');
+  if (messagesEl) {
+    messagesEl.appendChild(area);
+    // Focus the textarea
+    setTimeout(() => {
+      const ta = document.getElementById('aria-cc-plan-feedback-input');
+      if (ta) ta.focus();
+    }, 50);
+    scrollToBottom();
+  }
+}
+
+// Event delegation for plan action bar clicks
+document.getElementById('aria-messages')?.addEventListener('click', (e) => {
+  const target = e.target;
+
+  // Approve & Execute
+  if (target.id === 'aria-cc-plan-approve' || target.closest('#aria-cc-plan-approve')) {
+    const btn = document.getElementById('aria-cc-plan-approve');
+    if (btn) {
+      btn.textContent = '⏳ Executing...';
+      btn.disabled = true;
+      btn.classList.add('executing');
+    }
+    // Disable edit button too
+    const editBtn = document.getElementById('aria-cc-plan-edit');
+    if (editBtn) editBtn.disabled = true;
+
+    setStreamingState(true);
+    window.aria.approvePlan();
+    return;
+  }
+
+  // Edit Plan
+  if (target.id === 'aria-cc-plan-edit' || target.closest('#aria-cc-plan-edit')) {
+    _showPlanFeedbackArea();
+    return;
+  }
+
+  // Cancel feedback
+  if (target.id === 'aria-cc-plan-feedback-cancel' || target.closest('#aria-cc-plan-feedback-cancel')) {
+    _showPlanActionBar();
+    return;
+  }
+
+  // Send feedback
+  if (target.id === 'aria-cc-plan-feedback-send' || target.closest('#aria-cc-plan-feedback-send')) {
+    const ta = document.getElementById('aria-cc-plan-feedback-input');
+    const feedback = ta ? ta.value.trim() : '';
+    if (!feedback) return;
+
+    _removePlanActionBar();
+    // Show the user's feedback as a message bubble
+    appendMessage('user', feedback);
+    setStreamingState(true);
+    window.aria.editPlan(feedback);
+    return;
+  }
+});
+
+// Listen for plan-complete from main process (after initial send or after edit feedback)
+window.aria?.onPlanComplete?.(() => {
+  _showPlanActionBar();
+});
 
 // ─── Reasoning / thinking chip ────────────────────────────────────────────────
 

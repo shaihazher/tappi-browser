@@ -1093,7 +1093,7 @@ function createWindow() {
       const { ClaudeCodeProvider, isClaudeCodeInstalled, installClaudeCode: installCC } = await import('./claude-code-provider');
       const { ensureApiToken } = await import('./api-server');
 
-      const ccMode = (currentConfig.llm as any).claudeCodeMode || 'ask';
+      const ccMode = (currentConfig.llm as any).claudeCodeMode || 'full';
       const ccAuth: 'api-key' | 'oauth' = (currentConfig.llm as any).claudeCodeAuth || 'oauth';
       const ariaWC = tabManager?.ariaWebContents;
 
@@ -1184,6 +1184,10 @@ function createWindow() {
       // Send to Claude Code
       try {
         await activeClaudeCodeProvider.sendMessage(message);
+        // If plan mode completed, notify UI so it can show approve/edit buttons
+        if (activeClaudeCodeProvider.isPlanPending) {
+          try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('aria:cc-plan-complete', { conversationId: effectiveConvId }); } catch {}
+        }
       } catch (err: any) {
         console.error('[main] claude-code send error:', err);
         onError(err.message || 'Claude Code failed');
@@ -1229,6 +1233,74 @@ function createWindow() {
     // Also stop active Claude Code provider
     if (activeClaudeCodeProvider) {
       try { activeClaudeCodeProvider.stop(); } catch {}
+    }
+  });
+
+  // ─── Claude Code Plan Mode: Approve & Edit ─────────────────────────────
+
+  ipcMain.handle('aria:cc-approve-plan', async () => {
+    if (!activeClaudeCodeProvider) return;
+    const ariaWC = tabManager?.ariaWebContents;
+
+    // Wire up streaming events (same pattern as sendMessage)
+    const onChunk = (data: { text: string; done: boolean }) => {
+      try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', data); } catch {}
+      try { mainWindow.webContents.send('agent:stream-chunk', data); } catch {}
+    };
+    const onError = (error: string) => {
+      const errChunk = { text: `\n\n❌ ${error}`, done: true };
+      try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', errChunk); } catch {}
+      try { mainWindow.webContents.send('agent:stream-chunk', errChunk); } catch {}
+    };
+
+    activeClaudeCodeProvider.removeAllListeners('chunk');
+    activeClaudeCodeProvider.removeAllListeners('error');
+    activeClaudeCodeProvider.on('chunk', onChunk);
+    activeClaudeCodeProvider.on('error', onError);
+
+    try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-start', {}); } catch {}
+    try { mainWindow.webContents.send('agent:stream-start', {}); } catch {}
+
+    try {
+      await activeClaudeCodeProvider.approvePlan();
+      // No plan-complete after execution — this was the approval
+    } catch (err: any) {
+      console.error('[main] cc-approve-plan error:', err);
+      onError(err.message || 'Plan execution failed');
+    }
+  });
+
+  ipcMain.handle('aria:cc-edit-plan', async (_e, { feedback }: { feedback: string }) => {
+    if (!activeClaudeCodeProvider) return;
+    const ariaWC = tabManager?.ariaWebContents;
+
+    const onChunk = (data: { text: string; done: boolean }) => {
+      try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', data); } catch {}
+      try { mainWindow.webContents.send('agent:stream-chunk', data); } catch {}
+    };
+    const onError = (error: string) => {
+      const errChunk = { text: `\n\n❌ ${error}`, done: true };
+      try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', errChunk); } catch {}
+      try { mainWindow.webContents.send('agent:stream-chunk', errChunk); } catch {}
+    };
+
+    activeClaudeCodeProvider.removeAllListeners('chunk');
+    activeClaudeCodeProvider.removeAllListeners('error');
+    activeClaudeCodeProvider.on('chunk', onChunk);
+    activeClaudeCodeProvider.on('error', onError);
+
+    try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-start', {}); } catch {}
+    try { mainWindow.webContents.send('agent:stream-start', {}); } catch {}
+
+    try {
+      await activeClaudeCodeProvider.sendPlanFeedback(feedback);
+      // If plan mode completed again, notify UI for another round
+      if (activeClaudeCodeProvider.isPlanPending) {
+        try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('aria:cc-plan-complete', {}); } catch {}
+      }
+    } catch (err: any) {
+      console.error('[main] cc-edit-plan error:', err);
+      onError(err.message || 'Plan feedback failed');
     }
   });
 

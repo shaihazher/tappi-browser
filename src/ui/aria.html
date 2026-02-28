@@ -132,13 +132,12 @@
           <div class="cc-mode-header">Authentication</div>
           <select id="aria-cc-auth-select">
             <option value="oauth" selected>Claude Login (OAuth) — uses claude CLI</option>
-            <option value="api-key">API Key — uses Agent SDK</option>
+            <option value="api-key">API Key — uses ANTHROPIC_API_KEY</option>
           </select>
           <div class="cc-mode-header" style="margin-top:8px">Permission Mode</div>
           <select id="aria-cc-mode-select">
-            <option value="plan">Plan (read-only)</option>
-            <option value="ask" selected>Ask Permission (default)</option>
-            <option value="full">Full Permission</option>
+            <option value="plan">Plan (review before executing)</option>
+            <option value="full" selected>Full Permission (default)</option>
           </select>
           <button id="aria-cc-install-btn" class="small-btn hidden">Install Now</button>
           <button id="aria-cc-login-btn" class="small-btn hidden">Sign In</button>
