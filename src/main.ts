@@ -56,6 +56,7 @@ import {
   addConversationMessage,
   searchConversations,
   getConversation,
+  generateAutoTitleFallback,
 } from './conversation-store';
 import {
   createProject,
@@ -1053,15 +1054,31 @@ function createWindow() {
 
     // Phase 9.13: Generate title in parallel for new conversations
     if (isNewConversation && activeConversationId) {
-      // Claude Code uses Anthropic models — remap provider for title generation
-      const titleProvider = currentConfig.llm.provider === 'claude-code' ? 'anthropic' : currentConfig.llm.provider;
-      const titleModel = currentConfig.llm.model === 'claude-code' ? 'claude-sonnet-4-6' : currentConfig.llm.model;
-      // Skip title gen for Claude Code OAuth without API key (can't call Anthropic API directly)
-      const canGenerateTitle = titleProvider !== 'anthropic' || apiKey;
-      if (canGenerateTitle) {
+      if (currentConfig.llm.provider === 'claude-code') {
+        // Use Claude Code CLI for title generation (works for both OAuth and API key)
+        const { generateTitleViaCli } = await import('./claude-code-provider');
+        const convIdForTitle = activeConversationId;
+        generateTitleViaCli(message, apiKey).then((title) => {
+          if (title) {
+            updateConversationTitle(convIdForTitle, title);
+            console.log('[main] CC CLI title set:', title);
+            try {
+              const ariaWC = tabManager?.ariaWebContents;
+              if (ariaWC && !ariaWC.isDestroyed()) {
+                ariaWC.send('aria:conversation-updated', { conversationId: convIdForTitle });
+              }
+            } catch {}
+          } else {
+            generateAutoTitleFallback(convIdForTitle, message);
+          }
+        }).catch(() => {
+          generateAutoTitleFallback(convIdForTitle, message);
+        });
+      } else {
+        // Non-Claude-Code providers: use Vercel AI SDK path
         const llmConfigForTitle = {
-          provider: titleProvider,
-          model: titleModel,
+          provider: currentConfig.llm.provider,
+          model: currentConfig.llm.model,
           apiKey,
           secondaryProvider: currentConfig.llm.secondaryProvider,
           secondaryModel: currentConfig.llm.secondaryModel,
@@ -1074,7 +1091,6 @@ function createWindow() {
     // ─── Claude Code Provider Routing ──────────────────────────────────────
     if (currentConfig.llm.provider === 'claude-code') {
       const { ClaudeCodeProvider, isClaudeCodeInstalled, installClaudeCode: installCC } = await import('./claude-code-provider');
-      const { TOOL_USAGE_GUIDE } = await import('./tool-registry');
       const { ensureApiToken } = await import('./api-server');
 
       const ccMode = (currentConfig.llm as any).claudeCodeMode || 'ask';
@@ -1084,7 +1100,7 @@ function createWindow() {
       // Auto-install if not present
       const installed = await isClaudeCodeInstalled(ccAuth);
       if (!installed) {
-        const label = ccAuth === 'oauth' ? 'Claude Code CLI' : 'Claude Agent SDK';
+        const label = 'Claude Code CLI';
         try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', { text: `⚙️ Installing ${label}...`, done: false }); } catch {}
         try {
           await installCC(ccAuth, (msg) => {
@@ -1167,7 +1183,7 @@ function createWindow() {
 
       // Send to Claude Code
       try {
-        await activeClaudeCodeProvider.sendMessage(message, TOOL_USAGE_GUIDE);
+        await activeClaudeCodeProvider.sendMessage(message);
       } catch (err: any) {
         console.error('[main] claude-code send error:', err);
         onError(err.message || 'Claude Code failed');
@@ -1402,6 +1418,11 @@ function createWindow() {
 
   // ─── Prompt Enhancement (Phase 9.098) ───────────────────────────────────────
   ipcMain.handle('aria:enhance-prompt', async (_e, prompt: string, webSearch: boolean, mode: 'quick' | 'deep' = 'quick', conversationId?: string) => {
+    // Prompt enhancement is not available with Claude Code provider
+    if (currentConfig.llm.provider === 'claude-code') {
+      return { error: 'Prompt enhancement is not available when using Claude Code as the provider.' };
+    }
+
     const { generateText, streamText } = await import('ai');
     const { createModel, buildProviderOptions, withCodexProviderOptions } = await import('./llm-client');
     const { SYSTEM_PROMPT } = await import('./agent');
@@ -1502,9 +1523,8 @@ Rules:
     }
 
     try {
-      // Claude Code uses Anthropic models — remap provider for enhancement
-      const enhanceProvider = currentConfig.llm.provider === 'claude-code' ? 'anthropic' : currentConfig.llm.provider;
-      const enhanceModel = currentConfig.llm.model === 'claude-code' ? 'claude-sonnet-4-6' : currentConfig.llm.model;
+      const enhanceProvider = currentConfig.llm.provider;
+      const enhanceModel = currentConfig.llm.model;
 
       const model = createModel({
         provider: enhanceProvider,

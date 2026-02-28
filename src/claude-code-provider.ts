@@ -1,22 +1,19 @@
 /**
  * claude-code-provider.ts — Claude Code integration for Tappi Browser.
  *
- * Two authentication paths, per Anthropic's terms:
+ * Uses the Claude Code CLI (`@anthropic-ai/claude-code`) for both auth methods:
  *
- *   1. **API Key** → Uses the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`)
- *      which spawns a Claude Code subprocess via `query()`. OAuth tokens are
- *      explicitly prohibited on the Agent SDK by Anthropic's ToS.
+ *   - **OAuth** → CLI reads OAuth credentials from macOS Keychain / credential
+ *     store (set up via `claude login`).
  *
- *   2. **OAuth** → Spawns the actual `claude` CLI directly with `--print` and
- *      `--output-format stream-json`. This is the only officially permitted way
- *      to use OAuth tokens — through the Claude Code interface itself.
+ *   - **API Key** → CLI uses `ANTHROPIC_API_KEY` environment variable.
  *
- * Both paths install to dedicated Tappi-managed directories under
- * ~/.tappi-browser/ — never using or interfering with the user's own
- * Claude Code installation.
+ * The CLI is installed to a dedicated Tappi-managed directory under
+ * ~/.tappi-browser/claude-code-cli/ — never using or interfering with the
+ * user's own Claude Code installation.
  *
- * Both paths get access to Tappi's full tool set via the HTTP API server
- * (localhost:18901) through the system prompt / CLAUDE.md.
+ * Claude Code gets access to Tappi's browser, file, and shell tools via the
+ * HTTP API server (localhost:18901) documented in the system prompt / CLAUDE.md.
  */
 
 import { spawn, ChildProcess } from 'child_process';
@@ -47,11 +44,7 @@ export interface CCChunkEvent {
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-/** Agent SDK install dir (API key path) */
-const SDK_INSTALL_DIR = path.join(os.homedir(), '.tappi-browser', 'claude-code');
-const SDK_PACKAGE = '@anthropic-ai/claude-agent-sdk';
-
-/** CLI install dir (OAuth path) — dedicated, never uses user's own installation */
+/** CLI install dir — dedicated, never uses user's own installation */
 const CLI_INSTALL_DIR = path.join(os.homedir(), '.tappi-browser', 'claude-code-cli');
 const CLI_PACKAGE = '@anthropic-ai/claude-code';
 
@@ -59,14 +52,6 @@ const CLI_PACKAGE = '@anthropic-ai/claude-code';
 const TAPPI_CLAUDE_BIN = path.join(CLI_INSTALL_DIR, 'node_modules', '.bin', 'claude');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function getPermissionMode(mode: CCMode): string {
-  switch (mode) {
-    case 'plan': return 'plan';
-    case 'ask': return 'default';
-    case 'full': return 'bypassPermissions';
-  }
-}
 
 /**
  * Convert CCMode to CLI flags for the `claude` command.
@@ -82,15 +67,7 @@ function getCliModeArgs(mode: CCMode): string[] {
 // ── Installation ─────────────────────────────────────────────────────────────
 
 /**
- * Check if the Agent SDK is installed (for API key auth path).
- */
-export async function isAgentSdkInstalled(): Promise<boolean> {
-  const pkgDir = path.join(SDK_INSTALL_DIR, 'node_modules', SDK_PACKAGE);
-  return fs.existsSync(pkgDir);
-}
-
-/**
- * Check if Tappi's dedicated Claude CLI is installed (for OAuth auth path).
+ * Check if Tappi's dedicated Claude CLI is installed.
  * Only checks our own managed installation — never the user's.
  */
 export async function isCliInstalled(): Promise<boolean> {
@@ -98,64 +75,15 @@ export async function isCliInstalled(): Promise<boolean> {
 }
 
 /**
- * Check if Claude Code is available for the given auth method.
- * - API key: needs the Agent SDK in ~/.tappi-browser/claude-code/
- * - OAuth:   needs the CLI in ~/.tappi-browser/claude-code-cli/
+ * Check if Claude Code CLI is available.
+ * Both auth methods (OAuth and API key) use the same CLI binary.
  */
-export async function isClaudeCodeInstalled(authMethod: CCAuthMethod = 'oauth'): Promise<boolean> {
-  if (authMethod === 'api-key') {
-    return isAgentSdkInstalled();
-  }
+export async function isClaudeCodeInstalled(_authMethod: CCAuthMethod = 'oauth'): Promise<boolean> {
   return isCliInstalled();
 }
 
 /**
- * Install the Agent SDK to Tappi's dedicated directory (API key path).
- */
-export async function installAgentSdk(
-  onProgress?: (msg: string) => void,
-): Promise<void> {
-  if (await isAgentSdkInstalled()) return;
-
-  fs.mkdirSync(SDK_INSTALL_DIR, { recursive: true });
-
-  const pkgJsonPath = path.join(SDK_INSTALL_DIR, 'package.json');
-  if (!fs.existsSync(pkgJsonPath)) {
-    fs.writeFileSync(pkgJsonPath, JSON.stringify({
-      name: 'tappi-claude-code-sdk',
-      version: '1.0.0',
-      private: true,
-    }, null, 2));
-  }
-
-  return new Promise((resolve, reject) => {
-    onProgress?.('Installing Claude Agent SDK...');
-
-    const proc = spawn('npm', ['install', SDK_PACKAGE], {
-      cwd: SDK_INSTALL_DIR,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env },
-    });
-
-    let stderr = '';
-    proc.stderr?.on('data', (d) => { stderr += d.toString(); });
-    proc.stdout?.on('data', (d) => { onProgress?.(d.toString().trim()); });
-
-    proc.on('exit', (code) => {
-      if (code === 0) {
-        onProgress?.('Claude Agent SDK installed successfully.');
-        resolve();
-      } else {
-        reject(new Error(`npm install failed (code ${code}): ${stderr.slice(0, 500)}`));
-      }
-    });
-
-    proc.on('error', (err) => reject(err));
-  });
-}
-
-/**
- * Install the Claude Code CLI to Tappi's dedicated directory (OAuth path).
+ * Install the Claude Code CLI to Tappi's dedicated directory.
  *
  * Installs `@anthropic-ai/claude-code` via npm into ~/.tappi-browser/claude-code-cli/.
  * The binary ends up at node_modules/.bin/claude. This is a completely separate
@@ -204,15 +132,12 @@ export async function installClaudeCli(
 }
 
 /**
- * Unified install entry point. Installs the right component based on auth method.
+ * Unified install entry point. Both auth methods use the same CLI.
  */
 export async function installClaudeCode(
-  authMethod: CCAuthMethod,
+  _authMethod: CCAuthMethod,
   onProgress?: (msg: string) => void,
 ): Promise<void> {
-  if (authMethod === 'api-key') {
-    return installAgentSdk(onProgress);
-  }
   return installClaudeCli(onProgress);
 }
 
@@ -389,10 +314,11 @@ export async function loginClaudeCode(
 // ── System Prompt / CLAUDE.md ────────────────────────────────────────────────
 
 /**
- * Generate a system prompt that tells Claude Code about Tappi's API.
- * Used by both the SDK path (as systemPrompt) and CLI path (written to CLAUDE.md).
+ * Generate a system prompt that tells Claude Code about Tappi's HTTP API.
+ * Written to CLAUDE.md so the CLI picks up Tappi's browser/file/shell capabilities.
+ * Claude Code uses its own internal tools (Bash, Read, etc.) to call these HTTP endpoints.
  */
-export function buildTappiSystemPrompt(toolGuide: string): string {
+export function buildTappiSystemPrompt(): string {
   return `You are Aria, an AI assistant integrated into Tappi Browser. You have full access to the browser's capabilities via its HTTP API.
 
 ## Tappi Browser API
@@ -467,21 +393,19 @@ For EVERY request:
 - Concise. Say what you did and what happened.
 - If something fails, try an alternative before giving up.
 - For casual questions, just answer directly without using tools.
-
-${toolGuide.slice(0, 2000)}
 `;
 }
 
 /**
- * Write a CLAUDE.md file to a temp directory for the CLI OAuth path.
+ * Write a CLAUDE.md file to a temp directory for the CLI.
  * The CLI reads CLAUDE.md from its CWD for project instructions.
  * Returns the directory path where CLAUDE.md was written.
  */
-function writeTappiClaudeMd(toolGuide: string, tappiApiToken: string): string {
+function writeTappiClaudeMd(tappiApiToken: string): string {
   const dir = path.join(os.tmpdir(), 'tappi-claude-code');
   fs.mkdirSync(dir, { recursive: true });
 
-  const content = buildTappiSystemPrompt(toolGuide)
+  const content = buildTappiSystemPrompt()
     // Replace the env var reference with the actual token for the CLI path,
     // since we can't guarantee the CLI inherits the env var in all contexts.
     // The CLAUDE.md is in a temp dir with restricted access.
@@ -491,12 +415,109 @@ function writeTappiClaudeMd(toolGuide: string, tappiApiToken: string): string {
   return dir;
 }
 
+// ── Title Generation ─────────────────────────────────────────────────────────
+
+/**
+ * Generate a conversation title using the Claude Code CLI.
+ * Lightweight one-shot call — no session management, no tools, no CLAUDE.md.
+ * Works for both OAuth and API key auth methods.
+ * Returns the title string, or null on failure.
+ */
+export async function generateTitleViaCli(
+  userMessage: string,
+  apiKey?: string,
+): Promise<string | null> {
+  if (!(await isCliInstalled())) {
+    return null;
+  }
+
+  const titlePrompt = `Generate a short, descriptive title (3-6 words) for a conversation that starts with this message. Return ONLY the title text — no quotes, no punctuation at the end, no explanation.\n\nMessage: ${userMessage.slice(0, 300)}\n\nTitle:`;
+
+  const args: string[] = [
+    '--print',
+    '--output-format', 'stream-json',
+    '--model', 'claude-haiku-4-5',
+    titlePrompt,
+  ];
+
+  const env: Record<string, string> = { ...process.env as any };
+  if (apiKey) {
+    env.ANTHROPIC_API_KEY = apiKey;
+  }
+
+  return new Promise((resolve) => {
+    const proc = spawn(TAPPI_CLAUDE_BIN, args, {
+      cwd: os.tmpdir(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env,
+    });
+
+    let textResult = '';
+    let stderr = '';
+    let lineBuffer = '';
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      lineBuffer += data.toString();
+      const lines = lineBuffer.split('\n');
+      lineBuffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          // Collect text from streaming deltas
+          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+            textResult += msg.delta.text;
+          }
+          // Also collect from assistant messages
+          if (msg.type === 'assistant' && msg.message?.content) {
+            for (const block of msg.message.content) {
+              if (block.type === 'text' && block.text) {
+                textResult += block.text;
+              }
+            }
+          }
+          // Collect from result
+          if (msg.type === 'result' && msg.result) {
+            textResult += msg.result;
+          }
+        } catch {
+          // Not JSON — might be raw text
+          if (line.trim()) textResult += line.trim();
+        }
+      }
+    });
+
+    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+    // Timeout: title generation should be fast
+    const timeout = setTimeout(() => {
+      try { proc.kill('SIGTERM'); } catch {}
+      resolve(null);
+    }, 15_000);
+
+    proc.on('exit', (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) {
+        console.error('[claude-code] title gen failed:', stderr.slice(0, 200));
+        resolve(null);
+        return;
+      }
+      const title = textResult.replace(/^["']|["']$/g, '').replace(/[.!?]+$/, '').trim();
+      resolve(title && title.length > 2 && title.length < 80 ? title : null);
+    });
+
+    proc.on('error', () => {
+      clearTimeout(timeout);
+      resolve(null);
+    });
+  });
+}
+
 // ── Provider Class ───────────────────────────────────────────────────────────
 
 export class ClaudeCodeProvider extends EventEmitter {
   config: CCProviderConfig;
-  private abortController: AbortController | null = null;
-  private activeQuery: any = null;
   private activeProcess: ChildProcess | null = null;
   private sessionId: string | null = null;
 
@@ -507,129 +528,17 @@ export class ClaudeCodeProvider extends EventEmitter {
 
   /**
    * Send a message and stream output back via 'chunk' events.
-   *
-   * Routes to the appropriate backend:
-   * - API Key → Agent SDK `query()` (SDK is allowed to use API keys)
-   * - OAuth  → `claude` CLI with `--print` (only official way to use OAuth)
+   * Both auth methods (OAuth and API key) use the CLI.
    */
-  async sendMessage(message: string, toolGuide: string): Promise<void> {
-    if (this.config.authMethod === 'api-key') {
-      return this._sendViaSdk(message, toolGuide);
-    } else {
-      return this._sendViaCli(message, toolGuide);
-    }
+  async sendMessage(message: string): Promise<void> {
+    return this._sendViaCli(message);
   }
 
   /**
-   * API Key path: use the Claude Agent SDK's query() function.
-   * Anthropic allows API key authentication for the Agent SDK.
-   */
-  private async _sendViaSdk(message: string, toolGuide: string): Promise<void> {
-    if (!(await isAgentSdkInstalled())) {
-      this.emit('error', 'Claude Agent SDK is not installed. Select Claude Code provider to auto-install.');
-      return;
-    }
-
-    // Dynamic import from the on-demand install directory
-    const sdkPath = path.join(SDK_INSTALL_DIR, 'node_modules', SDK_PACKAGE);
-    let queryFn: any;
-    try {
-      const sdk = require(sdkPath);
-      queryFn = sdk.query;
-      if (!queryFn) throw new Error('query() not found in SDK exports');
-    } catch (err: any) {
-      this.emit('error', `Failed to load Claude Agent SDK: ${err.message}`);
-      return;
-    }
-
-    this.abortController = new AbortController();
-
-    const systemPrompt = buildTappiSystemPrompt(toolGuide);
-    const permissionMode = getPermissionMode(this.config.mode);
-
-    const env: Record<string, string> = { ...process.env as any };
-    if (this.config.apiKey) {
-      env.ANTHROPIC_API_KEY = this.config.apiKey;
-    }
-    if (this.config.tappiApiToken) {
-      env.TAPPI_API_TOKEN = this.config.tappiApiToken;
-    }
-
-    const options: Record<string, any> = {
-      systemPrompt,
-      permissionMode,
-      allowedTools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch'],
-      cwd: this.config.workingDir || os.homedir(),
-      env,
-      abortController: this.abortController,
-      maxTurns: 30,
-      includePartialMessages: true,
-      ...(this.config.model ? { model: this.config.model } : {}),
-    };
-
-    if (this.config.mode === 'full') {
-      options.allowDangerouslySkipPermissions = true;
-    }
-
-    if (this.sessionId) {
-      options.resume = this.sessionId;
-    }
-
-    try {
-      const q = queryFn({ prompt: message, options });
-      this.activeQuery = q;
-
-      for await (const msg of q) {
-        if (!msg || !msg.type) continue;
-
-        if (msg.type === 'system' && msg.subtype === 'init') {
-          this.sessionId = msg.session_id;
-          continue;
-        }
-
-        if (msg.type === 'stream_event' && msg.event) {
-          const event = msg.event;
-          if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-            this.emit('chunk', { text: event.delta.text, done: false } as CCChunkEvent);
-          }
-          continue;
-        }
-
-        if (msg.type === 'assistant' && msg.message?.content) {
-          for (const block of msg.message.content) {
-            if (block.type === 'text' && block.text) {
-              this.emit('chunk', { text: block.text, done: false } as CCChunkEvent);
-            }
-          }
-          continue;
-        }
-
-        if (msg.type === 'result') {
-          this.emit('chunk', { text: '', done: true } as CCChunkEvent);
-          break;
-        }
-      }
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        this.emit('chunk', { text: '\n\n[Stopped]', done: true } as CCChunkEvent);
-      } else {
-        console.error('[claude-code-provider] SDK query error:', err);
-        this.emit('error', err.message || 'Claude Code query failed');
-        this.emit('chunk', { text: '', done: true } as CCChunkEvent);
-      }
-    } finally {
-      this.activeQuery = null;
-      this.abortController = null;
-    }
-  }
-
-  /**
-   * OAuth path: spawn Tappi's dedicated `claude` CLI with `--print`.
+   * Spawn Tappi's dedicated `claude` CLI with `--print`.
    *
-   * This is the ONLY officially permitted way to use OAuth tokens.
-   * Anthropic's ToS explicitly prohibits OAuth on the Agent SDK.
-   * The CLI reads OAuth credentials from macOS Keychain / credential store
-   * (set up via `claude login`).
+   * - OAuth: CLI reads OAuth credentials from macOS Keychain / credential store.
+   * - API Key: CLI uses ANTHROPIC_API_KEY environment variable.
    *
    * Uses Tappi's own CLI install at ~/.tappi-browser/claude-code-cli/ —
    * never the user's personal installation.
@@ -637,15 +546,15 @@ export class ClaudeCodeProvider extends EventEmitter {
    * Output format: `--output-format stream-json` gives us newline-delimited
    * JSON with streaming text deltas.
    */
-  private async _sendViaCli(message: string, toolGuide: string): Promise<void> {
+  private async _sendViaCli(message: string): Promise<void> {
     if (!(await isCliInstalled())) {
       this.emit('error', 'Claude Code CLI is not installed. Select Claude Code provider to auto-install.');
       return;
     }
 
-    // Write CLAUDE.md to a temp dir so the CLI picks up Tappi's tool instructions
+    // Write CLAUDE.md to a temp dir so the CLI picks up Tappi's HTTP API instructions
     const tappiToken = this.config.tappiApiToken || '';
-    const claudeMdDir = writeTappiClaudeMd(toolGuide, tappiToken);
+    const claudeMdDir = writeTappiClaudeMd(tappiToken);
 
     const args: string[] = [
       '--print',                        // Non-interactive, print result
@@ -665,7 +574,10 @@ export class ClaudeCodeProvider extends EventEmitter {
     if (this.config.tappiApiToken) {
       env.TAPPI_API_TOKEN = this.config.tappiApiToken;
     }
-    // DO NOT set ANTHROPIC_API_KEY for OAuth — let the CLI use its OAuth credentials
+    // Set API key for api-key auth — CLI uses it instead of OAuth credentials
+    if (this.config.authMethod === 'api-key' && this.config.apiKey) {
+      env.ANTHROPIC_API_KEY = this.config.apiKey;
+    }
 
     return new Promise<void>((resolve) => {
       const proc = spawn(TAPPI_CLAUDE_BIN, args, {
@@ -786,20 +698,9 @@ export class ClaudeCodeProvider extends EventEmitter {
   }
 
   /**
-   * Stop the current query/process.
+   * Stop the current CLI process.
    */
   stop(): void {
-    // SDK path
-    if (this.abortController) {
-      this.abortController.abort();
-      this.abortController = null;
-    }
-    if (this.activeQuery?.close) {
-      try { this.activeQuery.close(); } catch {}
-    }
-    this.activeQuery = null;
-
-    // CLI path
     if (this.activeProcess) {
       try { this.activeProcess.kill('SIGTERM'); } catch {}
       this.activeProcess = null;

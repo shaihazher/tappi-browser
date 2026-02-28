@@ -207,6 +207,7 @@ async function loadModelConfig() {
     }
     updateModelButton();
     updateThinkingButton();
+    updateEnhanceButton();
   } catch (e) {
     console.error('[aria] Failed to load model config:', e);
   }
@@ -232,6 +233,16 @@ function updateThinkingButton() {
   if (!ariaThinkingBtn) return;
   ariaThinkingBtn.classList.toggle('on', currentModelConfig.thinking);
   ariaThinkingBtn.title = `Thinking: ${currentModelConfig.thinking ? 'ON' : 'OFF'}`;
+}
+
+function updateEnhanceButton() {
+  if (!ariaEnhanceBtn) return;
+  const isCC = currentModelConfig.provider === 'claude-code';
+  ariaEnhanceBtn.disabled = isCC;
+  ariaEnhanceBtn.title = isCC
+    ? 'Prompt enhancement is not available with Claude Code'
+    : 'Enhance prompt with AI';
+  ariaEnhanceBtn.classList.toggle('cc-disabled', isCC);
 }
 
 async function fetchModelsForProvider(provider) {
@@ -434,6 +445,7 @@ function bindModelPickerEvents() {
   ariaProviderSelect?.addEventListener('change', () => {
     currentModelConfig.provider = ariaProviderSelect.value;
     providerChangedInPicker = true;
+    updateEnhanceButton();
 
     // Show/hide Claude Code mode selector and toggle cc-active class
     const isCC = ariaProviderSelect.value === 'claude-code';
@@ -465,7 +477,7 @@ function bindModelPickerEvents() {
     const loginBtn = document.getElementById('aria-cc-login-btn');
     const ccStatus = document.getElementById('aria-cc-status');
     const authMethod = authSelect?.value || 'oauth';
-    const label = authMethod === 'oauth' ? 'Claude Code CLI' : 'Agent SDK';
+    const label = 'Claude Code CLI';
 
     // Hide login button for API key auth (no OAuth needed)
     if (loginBtn) loginBtn.classList.toggle('hidden', authMethod !== 'oauth');
@@ -522,7 +534,7 @@ function bindModelPickerEvents() {
     const installBtn = document.getElementById('aria-cc-install-btn');
     const ccStatus = document.getElementById('aria-cc-status');
     const authMethod = authSelect?.value || 'oauth';
-    const label = authMethod === 'oauth' ? 'Claude Code CLI' : 'Agent SDK';
+    const label = 'Claude Code CLI';
 
     if (installBtn) installBtn.disabled = true;
     if (ccStatus) {
@@ -1833,7 +1845,10 @@ async function enhancePrompt(mode) {
   } finally {
     isEnhancing = false;
     ariaEnhanceBtn.classList.remove('loading');
-    ariaEnhanceBtn.disabled = false;
+    // Re-enable unless Claude Code provider (which keeps it disabled)
+    if (currentModelConfig.provider !== 'claude-code') {
+      ariaEnhanceBtn.disabled = false;
+    }
   }
 }
 
