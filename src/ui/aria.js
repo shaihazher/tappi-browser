@@ -456,6 +456,106 @@ async function toggleModelDropdown() {
   else await openModelDropdown();
 }
 
+/**
+ * Update the Claude Code install + auth status UI.
+ * Both paths auto-install to dedicated Tappi-managed directories:
+ * - OAuth:   CLI at ~/.tappi-browser/claude-code-cli/
+ * - API Key: SDK at ~/.tappi-browser/claude-code/
+ * - Bedrock: CLI at ~/.tappi-browser/claude-code-cli/ (same binary, AWS credential chain)
+ */
+async function updateClaudeCodeStatus() {
+  const authSelect = document.getElementById('aria-cc-auth-select');
+  const installBtn = document.getElementById('aria-cc-install-btn');
+  const loginBtn = document.getElementById('aria-cc-login-btn');
+  const ccStatus = document.getElementById('aria-cc-status');
+  const bedrockWrap = document.getElementById('aria-cc-bedrock-wrap');
+  const authMethod = authSelect?.value || 'oauth';
+  const label = 'Claude Code CLI';
+
+  // Hide login button for non-OAuth auth (no OAuth needed for API key or Bedrock)
+  if (loginBtn) loginBtn.classList.toggle('hidden', authMethod !== 'oauth');
+
+  // Show/hide Bedrock settings panel
+  if (bedrockWrap) bedrockWrap.classList.toggle('hidden', authMethod !== 'bedrock');
+
+  if (!window.aria.checkClaudeCodeInstalled) return;
+
+  try {
+    const installed = await window.aria.checkClaudeCodeInstalled(authMethod);
+    if (installBtn) installBtn.classList.toggle('hidden', installed);
+    if (installBtn) installBtn.textContent = `Install ${label}`;
+
+    if (!installed) {
+      if (ccStatus) {
+        ccStatus.textContent = `${label} will auto-install on first use`;
+        ccStatus.classList.remove('hidden', 'error');
+      }
+      if (loginBtn) loginBtn.classList.add('hidden'); // Can't login until installed
+      return;
+    }
+
+    // Installed — check auth status based on method
+    if (authMethod === 'oauth' && window.aria.checkClaudeAuth) {
+      try {
+        const auth = await window.aria.checkClaudeAuth('oauth');
+        if (ccStatus) {
+          if (auth.loggedIn) {
+            ccStatus.textContent = auth.email
+              ? `✓ Signed in as ${auth.email}`
+              : '✓ Signed in';
+            ccStatus.classList.remove('hidden', 'error');
+            if (loginBtn) loginBtn.classList.add('hidden');
+          } else {
+            ccStatus.textContent = '✓ CLI installed — will sign in on first use';
+            ccStatus.classList.remove('hidden', 'error');
+            if (loginBtn) loginBtn.classList.remove('hidden');
+          }
+        }
+      } catch {
+        if (ccStatus) {
+          ccStatus.textContent = `✓ ${label} installed`;
+          ccStatus.classList.remove('hidden', 'error');
+        }
+      }
+    } else if (authMethod === 'bedrock' && window.aria.checkBedrockCredentials) {
+      try {
+        const bedrockStatus = await window.aria.checkBedrockCredentials();
+        const bedrockStatusEl = document.getElementById('aria-cc-bedrock-status');
+        if (bedrockStatus.found) {
+          if (ccStatus) {
+            ccStatus.textContent = `✓ ${label} installed · AWS credentials via ${bedrockStatus.source}`;
+            ccStatus.classList.remove('hidden', 'error');
+          }
+          if (bedrockStatusEl) {
+            bedrockStatusEl.textContent = `✓ ${bedrockStatus.source}`;
+            bedrockStatusEl.className = 'cc-bedrock-status success';
+          }
+        } else {
+          if (ccStatus) {
+            ccStatus.textContent = `✓ ${label} installed · No AWS credentials found`;
+            ccStatus.classList.remove('hidden');
+            ccStatus.classList.add('error');
+          }
+          if (bedrockStatusEl) {
+            bedrockStatusEl.textContent = 'No AWS credentials found — set env vars, ~/.aws/credentials, or run aws sso login';
+            bedrockStatusEl.className = 'cc-bedrock-status error';
+          }
+        }
+      } catch {
+        if (ccStatus) {
+          ccStatus.textContent = `✓ ${label} installed`;
+          ccStatus.classList.remove('hidden', 'error');
+        }
+      }
+    } else {
+      if (ccStatus) {
+        ccStatus.textContent = `✓ ${label} installed`;
+        ccStatus.classList.remove('hidden', 'error');
+      }
+    }
+  } catch {}
+}
+
 function bindModelPickerEvents() {
   // Model button click
   ariaModelBtn?.addEventListener('click', async (e) => {
@@ -495,105 +595,6 @@ function bindModelPickerEvents() {
       fetchModelsForProvider(ariaProviderSelect.value);
     }
   });
-
-  /**
-   * Update the Claude Code install + auth status UI.
-   * Both paths auto-install to dedicated Tappi-managed directories:
-   * - OAuth:   CLI at ~/.tappi-browser/claude-code-cli/
-   * - API Key: SDK at ~/.tappi-browser/claude-code/
-   */
-  async function updateClaudeCodeStatus() {
-    const authSelect = document.getElementById('aria-cc-auth-select');
-    const installBtn = document.getElementById('aria-cc-install-btn');
-    const loginBtn = document.getElementById('aria-cc-login-btn');
-    const ccStatus = document.getElementById('aria-cc-status');
-    const bedrockWrap = document.getElementById('aria-cc-bedrock-wrap');
-    const authMethod = authSelect?.value || 'oauth';
-    const label = 'Claude Code CLI';
-
-    // Hide login button for non-OAuth auth (no OAuth needed for API key or Bedrock)
-    if (loginBtn) loginBtn.classList.toggle('hidden', authMethod !== 'oauth');
-
-    // Show/hide Bedrock settings panel
-    if (bedrockWrap) bedrockWrap.classList.toggle('hidden', authMethod !== 'bedrock');
-
-    if (!window.aria.checkClaudeCodeInstalled) return;
-
-    try {
-      const installed = await window.aria.checkClaudeCodeInstalled(authMethod);
-      if (installBtn) installBtn.classList.toggle('hidden', installed);
-      if (installBtn) installBtn.textContent = `Install ${label}`;
-
-      if (!installed) {
-        if (ccStatus) {
-          ccStatus.textContent = `${label} will auto-install on first use`;
-          ccStatus.classList.remove('hidden', 'error');
-        }
-        if (loginBtn) loginBtn.classList.add('hidden'); // Can't login until installed
-        return;
-      }
-
-      // Installed — check auth status based on method
-      if (authMethod === 'oauth' && window.aria.checkClaudeAuth) {
-        try {
-          const auth = await window.aria.checkClaudeAuth('oauth');
-          if (ccStatus) {
-            if (auth.loggedIn) {
-              ccStatus.textContent = auth.email
-                ? `✓ Signed in as ${auth.email}`
-                : '✓ Signed in';
-              ccStatus.classList.remove('hidden', 'error');
-              if (loginBtn) loginBtn.classList.add('hidden');
-            } else {
-              ccStatus.textContent = '✓ CLI installed — will sign in on first use';
-              ccStatus.classList.remove('hidden', 'error');
-              if (loginBtn) loginBtn.classList.remove('hidden');
-            }
-          }
-        } catch {
-          if (ccStatus) {
-            ccStatus.textContent = `✓ ${label} installed`;
-            ccStatus.classList.remove('hidden', 'error');
-          }
-        }
-      } else if (authMethod === 'bedrock' && window.aria.checkBedrockCredentials) {
-        try {
-          const bedrockStatus = await window.aria.checkBedrockCredentials();
-          const bedrockStatusEl = document.getElementById('aria-cc-bedrock-status');
-          if (bedrockStatus.found) {
-            if (ccStatus) {
-              ccStatus.textContent = `✓ ${label} installed · AWS credentials via ${bedrockStatus.source}`;
-              ccStatus.classList.remove('hidden', 'error');
-            }
-            if (bedrockStatusEl) {
-              bedrockStatusEl.textContent = `✓ ${bedrockStatus.source}`;
-              bedrockStatusEl.className = 'cc-bedrock-status success';
-            }
-          } else {
-            if (ccStatus) {
-              ccStatus.textContent = `✓ ${label} installed · No AWS credentials found`;
-              ccStatus.classList.remove('hidden');
-              ccStatus.classList.add('error');
-            }
-            if (bedrockStatusEl) {
-              bedrockStatusEl.textContent = 'No AWS credentials found — set env vars, ~/.aws/credentials, or run aws sso login';
-              bedrockStatusEl.className = 'cc-bedrock-status error';
-            }
-          }
-        } catch {
-          if (ccStatus) {
-            ccStatus.textContent = `✓ ${label} installed`;
-            ccStatus.classList.remove('hidden', 'error');
-          }
-        }
-      } else {
-        if (ccStatus) {
-          ccStatus.textContent = `✓ ${label} installed`;
-          ccStatus.classList.remove('hidden', 'error');
-        }
-      }
-    } catch {}
-  }
 
   // Claude Code install button — installs the right component for the selected auth method
   document.getElementById('aria-cc-install-btn')?.addEventListener('click', async () => {
