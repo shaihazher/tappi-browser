@@ -105,6 +105,26 @@ Everything Comet and Atlas can do - plus what they can't:
 
 ## Installation
 
+### Quick Install (Build from Source)
+
+One command to clone, build, and install Tappi with desktop integration:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shaihazher/tappi-browser/main/scripts/install.sh | bash
+```
+
+This auto-detects your OS (macOS / Linux / Windows via Git Bash), installs any missing dependencies (git, build tools, Node.js), builds from source, and creates app launchers so Tappi appears in your application menu, Spotlight, or Start Menu.
+
+**Custom install location:**
+
+```bash
+TAPPI_INSTALL_DIR=~/my-tappi curl -fsSL https://raw.githubusercontent.com/shaihazher/tappi-browser/main/scripts/install.sh | bash
+```
+
+Re-running the installer updates an existing installation in-place.
+
+---
+
 ### Pre-built Releases (Recommended)
 
 Download from [GitHub Releases](https://github.com/shaihazher/tappi-browser/releases):
