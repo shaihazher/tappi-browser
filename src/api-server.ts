@@ -753,10 +753,10 @@ async function handleRequest(
     }
 
     // F11: Only allow whitelisted fields
-    const allowedPatterns = ['llm.model', 'llm.provider', 'llm.claudeCodeMode', 'llm.claudeCodeAuth', 'features.', 'searchEngine'];
+    const allowedPatterns = ['llm.model', 'llm.provider', 'llm.claudeCodeMode', 'llm.claudeCodeAuth', 'llm.claudeCodeBedrockRegion', 'llm.claudeCodeBedrockProfile', 'llm.claudeCodeAgentTeams', 'features.', 'searchEngine'];
     const disallowed = flatKeys.filter(k => !allowedPatterns.some(p => k === p || k.startsWith(p)));
     if (disallowed.length > 0) {
-      return err(res, 400, `Disallowed config fields: ${disallowed.join(', ')}. Allowed: llm.model, llm.provider, llm.claudeCodeMode, llm.claudeCodeAuth, features.*, searchEngine`);
+      return err(res, 400, `Disallowed config fields: ${disallowed.join(', ')}. Allowed: llm.model, llm.provider, llm.claudeCodeMode, llm.claudeCodeAuth, llm.claudeCodeBedrock*, llm.claudeCodeAgentTeams, features.*, searchEngine`);
     }
 
     try {

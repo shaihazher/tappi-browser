@@ -1,12 +1,15 @@
 /**
  * claude-code-provider.ts — Claude Code integration for Tappi Browser.
  *
- * Uses the Claude Code CLI (`@anthropic-ai/claude-code`) for both auth methods:
+ * Uses the Claude Code CLI (`@anthropic-ai/claude-code`) for all auth methods:
  *
  *   - **OAuth** → CLI reads OAuth credentials from macOS Keychain / credential
  *     store (set up via `claude login`).
  *
  *   - **API Key** → CLI uses `ANTHROPIC_API_KEY` environment variable.
+ *
+ *   - **Bedrock** → CLI uses AWS credential chain via `CLAUDE_CODE_USE_BEDROCK=1`
+ *     + `AWS_REGION`. Supports env vars, ~/.aws/credentials, SSO, and ada.
  *
  * The CLI is installed to a dedicated Tappi-managed directory under
  * ~/.tappi-browser/claude-code-cli/ — never using or interfering with the
@@ -26,7 +29,7 @@ import { EventEmitter } from 'events';
 
 export type CCMode = 'plan' | 'full';
 
-export type CCAuthMethod = 'api-key' | 'oauth';
+export type CCAuthMethod = 'api-key' | 'oauth' | 'bedrock';
 
 export interface CCProviderConfig {
   authMethod: CCAuthMethod;
@@ -35,6 +38,11 @@ export interface CCProviderConfig {
   model?: string;            // e.g. 'claude-sonnet-4-6' — passed via --model flag
   tappiApiToken?: string;
   workingDir?: string;
+  // Bedrock-specific fields
+  awsRegion?: string;        // Required for bedrock (CLI doesn't read .aws/config for region)
+  awsProfile?: string;       // Optional: AWS_PROFILE to select a non-default credential profile
+  // Agent teams
+  agentTeams?: boolean;      // Enable experimental agent teams (CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS)
 }
 
 export interface CCChunkEvent {
@@ -147,9 +155,21 @@ export async function installClaudeCode(
  * Runs `claude auth status` and checks the exit code.
  * Exit code 0 = logged in, 1 = not logged in.
  */
-export async function checkClaudeAuthStatus(): Promise<{ loggedIn: boolean; email?: string }> {
+export async function checkClaudeAuthStatus(
+  authMethod?: CCAuthMethod,
+): Promise<{ loggedIn: boolean; email?: string }> {
   if (!(await isCliInstalled())) {
     return { loggedIn: false };
+  }
+
+  // For Bedrock, check AWS credentials instead of Claude Code OAuth
+  if (authMethod === 'bedrock') {
+    const { checkBedrock } = await import('./credential-checker');
+    const status = checkBedrock();
+    return {
+      loggedIn: status.found,
+      email: status.found ? `AWS (${status.source})` : undefined,
+    };
   }
 
   return new Promise((resolve) => {
@@ -596,6 +616,27 @@ export class ClaudeCodeProvider extends EventEmitter {
     // Set API key for api-key auth — CLI uses it instead of OAuth credentials
     if (this.config.authMethod === 'api-key' && this.config.apiKey) {
       env.ANTHROPIC_API_KEY = this.config.apiKey;
+    }
+
+    // Set Bedrock env vars — enables Bedrock mode in the CLI
+    if (this.config.authMethod === 'bedrock') {
+      env.CLAUDE_CODE_USE_BEDROCK = '1';
+      // AWS_REGION is required — CLI doesn't read .aws/config for region
+      env.AWS_REGION = this.config.awsRegion
+        || process.env.AWS_REGION
+        || process.env.AWS_DEFAULT_REGION
+        || 'us-east-1';
+      // Forward AWS_PROFILE if configured (for SSO / named profiles / ada)
+      if (this.config.awsProfile) {
+        env.AWS_PROFILE = this.config.awsProfile;
+      }
+      // AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
+      // ~/.aws/credentials, SSO tokens) are inherited from process.env via the spread above.
+    }
+
+    // Enable experimental agent teams if configured
+    if (this.config.agentTeams) {
+      env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
     }
 
     return new Promise<void>((resolve) => {

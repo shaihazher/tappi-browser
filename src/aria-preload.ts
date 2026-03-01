@@ -105,12 +105,14 @@ contextBridge.exposeInMainWorld('aria', {
     ipcRenderer.invoke('aria:enhance-prompt', prompt, webSearch, mode, conversationId),
 
   // ─── Claude Code Provider ───
-  checkClaudeCodeInstalled: (authMethod?: 'api-key' | 'oauth') =>
+  checkClaudeCodeInstalled: (authMethod?: 'api-key' | 'oauth' | 'bedrock') =>
     ipcRenderer.invoke('claude-code:check-installed', authMethod),
-  installClaudeCode: (authMethod?: 'api-key' | 'oauth') =>
+  installClaudeCode: (authMethod?: 'api-key' | 'oauth' | 'bedrock') =>
     ipcRenderer.invoke('claude-code:install', authMethod),
-  checkClaudeAuth: () =>
-    ipcRenderer.invoke('claude-code:check-auth'),
+  checkClaudeAuth: (authMethod?: string) =>
+    ipcRenderer.invoke('claude-code:check-auth', authMethod),
+  checkBedrockCredentials: () =>
+    ipcRenderer.invoke('claude-code:check-bedrock'),
   loginClaudeCode: () =>
     ipcRenderer.invoke('claude-code:login'),
   onClaudeCodeOAuthStatus: (cb: (data: { phase: string; message: string }) => void) => {

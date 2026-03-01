@@ -133,12 +133,27 @@
           <select id="aria-cc-auth-select">
             <option value="oauth" selected>Claude Login (OAuth) — uses claude CLI</option>
             <option value="api-key">API Key — uses ANTHROPIC_API_KEY</option>
+            <option value="bedrock">AWS Bedrock — uses AWS credential chain</option>
           </select>
+          <!-- Bedrock settings (visible when auth=bedrock) -->
+          <div id="aria-cc-bedrock-wrap" class="cc-bedrock-settings hidden">
+            <label class="cc-bedrock-label">AWS Region</label>
+            <input id="aria-cc-bedrock-region" type="text" placeholder="us-east-1" class="cc-input-small">
+            <label class="cc-bedrock-label">AWS Profile <span class="optional-label">(optional)</span></label>
+            <input id="aria-cc-bedrock-profile" type="text" placeholder="default" class="cc-input-small">
+            <div id="aria-cc-bedrock-status" class="cc-bedrock-status"></div>
+          </div>
           <div class="cc-mode-header" style="margin-top:8px">Permission Mode</div>
           <select id="aria-cc-mode-select">
             <option value="plan">Plan (review before executing)</option>
             <option value="full" selected>Full Permission (default)</option>
           </select>
+          <div class="cc-agent-teams-wrap" style="margin-top:8px">
+            <label class="cc-agent-teams-label">
+              <input type="checkbox" id="aria-cc-agent-teams">
+              Enable Agent Teams <span class="optional-label">(experimental)</span>
+            </label>
+          </div>
           <button id="aria-cc-install-btn" class="small-btn hidden">Install Now</button>
           <button id="aria-cc-login-btn" class="small-btn hidden">Sign In</button>
           <div id="aria-cc-status" class="cc-status hidden"></div>

@@ -2990,6 +2990,59 @@ body.coding-mode .team-redirect-send {
 .cc-status.hidden { display: none; }
 .cc-status.error { color: var(--accent-error, #e53e3e); }
 
+/* Bedrock settings within Claude Code panel */
+.cc-bedrock-settings {
+  margin-top: 6px;
+  padding: 4px 0;
+}
+.cc-bedrock-settings.hidden { display: none; }
+.cc-bedrock-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+  margin-top: 6px;
+}
+.cc-bedrock-label .optional-label,
+.cc-agent-teams-label .optional-label {
+  font-style: italic;
+  opacity: 0.6;
+}
+.cc-input-small {
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  box-sizing: border-box;
+}
+.cc-bedrock-status {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.cc-bedrock-status.success { color: var(--accent-success, #38a169); }
+.cc-bedrock-status.error { color: var(--accent-error, #e53e3e); }
+
+/* Agent Teams toggle */
+.cc-agent-teams-wrap {
+  padding: 2px 0;
+}
+.cc-agent-teams-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.cc-agent-teams-label input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+
 /* Custom Model Modal */
 .custom-model-modal {
   position: absolute;

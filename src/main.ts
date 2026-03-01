@@ -123,7 +123,10 @@ interface TappiConfig {
     subtaskTimeoutMs?: number;    // per subtask timeout (default: 300000 = 5 min)
     // Claude Code provider fields
     claudeCodeMode?: 'plan' | 'ask' | 'full';  // CC permission mode (default: ask)
-    claudeCodeAuth?: 'api-key' | 'oauth';       // CC auth method (default: oauth — uses CC's built-in login)
+    claudeCodeAuth?: 'api-key' | 'oauth' | 'bedrock'; // CC auth method (default: oauth — uses CC's built-in login)
+    claudeCodeBedrockRegion?: string;   // AWS region for Claude Code Bedrock mode
+    claudeCodeBedrockProfile?: string;  // AWS profile name for Claude Code Bedrock mode
+    claudeCodeAgentTeams?: boolean;     // Enable experimental agent teams
   };
   searchEngine: string;
   features: {
@@ -1032,9 +1035,10 @@ function createWindow() {
 
   ipcMain.on('aria:send', async (_e, message: string, conversationId?: string, codingMode?: boolean) => {
     const apiKey = decryptApiKey(currentConfig.llm.apiKey);
-    // Claude Code with OAuth doesn't need an API key — it handles its own auth
-    const isClaudeCodeOAuth = currentConfig.llm.provider === 'claude-code' && (currentConfig.llm as any).claudeCodeAuth !== 'api-key';
-    if (!apiKey && !isClaudeCodeOAuth) {
+    // Claude Code with OAuth/Bedrock doesn't need an API key — it handles its own auth
+    const ccAuth = (currentConfig.llm as any).claudeCodeAuth;
+    const isClaudeCodeNoKey = currentConfig.llm.provider === 'claude-code' && (ccAuth === 'oauth' || ccAuth === 'bedrock');
+    if (!apiKey && !isClaudeCodeNoKey) {
       try {
         const ariaWC = tabManager?.ariaWebContents;
         if (ariaWC) ariaWC.send('agent:stream-chunk', { text: '⚙️ No API key configured. Add one in Settings.', done: true });
@@ -1104,7 +1108,7 @@ function createWindow() {
       const { ensureApiToken } = await import('./api-server');
 
       const ccMode = (currentConfig.llm as any).claudeCodeMode || 'full';
-      const ccAuth: 'api-key' | 'oauth' = (currentConfig.llm as any).claudeCodeAuth || 'oauth';
+      const ccAuth: 'api-key' | 'oauth' | 'bedrock' = (currentConfig.llm as any).claudeCodeAuth || 'oauth';
       const ariaWC = tabManager?.ariaWebContents;
 
       // Auto-install if not present
@@ -1140,6 +1144,16 @@ function createWindow() {
         }
       }
 
+      // Auto-check for Bedrock credentials
+      if (ccAuth === 'bedrock') {
+        const { checkBedrock } = await import('./credential-checker');
+        const bedrockStatus = checkBedrock();
+        if (!bedrockStatus.found) {
+          try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', { text: '❌ No AWS credentials found. Configure AWS credentials (env vars, ~/.aws/credentials, or SSO) to use Bedrock.', done: true }); } catch {}
+          return;
+        }
+      }
+
       const apiToken = ensureApiToken();
 
       // Reuse or create provider (preserves session for multi-turn)
@@ -1153,6 +1167,9 @@ function createWindow() {
           model: ccModel,
           tappiApiToken: apiToken,
           workingDir: (currentConfig as any).workspacePath || require('os').homedir(),
+          awsRegion: (currentConfig.llm as any).claudeCodeBedrockRegion,
+          awsProfile: (currentConfig.llm as any).claudeCodeBedrockProfile,
+          agentTeams: !!(currentConfig.llm as any).claudeCodeAgentTeams,
         });
       } else {
         // Update mode/auth/model in case they changed
@@ -1163,6 +1180,9 @@ function createWindow() {
           mode: ccMode,
           model: ccModel,
           tappiApiToken: apiToken,
+          awsRegion: (currentConfig.llm as any).claudeCodeBedrockRegion,
+          awsProfile: (currentConfig.llm as any).claudeCodeBedrockProfile,
+          agentTeams: !!(currentConfig.llm as any).claudeCodeAgentTeams,
         };
       }
 
@@ -1408,12 +1428,12 @@ function createWindow() {
 
   // ─── Claude Code Provider IPC ────────────────────────────────────────────────
 
-  ipcMain.handle('claude-code:check-installed', async (_e, authMethod?: 'api-key' | 'oauth') => {
+  ipcMain.handle('claude-code:check-installed', async (_e, authMethod?: 'api-key' | 'oauth' | 'bedrock') => {
     const { isClaudeCodeInstalled } = await import('./claude-code-provider');
     return isClaudeCodeInstalled(authMethod || 'oauth');
   });
 
-  ipcMain.handle('claude-code:install', async (_e, authMethod?: 'api-key' | 'oauth') => {
+  ipcMain.handle('claude-code:install', async (_e, authMethod?: 'api-key' | 'oauth' | 'bedrock') => {
     const { installClaudeCode } = await import('./claude-code-provider');
     try {
       await installClaudeCode(authMethod || 'oauth', (msg) => console.log('[claude-code] install:', msg));
@@ -1424,9 +1444,14 @@ function createWindow() {
     }
   });
 
-  ipcMain.handle('claude-code:check-auth', async () => {
+  ipcMain.handle('claude-code:check-auth', async (_e, authMethod?: string) => {
     const { checkClaudeAuthStatus } = await import('./claude-code-provider');
-    return checkClaudeAuthStatus();
+    return checkClaudeAuthStatus(authMethod as any);
+  });
+
+  ipcMain.handle('claude-code:check-bedrock', async () => {
+    const { checkBedrock } = await import('./credential-checker');
+    return checkBedrock();
   });
 
   // ─── Claude Code OAuth Login Flow ──────────────────────────────────────────
@@ -2149,6 +2174,9 @@ Rules:
       if ((updates.llm as any).worktreeIsolation !== undefined) currentConfig.llm.worktreeIsolation = (updates.llm as any).worktreeIsolation;
       if ((updates.llm as any).claudeCodeMode !== undefined) (currentConfig.llm as any).claudeCodeMode = (updates.llm as any).claudeCodeMode;
       if ((updates.llm as any).claudeCodeAuth !== undefined) (currentConfig.llm as any).claudeCodeAuth = (updates.llm as any).claudeCodeAuth;
+      if ((updates.llm as any).claudeCodeBedrockRegion !== undefined) (currentConfig.llm as any).claudeCodeBedrockRegion = (updates.llm as any).claudeCodeBedrockRegion;
+      if ((updates.llm as any).claudeCodeBedrockProfile !== undefined) (currentConfig.llm as any).claudeCodeBedrockProfile = (updates.llm as any).claudeCodeBedrockProfile;
+      if ((updates.llm as any).claudeCodeAgentTeams !== undefined) (currentConfig.llm as any).claudeCodeAgentTeams = (updates.llm as any).claudeCodeAgentTeams;
       // Phase 10: Secondary model routing re-enabled — no longer force-clearing.
     }
     if ((updates as any).rawApiKey !== undefined) {

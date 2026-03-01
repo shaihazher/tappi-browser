@@ -100,6 +100,9 @@ let currentModelConfig = {
   secondaryProvider: '',
   claudeCodeMode: 'full',
   claudeCodeAuth: 'oauth',
+  claudeCodeBedrockRegion: '',
+  claudeCodeBedrockProfile: '',
+  claudeCodeAgentTeams: false,
 };
 let availableModels = [];
 let modelDropdownOpen = false;
@@ -208,6 +211,9 @@ async function loadModelConfig() {
       currentModelConfig.secondaryProvider = config.llm.secondaryProvider || '';
       currentModelConfig.claudeCodeMode = config.llm.claudeCodeMode || 'full';
       currentModelConfig.claudeCodeAuth = config.llm.claudeCodeAuth || 'oauth';
+      currentModelConfig.claudeCodeBedrockRegion = config.llm.claudeCodeBedrockRegion || '';
+      currentModelConfig.claudeCodeBedrockProfile = config.llm.claudeCodeBedrockProfile || '';
+      currentModelConfig.claudeCodeAgentTeams = !!config.llm.claudeCodeAgentTeams;
     }
     updateModelButton();
     updateThinkingButton();
@@ -345,6 +351,9 @@ async function saveModelConfig(options = {}) {
     // Always include Claude Code settings so they persist
     llmUpdate.claudeCodeMode = currentModelConfig.claudeCodeMode || 'full';
     llmUpdate.claudeCodeAuth = currentModelConfig.claudeCodeAuth || 'oauth';
+    llmUpdate.claudeCodeBedrockRegion = currentModelConfig.claudeCodeBedrockRegion || '';
+    llmUpdate.claudeCodeBedrockProfile = currentModelConfig.claudeCodeBedrockProfile || '';
+    llmUpdate.claudeCodeAgentTeams = !!currentModelConfig.claudeCodeAgentTeams;
 
     await window.aria.saveConfig({ llm: llmUpdate });
   } catch (e) {
@@ -410,6 +419,12 @@ async function openModelDropdown() {
   if (ccModeSelect) ccModeSelect.value = currentModelConfig.claudeCodeMode || 'full';
   const ccAuthSelect = document.getElementById('aria-cc-auth-select');
   if (ccAuthSelect) ccAuthSelect.value = currentModelConfig.claudeCodeAuth || 'oauth';
+  const bedrockRegionInput = document.getElementById('aria-cc-bedrock-region');
+  if (bedrockRegionInput) bedrockRegionInput.value = currentModelConfig.claudeCodeBedrockRegion || '';
+  const bedrockProfileInput = document.getElementById('aria-cc-bedrock-profile');
+  if (bedrockProfileInput) bedrockProfileInput.value = currentModelConfig.claudeCodeBedrockProfile || '';
+  const agentTeamsCheckbox = document.getElementById('aria-cc-agent-teams');
+  if (agentTeamsCheckbox) agentTeamsCheckbox.checked = !!currentModelConfig.claudeCodeAgentTeams;
 
   // Fetch and render models FIRST — before applying cc-active CSS constraints
   // so the model list DOM is populated before layout is constrained
@@ -492,11 +507,15 @@ function bindModelPickerEvents() {
     const installBtn = document.getElementById('aria-cc-install-btn');
     const loginBtn = document.getElementById('aria-cc-login-btn');
     const ccStatus = document.getElementById('aria-cc-status');
+    const bedrockWrap = document.getElementById('aria-cc-bedrock-wrap');
     const authMethod = authSelect?.value || 'oauth';
     const label = 'Claude Code CLI';
 
-    // Hide login button for API key auth (no OAuth needed)
+    // Hide login button for non-OAuth auth (no OAuth needed for API key or Bedrock)
     if (loginBtn) loginBtn.classList.toggle('hidden', authMethod !== 'oauth');
+
+    // Show/hide Bedrock settings panel
+    if (bedrockWrap) bedrockWrap.classList.toggle('hidden', authMethod !== 'bedrock');
 
     if (!window.aria.checkClaudeCodeInstalled) return;
 
@@ -514,10 +533,10 @@ function bindModelPickerEvents() {
         return;
       }
 
-      // Installed — check auth status for OAuth
+      // Installed — check auth status based on method
       if (authMethod === 'oauth' && window.aria.checkClaudeAuth) {
         try {
-          const auth = await window.aria.checkClaudeAuth();
+          const auth = await window.aria.checkClaudeAuth('oauth');
           if (ccStatus) {
             if (auth.loggedIn) {
               ccStatus.textContent = auth.email
@@ -529,6 +548,36 @@ function bindModelPickerEvents() {
               ccStatus.textContent = '✓ CLI installed — will sign in on first use';
               ccStatus.classList.remove('hidden', 'error');
               if (loginBtn) loginBtn.classList.remove('hidden');
+            }
+          }
+        } catch {
+          if (ccStatus) {
+            ccStatus.textContent = `✓ ${label} installed`;
+            ccStatus.classList.remove('hidden', 'error');
+          }
+        }
+      } else if (authMethod === 'bedrock' && window.aria.checkBedrockCredentials) {
+        try {
+          const bedrockStatus = await window.aria.checkBedrockCredentials();
+          const bedrockStatusEl = document.getElementById('aria-cc-bedrock-status');
+          if (bedrockStatus.found) {
+            if (ccStatus) {
+              ccStatus.textContent = `✓ ${label} installed · AWS credentials via ${bedrockStatus.source}`;
+              ccStatus.classList.remove('hidden', 'error');
+            }
+            if (bedrockStatusEl) {
+              bedrockStatusEl.textContent = `✓ ${bedrockStatus.source}`;
+              bedrockStatusEl.className = 'cc-bedrock-status success';
+            }
+          } else {
+            if (ccStatus) {
+              ccStatus.textContent = `✓ ${label} installed · No AWS credentials found`;
+              ccStatus.classList.remove('hidden');
+              ccStatus.classList.add('error');
+            }
+            if (bedrockStatusEl) {
+              bedrockStatusEl.textContent = 'No AWS credentials found — set env vars, ~/.aws/credentials, or run aws sso login';
+              bedrockStatusEl.className = 'cc-bedrock-status error';
             }
           }
         } catch {
@@ -623,6 +672,24 @@ function bindModelPickerEvents() {
     currentModelConfig.claudeCodeAuth = auth;
     saveModelConfig({ includeProvider: true });
     updateClaudeCodeStatus();
+  });
+
+  // Bedrock region input change
+  document.getElementById('aria-cc-bedrock-region')?.addEventListener('change', (e) => {
+    currentModelConfig.claudeCodeBedrockRegion = e.target.value.trim();
+    saveModelConfig({ includeProvider: true });
+  });
+
+  // Bedrock profile input change
+  document.getElementById('aria-cc-bedrock-profile')?.addEventListener('change', (e) => {
+    currentModelConfig.claudeCodeBedrockProfile = e.target.value.trim();
+    saveModelConfig({ includeProvider: true });
+  });
+
+  // Agent teams toggle
+  document.getElementById('aria-cc-agent-teams')?.addEventListener('change', (e) => {
+    currentModelConfig.claudeCodeAgentTeams = e.target.checked;
+    saveModelConfig({ includeProvider: true });
   });
 
   // Model search
