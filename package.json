@@ -12,6 +12,7 @@
     "tappi": "dist/cli.js"
   },
   "scripts": {
+    "postinstall": "electron-rebuild",
     "build": "tsc && cp -r src/ui dist/ && cp src/content-preload.js dist/ && chmod +x dist/cli.js",
     "test:parity": "npm run build && node scripts/parity-regression.js",
     "start": "npm run build && electron dist/main.js",

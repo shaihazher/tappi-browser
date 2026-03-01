@@ -148,7 +148,7 @@ xcode-select --install
 git clone https://github.com/shaihazher/tappi-browser.git
 cd tappi-browser
 npm install
-npm run build
+npx electron-rebuild
 
 # Run
 npm start
@@ -165,7 +165,7 @@ npm start
 git clone https://github.com/shaihazher/tappi-browser.git
 cd tappi-browser
 npm install
-npm run build
+npx electron-rebuild
 
 # Run
 npm start
@@ -182,7 +182,7 @@ sudo apt install -y build-essential python3
 git clone https://github.com/shaihazher/tappi-browser.git
 cd tappi-browser
 npm install
-npm run build
+npx electron-rebuild
 
 # Run
 npm start
@@ -198,7 +198,7 @@ sudo dnf install -y gcc-c++ make python3
 git clone https://github.com/shaihazher/tappi-browser.git
 cd tappi-browser
 npm install
-npm run build
+npx electron-rebuild
 
 # Run
 npm start
