@@ -125,31 +125,6 @@ Re-running the installer updates an existing installation in-place.
 
 ---
 
-### Pre-built Releases (Recommended)
-
-Download from [GitHub Releases](https://github.com/shaihazher/tappi-browser/releases):
-
-| Platform | File | Notes |
-|----------|------|-------|
-| **macOS** (Apple Silicon) | `Tappi-0.1.0-arm64.dmg` | See Gatekeeper note below |
-| **Windows** (x64) | `Tappi.Setup.0.1.0.exe` | Standard installer |
-| **Linux** (x64) | `tappi-0.1.0.x86_64.rpm` | Fedora/Nobara/RHEL |
-| **Linux** (x64) | `tappi_0.1.0_amd64.deb` | Debian/Ubuntu |
-| **Linux** (x64) | `Tappi-0.1.0.AppImage` | Universal, no install |
-
-#### macOS Gatekeeper Note
-
-The app is not code-signed with an Apple Developer certificate. On first launch, macOS may show "app is damaged":
-
-```bash
-# Fix: Remove quarantine attribute
-xattr -cr /Applications/Tappi.app
-```
-
-Then launch normally.
-
----
-
 ### Build from Source
 
 #### Prerequisites
