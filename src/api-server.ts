@@ -374,7 +374,8 @@ async function handleRequest(
     if (method === 'GET' && m) {
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
-      const result = await pageTools.pageText(wc, undefined, query.grep || undefined);
+      const offset = query.offset ? parseInt(query.offset as string, 10) : undefined;
+      const result = await pageTools.pageText(wc, query.selector as string || undefined, query.grep as string || undefined, offset);
       return json(res, 200, { result });
     }
   }
@@ -387,6 +388,20 @@ async function handleRequest(
       if (!wc) return err(res, 404, 'Tab not found');
       const result = await pageTools.pageScreenshot(wc, undefined);
       return json(res, 200, { result });
+    }
+  }
+
+  // ── GET /api/tabs/:id/screenshot/raw — returns actual PNG binary ────────────
+  {
+    const m = matchRoute('/api/tabs/:id/screenshot/raw', urlPath);
+    if (method === 'GET' && m) {
+      const wc = tabManager.getWebContentsForTab(m.id);
+      if (!wc) return err(res, 404, 'Tab not found');
+      const image = await wc.capturePage();
+      const png = image.toPNG();
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length });
+      res.end(png);
+      return;
     }
   }
 

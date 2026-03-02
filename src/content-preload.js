@@ -495,8 +495,8 @@ function extractText(selector, grep, offset) {
   }
 
   // Default: return page text with offset-based pagination.
-  // No selector = general page text, keep compact for context.
-  const maxLen = selector ? 4000 : 1500;
+  // Generous limits reduce round-trips for content-heavy pages (Gmail, news articles, etc.)
+  const maxLen = selector ? 8000 : 4000;
   const fullText = allLines.join('\n');
   const start = offset || 0;
   if (start > 0 && start >= fullText.length) return '(end of page content)';

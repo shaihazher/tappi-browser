@@ -268,13 +268,13 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     screenshot: tool({
-      description: `Capture a screenshot for visual review. ESSENTIAL FOR CANVAS APPS: Take a screenshot to see canvas content (Sheets cells, Figma design, Maps), then use click_xy/double_click_xy on what you see. For DOM elements, prefer elements() (indexed refs in ~200 tokens vs ~1K tokens for vision). Example: screenshot({ filePath: "~/Desktop/page.png" }).`,
+      description: `Capture a screenshot for visual review. Returns a FILE PATH string (e.g. "/tmp/tappi-screenshot-123.png") — NOT raw image data. To view the image, use the Read tool on the returned path. ESSENTIAL FOR CANVAS APPS: Take a screenshot to see canvas content (Sheets cells, Figma design, Maps), then use click_xy/double_click_xy on what you see. For DOM elements, prefer elements() (indexed refs in ~200 tokens vs ~1K tokens for vision). For Claude Code CLI: use GET /api/tabs/<ID>/screenshot/raw to download raw PNG binary directly via curl -o. Example: screenshot({ filePath: "~/Desktop/page.png" }).`,
       inputSchema: z.object({
         filePath: z.string().optional().describe('File path to save PNG (default: temp dir)'),
       }),
       execute: async ({ filePath }: { filePath?: string }) => {
         const result = await pageTools.pageScreenshot(getWC(), filePath);
-        return result + '\n\n💡 For finding/clicking elements, elements() returns indexed refs in ~200 tokens. Screenshots need vision (~1K tokens). Best for: visual layout verification, canvas apps, or when the user asks to see the page.';
+        return result + '\n\n💡 This is a FILE PATH — use Read tool on this path to view the image. For finding/clicking elements, elements() returns indexed refs in ~200 tokens. Screenshots need vision (~1K tokens). Best for: visual layout verification, canvas apps, or when the user asks to see the page.';
       },
     }),
 

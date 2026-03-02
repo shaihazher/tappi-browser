@@ -430,32 +430,94 @@ You are running as a Claude Code CLI process spawned by Tappi Browser (an Electr
 Base URL: http://localhost:18901
 Auth: All requests require header \`Authorization: Bearer $TAPPI_API_TOKEN\` (the token is in your TAPPI_API_TOKEN environment variable).
 
-### Quick Reference
+**Tab IDs:** Tab 1 is the Aria chat tab — do NOT navigate it. Always create a new tab or find an existing one via \`GET /api/tabs\` first.
 
-**Navigate & Read Pages:**
+### Tab Management
 \`\`\`bash
-# Navigate to URL
-curl -s -X POST http://localhost:18901/api/tabs/1/navigate -H "Authorization: Bearer $TAPPI_API_TOKEN" -H "Content-Type: application/json" -d '{"url":"https://example.com"}'
+# List all tabs (find the right tab ID first!)
+curl -s http://localhost:18901/api/tabs -H "Authorization: Bearer $TAPPI_API_TOKEN"
 
-# List interactive elements
-curl -s http://localhost:18901/api/tabs/1/elements -H "Authorization: Bearer $TAPPI_API_TOKEN"
+# Create a new tab (preferred — don't navigate the Aria tab)
+curl -s -X POST http://localhost:18901/api/tabs -H "Authorization: Bearer $TAPPI_API_TOKEN" -H "Content-Type: application/json" -d '{"url":"https://example.com"}'
 
-# Read page text
-curl -s http://localhost:18901/api/tabs/1/text -H "Authorization: Bearer $TAPPI_API_TOKEN"
+# Activate a tab (switch to it)
+curl -s -X POST http://localhost:18901/api/tabs/<ID>/activate -H "Authorization: Bearer $TAPPI_API_TOKEN"
 
-# Click element by index
-curl -s -X POST http://localhost:18901/api/tabs/1/click -H "Authorization: Bearer $TAPPI_API_TOKEN" -H "Content-Type: application/json" -d '{"index":5}'
+# Close a tab
+curl -s -X DELETE http://localhost:18901/api/tabs/<ID> -H "Authorization: Bearer $TAPPI_API_TOKEN"
 
-# Type into element
-curl -s -X POST http://localhost:18901/api/tabs/1/type -H "Authorization: Bearer $TAPPI_API_TOKEN" -H "Content-Type: application/json" -d '{"index":3,"text":"hello"}'
+# Navigate an existing tab
+curl -s -X POST http://localhost:18901/api/tabs/<ID>/navigate -H "Authorization: Bearer $TAPPI_API_TOKEN" -H "Content-Type: application/json" -d '{"url":"https://example.com"}'
 \`\`\`
 
-**Execute Any Tool (generic endpoint):**
+### Page Reading
+\`\`\`bash
+# Read page text (returns ~4KB chunk)
+curl -s http://localhost:18901/api/tabs/<ID>/text -H "Authorization: Bearer $TAPPI_API_TOKEN"
+
+# Paginate: continue reading from offset
+curl -s "http://localhost:18901/api/tabs/<ID>/text?offset=4000" -H "Authorization: Bearer $TAPPI_API_TOKEN"
+
+# Search for text on page
+curl -s "http://localhost:18901/api/tabs/<ID>/text?grep=keyword" -H "Authorization: Bearer $TAPPI_API_TOKEN"
+
+# Scoped extraction via CSS selector (returns ~8KB)
+curl -s "http://localhost:18901/api/tabs/<ID>/text?selector=%5Brole%3Dmain%5D" -H "Authorization: Bearer $TAPPI_API_TOKEN"
+
+# List interactive elements
+curl -s http://localhost:18901/api/tabs/<ID>/elements -H "Authorization: Bearer $TAPPI_API_TOKEN"
+
+# Filter elements by keyword
+curl -s "http://localhost:18901/api/tabs/<ID>/elements?grep=compose" -H "Authorization: Bearer $TAPPI_API_TOKEN"
+\`\`\`
+
+### Page Interaction
+\`\`\`bash
+# Click element by index (from elements output)
+curl -s -X POST http://localhost:18901/api/tabs/<ID>/click -H "Authorization: Bearer $TAPPI_API_TOKEN" -H "Content-Type: application/json" -d '{"index":5}'
+
+# Type into element
+curl -s -X POST http://localhost:18901/api/tabs/<ID>/type -H "Authorization: Bearer $TAPPI_API_TOKEN" -H "Content-Type: application/json" -d '{"index":3,"text":"hello"}'
+
+# Scroll page
+curl -s -X POST http://localhost:18901/api/tabs/<ID>/scroll -H "Authorization: Bearer $TAPPI_API_TOKEN" -H "Content-Type: application/json" -d '{"direction":"down"}'
+
+# Send keyboard keys
+curl -s -X POST http://localhost:18901/api/tabs/<ID>/keys -H "Authorization: Bearer $TAPPI_API_TOKEN" -H "Content-Type: application/json" -d '{"keys":"Enter"}'
+
+# Execute JavaScript in page
+curl -s -X POST http://localhost:18901/api/tabs/<ID>/eval -H "Authorization: Bearer $TAPPI_API_TOKEN" -H "Content-Type: application/json" -d '{"js":"document.title"}'
+\`\`\`
+
+### Screenshots (vision-capable)
+\`\`\`bash
+# Download raw PNG — saves actual image file that Read tool can process
+curl -s http://localhost:18901/api/tabs/<ID>/screenshot/raw -H "Authorization: Bearer $TAPPI_API_TOKEN" -o /tmp/screenshot.png
+# Then view it: Read /tmp/screenshot.png  ← Claude Code's Read tool handles PNG images natively
+\`\`\`
+⚠️ The \`/api/tabs/<ID>/screenshot\` endpoint (without /raw) returns JSON with a file path, NOT the image itself. Always use \`/screenshot/raw\` with \`curl -o\` for direct PNG download.
+
+### Execute Any Tool (generic endpoint)
 \`\`\`bash
 curl -s -X POST http://localhost:18901/api/tools/<toolName> -H "Authorization: Bearer $TAPPI_API_TOKEN" -H "Content-Type: application/json" -d '{ ...params }'
 \`\`\`
 
 ### Key Tools Available via /api/tools/:toolName
+
+**Page Tools (via generic endpoint or REST endpoints above):**
+- \`navigate\` — \`{ "url": "https://..." }\`
+- \`search\` — \`{ "query": "..." }\` (web search)
+- \`elements\` — \`{}\` or \`{ "grep": "keyword" }\` — lists clickable elements with [index]
+- \`click\` — \`{ "index": N }\` — click element by index from elements()
+- \`type\` — \`{ "index": N, "text": "..." }\` — type into input field
+- \`paste\` — \`{ "index": N, "text": "..." }\` — paste text (better for long content)
+- \`text\` — \`{}\` or \`{ "selector": ".class", "grep": "keyword", "offset": 4000 }\` — read page text
+- \`links\` — \`{}\` or \`{ "grep": "keyword" }\` — extract all links with full hrefs
+- \`screenshot\` — \`{}\` — returns file path string (use Read on it to view)
+- \`scroll\` — \`{ "direction": "down|up|top|bottom" }\`
+- \`keys\` — \`{ "keys": "Enter" }\` or \`{ "keys": ["Ctrl", "a"] }\`
+- \`eval_js\` — \`{ "js": "document.querySelector('.msg').innerText" }\` — run JS in page
+- \`tab\` — \`{ "action": "list|switch|close|mute|pin|duplicate", "index": N }\` — tab management via tool
 
 **User Profile (persist preferences across sessions):**
 - \`update_user_profile\` — \`{ "action": "read" }\` to read, \`{ "action": "append", "text": "- Prefers dark mode" }\` to add, \`{ "action": "update", "text": "full new profile" }\` to rewrite
@@ -466,10 +528,10 @@ curl -s -X POST http://localhost:18901/api/tools/<toolName> -H "Authorization: B
 - \`cron_update\` — \`{ "id": "...", "enabled": false }\` to pause, \`{ "id": "...", "task": "new prompt" }\` to change
 - \`cron_delete\` — \`{ "id": "..." }\`
 
-**Browser:**
-- \`navigate\`, \`search\`, \`elements\`, \`click\`, \`type\`, \`paste\`, \`text\`, \`links\`, \`screenshot\`, \`keys\`, \`eval_js\`
-- \`switch_tab\`, \`new_tab\`, \`close_tab\`
-- \`dark_mode\`, \`zoom\`, \`find\`
+**Browser Settings:**
+- \`dark_mode\` — toggle dark mode
+- \`zoom\` — zoom in/out/reset
+- \`find\` — find text on page
 
 **Site Identity (multi-account):**
 - \`site_identity\` — \`{ "action": "list", "domain": "github.com" }\` to see identities, \`{ "action": "open", "domain": "twitter.com", "username": "work" }\` to open isolated tab, \`{ "action": "register", "domain": "...", "username": "..." }\` to track new identity
@@ -485,8 +547,23 @@ curl -s -X POST http://localhost:18901/api/tools/<toolName> -H "Authorization: B
 
 **Agent status:**
 - GET \`/api/status\` — running status, tab count, model info
-- GET \`/api/tabs\` — list open tabs
+- GET \`/api/tabs\` — list open tabs with IDs, titles, URLs
 - GET \`/api/tools\` — list all available tools with descriptions
+
+### Working with Dynamic Web Apps (Gmail, Sheets, etc.)
+
+These apps render content with JavaScript. Key techniques:
+1. **Wait after navigation/clicks:** \`sleep 2\` before reading content — SPAs need time to render
+2. **Use eval_js for targeted extraction:** \`eval_js\` — \`{"js": "document.querySelector('[role=main]')?.innerText?.slice(0,4000)"}\`
+3. **Use selector param for text:** \`text\` — \`{"selector": "[role=main]"}\` scopes extraction to main content area
+4. **Paginate long content:** \`text\` — \`{"offset": 4000}\` then follow "remaining" hints in the response
+5. **Re-call elements() after clicks** — the DOM changes after navigation, old indexes are stale
+
+### Common Patterns
+- **Read an email in Gmail:** Click to open → wait 2s → \`eval_js({"js":"document.querySelector('[role=main] [data-message-id]')?.innerText?.slice(0,6000)"})\` or \`text({"selector":"[role=main]"})\`
+- **Create a new tab:** \`POST /api/tabs\` with \`{"url":"https://example.com"}\` — returns tab object with id
+- **Work in a specific tab:** Use the tab ID from \`GET /api/tabs\` in REST endpoints like \`/api/tabs/<ID>/text\`
+- **Take and view a screenshot:** \`curl -o /tmp/shot.png .../api/tabs/<ID>/screenshot/raw\` then \`Read /tmp/shot.png\`
 
 ## Problem-Solving Directive
 For EVERY request:
