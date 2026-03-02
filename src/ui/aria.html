@@ -72,8 +72,14 @@
     </div>
 
     <!-- Input area -->
-    <div id="aria-input-area">
-      <textarea id="aria-input" placeholder="Ask Aria anything…" rows="1" spellcheck="true" autocomplete="off"></textarea>
+    <div id="aria-input-wrapper">
+      <!-- Attachment preview strip (hidden when empty) -->
+      <div id="aria-attach-preview" class="hidden"></div>
+
+      <div id="aria-input-area">
+        <!-- Attach button -->
+        <button id="aria-attach-btn" title="Attach file (⌘U)" type="button">📎</button>
+        <textarea id="aria-input" placeholder="Ask Aria anything…" rows="1" spellcheck="true" autocomplete="off"></textarea>
       <div id="aria-controls">
         <!-- Model Picker (Phase 9.13) -->
         <div id="aria-model-picker-wrap">
@@ -176,7 +182,20 @@
         <input id="aria-custom-model-input" type="text" placeholder="Enter model ID...">
         <button id="aria-custom-model-save" class="small-btn">Use</button>
       </div>
-    </div>
+      </div>
+
+      <!-- Hidden file input for attachments -->
+      <input id="aria-file-input" type="file" multiple
+        accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,.txt,.md,.csv,.html,.json" class="hidden">
+
+      <!-- Drop overlay (absolute over wrapper) -->
+      <div id="aria-drop-overlay" class="hidden">
+        <div class="drop-overlay-content">
+          <span class="drop-icon">📁</span>
+          <span class="drop-text">Drop files here</span>
+        </div>
+      </div>
+    </div><!-- end #aria-input-wrapper -->
   </div>
 
   <script src="vendor/dompurify.min.js"></script>

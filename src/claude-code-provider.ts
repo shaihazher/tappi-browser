@@ -53,6 +53,16 @@ export interface CCChunkEvent {
   done: boolean;
 }
 
+/** Attachment processed for Claude Code CLI consumption */
+export interface CCProcessedAttachment {
+  name: string;
+  mimeType: string;
+  size: number;
+  base64: string;
+  category: 'image' | 'document' | 'text';
+  tempPath?: string;
+}
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /** CLI install dir — dedicated, never uses user's own installation */
@@ -669,11 +679,11 @@ export class ClaudeCodeProvider extends EventEmitter {
    * Send a message and stream output back via 'chunk' events.
    * Both auth methods (OAuth and API key) use the CLI.
    */
-  async sendMessage(message: string): Promise<void> {
+  async sendMessage(message: string, attachments?: CCProcessedAttachment[]): Promise<void> {
     // Reset plan approval state before each message — prevents stale plan
     // buttons from appearing when the user switches from plan to full mode
     this.pendingPlanApproval = false;
-    return this._sendViaCli(message);
+    return this._sendViaCli(message, attachments);
   }
 
   /**
@@ -688,7 +698,7 @@ export class ClaudeCodeProvider extends EventEmitter {
    * Output format: `--output-format stream-json` gives us newline-delimited
    * JSON with streaming text deltas.
    */
-  private async _sendViaCli(message: string): Promise<void> {
+  private async _sendViaCli(message: string, attachments?: CCProcessedAttachment[]): Promise<void> {
     if (!(await isCliInstalled())) {
       this.emit('error', 'Claude Code CLI is not installed. Select Claude Code provider to auto-install.');
       return;
@@ -698,6 +708,27 @@ export class ClaudeCodeProvider extends EventEmitter {
     const tappiToken = this.config.tappiApiToken || '';
     const claudeMdDir = writeTappiClaudeMd(tappiToken);
 
+    const hasAttachments = attachments && attachments.length > 0;
+    const hasImages = hasAttachments && attachments.some(a => a.category === 'image');
+
+    // Save non-image files to CWD so Claude Code can read them with its Read tool
+    let augmentedText = message;
+    if (hasAttachments) {
+      const nonImageFiles = attachments.filter(a => a.category !== 'image');
+      if (nonImageFiles.length > 0) {
+        for (const att of nonImageFiles) {
+          const safeName = att.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+          const filePath = path.join(claudeMdDir, safeName);
+          fs.writeFileSync(filePath, Buffer.from(att.base64, 'base64'));
+          att.tempPath = filePath;
+        }
+        const fileList = nonImageFiles.map(a =>
+          `- ${a.name} (${a.mimeType}): ./${a.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+        ).join('\n');
+        augmentedText += `\n\nAttached files (read them with your Read tool):\n${fileList}`;
+      }
+    }
+
     const args: string[] = [
       '--print',                        // Non-interactive, print result
       '--output-format', 'stream-json', // Streaming JSON lines
@@ -705,8 +736,15 @@ export class ClaudeCodeProvider extends EventEmitter {
       // Skip --model flag when bedrockModelId is set — ANTHROPIC_MODEL env var takes precedence
       ...((this.config.model && !(this.config.authMethod === 'bedrock' && this.config.bedrockModelId)) ? ['--model', this.config.model] : []),
       ...getCliModeArgs(this.config.mode),
-      message,
     ];
+
+    if (hasImages) {
+      // Use stream-json input for native image support
+      args.push('--input-format', 'stream-json');
+      // DO NOT add message as positional arg — it goes via stdin
+    } else {
+      args.push(augmentedText); // Positional arg as before
+    }
 
     // Resume session for multi-turn
     if (this.sessionId) {
@@ -758,9 +796,27 @@ export class ClaudeCodeProvider extends EventEmitter {
     return new Promise<void>((resolve) => {
       const proc = spawn(TAPPI_CLAUDE_BIN, args, {
         cwd: claudeMdDir,  // CWD with CLAUDE.md for project context
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [hasImages ? 'pipe' : 'ignore', 'pipe', 'pipe'],
         env,
       });
+
+      // Write stream-json input with images and close stdin
+      if (hasImages && proc.stdin) {
+        const contentParts: any[] = [];
+        contentParts.push({ type: 'text', text: augmentedText });
+        for (const att of attachments.filter(a => a.category === 'image')) {
+          contentParts.push({
+            type: 'image',
+            source: { type: 'base64', media_type: att.mimeType, data: att.base64 },
+          });
+        }
+        const inputMsg = JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: contentParts },
+        });
+        proc.stdin.write(inputMsg + '\n');
+        proc.stdin.end();
+      }
 
       this.activeProcess = proc;
       let stderrBuf = '';

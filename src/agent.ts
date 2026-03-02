@@ -292,6 +292,15 @@ ${PROBLEM_SOLVING_GUIDE}
 ${TOOL_USAGE_GUIDE}
 `;
 
+interface ProcessedAttachment {
+  name: string;
+  mimeType: string;
+  size: number;
+  base64: string;
+  category: 'image' | 'document' | 'text';
+  tempPath?: string;
+}
+
 interface AgentRunOptions {
   userMessage: string;
   browserCtx: BrowserContext;
@@ -306,6 +315,7 @@ interface AgentRunOptions {
   executionRetryCount?: number; // Internal guard: auto-retry planning-only non-normal runs once
   codexToolRetryCount?: number; // Internal guard: codex empty-tool-call recovery retries
   codexForceNonStream?: boolean; // Internal guard: retry codex once via non-stream generateText
+  attachments?: ProcessedAttachment[]; // File attachments for multimodal messages
 }
 
 // Task-type addendums removed (Phase 9.12) — the agent decides when/if to spawn sub-agents.
@@ -390,6 +400,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
     ariaWebContents,
     codexForceNonStream = false,
     codexToolRetryCount = 0,
+    attachments,
   } = opts;
 
   // Helper: broadcast to both chrome UI and Aria tab
@@ -518,7 +529,32 @@ Timezone: ${tz}
         const lastFile = getLastFile(sessionId);
         if (workingDir) ctxParts.push(`Working Dir: ${workingDir}`);
         if (lastFile) ctxParts.push(`Last File: ${lastFile}`);
-        messages.push({ role: 'user', content: `${ctxParts.join('\n')}\n\n${msg.content}` });
+        const fullText = `${ctxParts.join('\n')}\n\n${msg.content}`;
+
+        // Build multimodal content parts when attachments are present
+        if (attachments && attachments.length > 0) {
+          const provider = llmConfig.provider;
+          const pdfProviders = ['anthropic', 'google', 'bedrock', 'vertex', 'openrouter'];
+          const parts: any[] = [{ type: 'text', text: fullText }];
+          for (const att of attachments) {
+            if (att.category === 'image') {
+              parts.push({ type: 'image', image: Buffer.from(att.base64, 'base64'), mimeType: att.mimeType });
+            } else if (att.mimeType === 'application/pdf') {
+              if (pdfProviders.includes(provider)) {
+                parts.push({ type: 'file', data: Buffer.from(att.base64, 'base64'), mimeType: 'application/pdf' });
+              } else {
+                parts[0].text += `\n\n[Attached PDF: ${att.name} (${att.size} bytes) — PDF content not available for this provider]`;
+              }
+            } else {
+              // Text files: decode and inline
+              const textContent = Buffer.from(att.base64, 'base64').toString('utf-8');
+              parts.push({ type: 'text', text: `\n\n--- ${att.name} ---\n${textContent}\n--- end ---` });
+            }
+          }
+          messages.push({ role: 'user', content: parts } as any);
+        } else {
+          messages.push({ role: 'user', content: fullText });
+        }
       } else {
         messages.push(msg);
       }
@@ -1217,8 +1253,16 @@ Timezone: ${tz}
     // ─── Persist to SQLite conversation store (Phase 9.1: rich history) ─────
     if (conversationId && !errorSent) {
       try {
-        // Persist user message
-        addConversationMessage(conversationId, 'user', userMessage);
+        // Persist user message (with attachment metadata if present, no base64)
+        if (attachments && attachments.length > 0) {
+          const persistContent = JSON.stringify({
+            text: userMessage,
+            attachments: attachments.map((a: any) => ({ name: a.name, mimeType: a.mimeType, size: a.size })),
+          });
+          addConversationMessage(conversationId, 'user', persistContent);
+        } else {
+          addConversationMessage(conversationId, 'user', userMessage);
+        }
 
         // Persist intermediate events (thinking, tool results) in order
         for (const evt of conversationEvents) {

@@ -9,8 +9,12 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('aria', {
   // ─── Agent communication ───
-  sendMessage: (message: string, conversationId?: string, codingMode?: boolean) =>
-    ipcRenderer.send('aria:send', message, conversationId, codingMode),
+  sendMessage: (
+    message: string,
+    conversationId?: string,
+    codingMode?: boolean,
+    attachments?: Array<{ name: string; mimeType: string; size: number; data: ArrayBuffer }>
+  ) => ipcRenderer.send('aria:send', message, conversationId, codingMode, attachments),
 
   stopAgent: () => ipcRenderer.send('aria:stop'),
 

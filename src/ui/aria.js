@@ -37,6 +37,27 @@ let currentProjectName = null;        // name of the active project
 
 const TOKEN_CONTEXT_LIMIT = 200000;
 
+// Attachment state
+let pendingAttachments = []; // { id, file, name, size, mimeType, dataUrl?, error? }
+let attachIdCounter = 0;
+let dragCounter = 0;
+
+/** Allowed file types with max sizes in bytes */
+const ALLOWED_FILE_TYPES = {
+  'image/jpeg':        { exts: ['.jpg', '.jpeg'], maxSize: 20 * 1024 * 1024, category: 'image' },
+  'image/png':         { exts: ['.png'],          maxSize: 20 * 1024 * 1024, category: 'image' },
+  'image/gif':         { exts: ['.gif'],          maxSize: 20 * 1024 * 1024, category: 'image' },
+  'image/webp':        { exts: ['.webp'],         maxSize: 20 * 1024 * 1024, category: 'image' },
+  'application/pdf':   { exts: ['.pdf'],          maxSize: 32 * 1024 * 1024, category: 'document' },
+  'text/plain':        { exts: ['.txt'],          maxSize: 10 * 1024 * 1024, category: 'text' },
+  'text/markdown':     { exts: ['.md'],           maxSize: 10 * 1024 * 1024, category: 'text' },
+  'text/csv':          { exts: ['.csv'],          maxSize: 10 * 1024 * 1024, category: 'text' },
+  'text/html':         { exts: ['.html'],         maxSize: 10 * 1024 * 1024, category: 'text' },
+  'application/json':  { exts: ['.json'],         maxSize: 10 * 1024 * 1024, category: 'text' },
+};
+const MAX_FILES = 5;
+const MAX_TOTAL_SIZE = 50 * 1024 * 1024;
+
 // ═══════════════════════════════════════════
 //  DOM REFERENCES
 // ═══════════════════════════════════════════
@@ -49,6 +70,11 @@ const ariaProjectIndicator = document.getElementById('aria-project-indicator');
 const ariaProjectIndicatorText = document.getElementById('aria-project-indicator-text');
 const ariaMessages   = document.getElementById('aria-messages');
 const ariaInput      = document.getElementById('aria-input');
+const ariaAttachBtn  = document.getElementById('aria-attach-btn');
+const ariaFileInput  = document.getElementById('aria-file-input');
+const ariaAttachPreview = document.getElementById('aria-attach-preview');
+const ariaInputWrapper  = document.getElementById('aria-input-wrapper');
+const ariaDropOverlay   = document.getElementById('aria-drop-overlay');
 const ariaSendBtn    = document.getElementById('aria-send-btn');
 const ariaStopBtn    = document.getElementById('aria-stop-btn');
 const tokenFill      = document.getElementById('aria-token-fill');
@@ -1813,7 +1839,46 @@ function appendMessageEl(msg) {
     }
   } else {
     // user, system
-    bubble.textContent = msg.content || '';
+    // Check for attachments (from current session or rehydrated from history)
+    let displayText = msg.content || '';
+    let attachments = msg.attachments || [];
+
+    // Rehydrate from persisted JSON content
+    if (!attachments.length && displayText) {
+      const parsed = parseUserContent(displayText);
+      if (parsed.attachments.length > 0) {
+        displayText = parsed.text;
+        attachments = parsed.attachments;
+      }
+    }
+
+    // Render attachment indicators
+    if (attachments.length > 0) {
+      const attDiv = document.createElement('div');
+      attDiv.className = 'msg-attachments';
+      for (const att of attachments) {
+        if (att.dataUrl && att.mimeType && att.mimeType.startsWith('image/')) {
+          const img = document.createElement('img');
+          img.className = 'msg-attach-thumb';
+          img.src = att.dataUrl;
+          img.alt = att.name || 'image';
+          img.title = att.name || 'image';
+          attDiv.appendChild(img);
+        } else {
+          const chip = document.createElement('span');
+          chip.className = 'msg-attach-file';
+          chip.textContent = `📎 ${att.name || 'file'}`;
+          if (att.size) chip.textContent += ` (${formatFileSize(att.size)})`;
+          attDiv.appendChild(chip);
+        }
+      }
+      bubble.appendChild(attDiv);
+    }
+
+    if (displayText) {
+      const textNode = document.createTextNode(displayText);
+      bubble.appendChild(textNode);
+    }
   }
 
   wrapper.appendChild(bubble);
@@ -1830,14 +1895,145 @@ function appendMessage(role, content, opts = {}) {
 }
 
 // ═══════════════════════════════════════════
+//  FILE ATTACHMENTS
+// ═══════════════════════════════════════════
+
+/** Guess MIME from file extension as fallback */
+function guessMime(name) {
+  const ext = (name || '').toLowerCase().split('.').pop();
+  const map = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
+    pdf: 'application/pdf', txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', html: 'text/html', json: 'application/json' };
+  return map[ext] || '';
+}
+
+/** Format file size for display */
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+/** Validate a file against allowed types and sizes */
+function validateFile(file) {
+  const mime = file.type || guessMime(file.name);
+  const typeInfo = ALLOWED_FILE_TYPES[mime];
+  if (!typeInfo) return { valid: false, error: `Unsupported file type: ${file.name}` };
+  if (file.size > typeInfo.maxSize) return { valid: false, error: `${file.name} exceeds ${formatFileSize(typeInfo.maxSize)} limit` };
+  if (pendingAttachments.filter(a => !a.error).length >= MAX_FILES) return { valid: false, error: `Max ${MAX_FILES} files per message` };
+  const totalSize = pendingAttachments.reduce((sum, a) => sum + (a.error ? 0 : a.size), 0) + file.size;
+  if (totalSize > MAX_TOTAL_SIZE) return { valid: false, error: 'Total attachment size exceeds 50 MB' };
+  return { valid: true, mime };
+}
+
+/** Add a file to pendingAttachments and update preview */
+function addAttachment(file) {
+  const validation = validateFile(file);
+  const id = ++attachIdCounter;
+  const mime = validation.mime || file.type || guessMime(file.name);
+
+  const att = { id, file, name: file.name, size: file.size, mimeType: mime, dataUrl: null, error: validation.valid ? null : validation.error };
+  pendingAttachments.push(att);
+
+  // Generate thumbnail for images
+  if (validation.valid && mime.startsWith('image/')) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      att.dataUrl = reader.result;
+      renderAttachPreview();
+    };
+    reader.readAsDataURL(file);
+  } else {
+    renderAttachPreview();
+  }
+}
+
+/** Remove an attachment by id */
+function removeAttachment(id) {
+  pendingAttachments = pendingAttachments.filter(a => a.id !== id);
+  renderAttachPreview();
+}
+
+/** Clear all attachments */
+function clearAttachments() {
+  pendingAttachments = [];
+  renderAttachPreview();
+}
+
+/** Render the attachment preview strip */
+function renderAttachPreview() {
+  if (!ariaAttachPreview) return;
+  if (pendingAttachments.length === 0) {
+    ariaAttachPreview.classList.add('hidden');
+    ariaAttachPreview.innerHTML = '';
+    return;
+  }
+  ariaAttachPreview.classList.remove('hidden');
+  ariaAttachPreview.innerHTML = '';
+
+  const fileIcons = { 'application/pdf': '📄', 'text/plain': '📝', 'text/markdown': '📝', 'text/csv': '📊', 'text/html': '🌐', 'application/json': '📋' };
+
+  for (const att of pendingAttachments) {
+    const chip = document.createElement('div');
+    chip.className = 'attach-chip' + (att.error ? ' error' : '');
+
+    if (att.dataUrl) {
+      const thumb = document.createElement('img');
+      thumb.className = 'attach-chip-thumb';
+      thumb.src = att.dataUrl;
+      thumb.alt = att.name;
+      chip.appendChild(thumb);
+    } else {
+      const icon = document.createElement('span');
+      icon.className = 'attach-chip-icon';
+      icon.textContent = att.error ? '⚠️' : (fileIcons[att.mimeType] || '📎');
+      chip.appendChild(icon);
+    }
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'attach-chip-name';
+    nameSpan.textContent = att.error || att.name;
+    nameSpan.title = att.error || att.name;
+    chip.appendChild(nameSpan);
+
+    if (!att.error) {
+      const sizeSpan = document.createElement('span');
+      sizeSpan.className = 'attach-chip-size';
+      sizeSpan.textContent = formatFileSize(att.size);
+      chip.appendChild(sizeSpan);
+    }
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'attach-chip-remove';
+    removeBtn.textContent = '×';
+    removeBtn.title = 'Remove';
+    removeBtn.addEventListener('click', () => removeAttachment(att.id));
+    chip.appendChild(removeBtn);
+
+    ariaAttachPreview.appendChild(chip);
+  }
+}
+
+/** Parse JSON user content for attachment metadata (history rehydration) */
+function parseUserContent(content) {
+  if (!content || typeof content !== 'string') return { text: content || '', attachments: [] };
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed && typeof parsed === 'object' && ('text' in parsed || 'attachments' in parsed)) {
+      return { text: parsed.text || '', attachments: parsed.attachments || [] };
+    }
+  } catch { /* not JSON */ }
+  return { text: content, attachments: [] };
+}
+
+// ═══════════════════════════════════════════
 //  SENDING MESSAGES
 // ═══════════════════════════════════════════
 
 async function sendMessage(text) {
   if (isStreaming) return;
-  if (!text || !text.trim()) return;
-
-  const trimmed = text.trim();
+  const trimmed = (text || '').trim();
+  const validAttachments = pendingAttachments.filter(a => !a.error);
+  if (!trimmed && validAttachments.length === 0) return;
 
   // Remove plan action bar if present (user is sending a new message)
   _removePlanActionBar();
@@ -1845,8 +2041,13 @@ async function sendMessage(text) {
   // Hide welcome screen if visible
   hideWelcome();
 
-  // Show user message immediately
-  appendMessage('user', trimmed);
+  // Capture attachment metadata for display before clearing
+  const attachmentMeta = validAttachments.map(a => ({
+    name: a.name, size: a.size, mimeType: a.mimeType, dataUrl: a.dataUrl || null,
+  }));
+
+  // Show user message immediately (with attachment metadata)
+  appendMessage('user', trimmed, { attachments: attachmentMeta.length > 0 ? attachmentMeta : undefined });
   ariaInput.value = '';
   ariaInput.style.height = 'auto';
 
@@ -1854,6 +2055,24 @@ async function sendMessage(text) {
   ariaInput.classList.remove('enhanced');
   originalPromptText = null;
   ariaEnhanceStatus?.classList.add('hidden');
+
+  // Read attachment data as ArrayBuffer for IPC
+  let attachmentData = null;
+  if (validAttachments.length > 0) {
+    try {
+      attachmentData = await Promise.all(validAttachments.map(async (a) => ({
+        name: a.name,
+        mimeType: a.mimeType,
+        size: a.size,
+        data: await a.file.arrayBuffer(),
+      })));
+    } catch (e) {
+      console.error('[aria] Failed to read attachment data:', e);
+    }
+  }
+
+  // Clear attachments after capturing data
+  clearAttachments();
 
   // Ensure we have a conversation
   if (!currentConversationId) {
@@ -1874,9 +2093,9 @@ async function sendMessage(text) {
 
   setStreamingState(true);
 
-  // Send to main process
+  // Send to main process (with attachments if any)
   try {
-    window.aria.sendMessage(trimmed, currentConversationId, codingModeActive);
+    window.aria.sendMessage(trimmed, currentConversationId, codingModeActive, attachmentData);
   } catch (e) {
     console.error('[aria] sendMessage error:', e);
     setStreamingState(false);
@@ -1951,6 +2170,84 @@ ariaInput.addEventListener('keydown', e => {
 ariaInput.addEventListener('input', () => {
   ariaInput.style.height = 'auto';
   ariaInput.style.height = Math.min(ariaInput.scrollHeight, 140) + 'px';
+});
+
+// ─── Attachment event handlers ───────────────────────────
+
+// Click attach button → open file dialog
+if (ariaAttachBtn && ariaFileInput) {
+  ariaAttachBtn.addEventListener('click', () => {
+    ariaFileInput.value = '';
+    ariaFileInput.click();
+  });
+
+  ariaFileInput.addEventListener('change', () => {
+    if (ariaFileInput.files) {
+      for (const file of ariaFileInput.files) {
+        addAttachment(file);
+      }
+    }
+  });
+}
+
+// Drag and drop on input wrapper
+if (ariaInputWrapper && ariaDropOverlay) {
+  ariaInputWrapper.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    dragCounter++;
+    ariaDropOverlay.classList.remove('hidden');
+  });
+
+  ariaInputWrapper.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+
+  ariaInputWrapper.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    dragCounter--;
+    if (dragCounter <= 0) {
+      dragCounter = 0;
+      ariaDropOverlay.classList.add('hidden');
+    }
+  });
+
+  ariaInputWrapper.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragCounter = 0;
+    ariaDropOverlay.classList.add('hidden');
+    if (e.dataTransfer && e.dataTransfer.files) {
+      for (const file of e.dataTransfer.files) {
+        addAttachment(file);
+      }
+    }
+  });
+}
+
+// Paste files from clipboard
+ariaInput.addEventListener('paste', (e) => {
+  if (e.clipboardData && e.clipboardData.items) {
+    for (const item of e.clipboardData.items) {
+      if (item.kind === 'file') {
+        const file = item.getAsFile();
+        if (file) {
+          e.preventDefault();
+          addAttachment(file);
+        }
+      }
+    }
+  }
+});
+
+// Cmd+U keyboard shortcut to open file dialog
+ariaInput.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'u') {
+    e.preventDefault();
+    if (ariaFileInput) {
+      ariaFileInput.value = '';
+      ariaFileInput.click();
+    }
+  }
 });
 
 // ─── Enhance Prompt (Phase 9.098) ──────────────────────

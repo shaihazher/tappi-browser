@@ -77,6 +77,34 @@ let mainWindow: BrowserWindow;
 let tabManager: TabManager;
 let activeConversationId: string | null = null;  // Phase 8.35
 
+// ─── Attachment Processing ───
+
+interface AttachmentPayload {
+  name: string;
+  mimeType: string;
+  size: number;
+  data: ArrayBuffer | Buffer;
+}
+
+export interface ProcessedAttachment {
+  name: string;
+  mimeType: string;
+  size: number;
+  base64: string;
+  category: 'image' | 'document' | 'text';
+  tempPath?: string;
+}
+
+function processAttachments(raw: AttachmentPayload[]): ProcessedAttachment[] {
+  return raw.map(att => {
+    const buffer = Buffer.isBuffer(att.data) ? att.data : Buffer.from(att.data as any);
+    let category: 'image' | 'document' | 'text' = 'text';
+    if (att.mimeType.startsWith('image/')) category = 'image';
+    else if (att.mimeType === 'application/pdf') category = 'document';
+    return { name: att.name, mimeType: att.mimeType, size: att.size, base64: buffer.toString('base64'), category };
+  });
+}
+
 const CHROME_HEIGHT = 102; // tab bar (38) + address bar (36) + bookmarks bar (28)
 const STATUS_BAR_HEIGHT = 34;
 const AGENT_STRIP_WIDTH = 40;
@@ -1036,7 +1064,7 @@ function createWindow() {
   // ─── Claude Code Provider State ──────────────────────────────────────────
   let activeClaudeCodeProvider: any = null;
 
-  ipcMain.on('aria:send', async (_e, message: string, conversationId?: string, codingMode?: boolean) => {
+  ipcMain.on('aria:send', async (_e, message: string, conversationId?: string, codingMode?: boolean, attachments?: Array<{ name: string; mimeType: string; size: number; data: ArrayBuffer }>) => {
     const apiKey = decryptApiKey(currentConfig.llm.apiKey);
     // Claude Code with OAuth/Bedrock doesn't need an API key — it handles its own auth
     const ccAuth = (currentConfig.llm as any).claudeCodeAuth;
@@ -1047,6 +1075,12 @@ function createWindow() {
         if (ariaWC) ariaWC.send('agent:stream-chunk', { text: '⚙️ No API key configured. Add one in Settings.', done: true });
       } catch {}
       return;
+    }
+
+    // Process attachments if provided
+    let processedAttachments: ProcessedAttachment[] | undefined;
+    if (attachments && attachments.length > 0) {
+      processedAttachments = processAttachments(attachments);
     }
 
     // Use provided conversationId or active one
@@ -1229,12 +1263,20 @@ function createWindow() {
       activeClaudeCodeProvider.on('chunk', onChunk);
       activeClaudeCodeProvider.on('error', onError);
 
-      // Persist user message
-      addConversationMessage(effectiveConvId, 'user', message);
+      // Persist user message (with attachment metadata if present, no base64)
+      if (processedAttachments && processedAttachments.length > 0) {
+        const persistContent = JSON.stringify({
+          text: message,
+          attachments: processedAttachments.map(a => ({ name: a.name, mimeType: a.mimeType, size: a.size })),
+        });
+        addConversationMessage(effectiveConvId, 'user', persistContent);
+      } else {
+        addConversationMessage(effectiveConvId, 'user', message);
+      }
 
       // Send to Claude Code
       try {
-        await activeClaudeCodeProvider.sendMessage(message);
+        await activeClaudeCodeProvider.sendMessage(message, processedAttachments);
         // Persist assistant response to conversation store
         if (ccResponseBuffer.trim()) {
           addConversationMessage(effectiveConvId, 'assistant', ccResponseBuffer);
@@ -1280,6 +1322,7 @@ function createWindow() {
       sessionId: convId || activeConversationId || 'default',
       conversationId: convId || activeConversationId || undefined,
       ariaWebContents: tabManager?.ariaWebContents,
+      attachments: processedAttachments,
     });
   });
 
