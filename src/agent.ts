@@ -272,6 +272,9 @@ grep > scroll > read-all. Always.
 - Use \`document_endpoint\` to save schemas after browsing API docs — learn once, use forever.
 - Responses are saved to files. Use \`file_read\` with grep to extract what you need.
 
+## Multi-Account Identity
+- When you see \`[👤 domain: ...]\` in your context, multiple identities exist for that site. Use \`site_identity\` to list, open, or register identities with isolated sessions.
+
 ## Style
 - Concise. Say what you did and what happened.
 - If something fails, try an alternative before giving up.

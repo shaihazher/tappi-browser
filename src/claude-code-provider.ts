@@ -41,6 +41,9 @@ export interface CCProviderConfig {
   // Bedrock-specific fields
   awsRegion?: string;        // Required for bedrock (CLI doesn't read .aws/config for region)
   awsProfile?: string;       // Optional: AWS_PROFILE to select a non-default credential profile
+  bedrockModelId?: string;   // Bedrock model ID (e.g. 'global.anthropic.claude-sonnet-4-6') → ANTHROPIC_MODEL env var
+  bedrockSmallModelId?: string; // Small/fast model for Bedrock → ANTHROPIC_SMALL_FAST_MODEL env var
+  awsAuthRefresh?: string;   // Credential refresh command (e.g. 'aws sso login --profile x') → ~/.claude/settings.json awsAuthRefresh
   // Agent teams
   agentTeams?: boolean;      // Enable experimental agent teams (CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS)
 }
@@ -386,6 +389,9 @@ curl -s -X POST http://localhost:18901/api/tools/<toolName> -H "Authorization: B
 - \`switch_tab\`, \`new_tab\`, \`close_tab\`
 - \`dark_mode\`, \`zoom\`, \`find\`
 
+**Site Identity (multi-account):**
+- \`site_identity\` — \`{ "action": "list", "domain": "github.com" }\` to see identities, \`{ "action": "open", "domain": "twitter.com", "username": "work" }\` to open isolated tab, \`{ "action": "register", "domain": "...", "username": "..." }\` to track new identity
+
 **Files:**
 - \`file_read\`, \`file_write\`, \`file_append\`, \`file_delete\`, \`file_list\`, \`file_head\`, \`file_tail\`, \`file_grep\`
 
@@ -413,6 +419,31 @@ For EVERY request:
 - If something fails, try an alternative before giving up.
 - For casual questions, just answer directly without using tools.
 `;
+}
+
+/**
+ * Write awsAuthRefresh to ~/.claude/settings.json for Bedrock credential auto-refresh.
+ * Safely merges with existing settings to avoid overwriting other config.
+ */
+function writeClaudeCodeBedrockSettings(awsAuthRefresh: string): void {
+  try {
+    const claudeDir = path.join(os.homedir(), '.claude');
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const settingsPath = path.join(claudeDir, 'settings.json');
+    let settings: Record<string, any> = {};
+    if (fs.existsSync(settingsPath)) {
+      try {
+        settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+      } catch {
+        // If corrupt, start fresh
+        settings = {};
+      }
+    }
+    settings.awsAuthRefresh = awsAuthRefresh;
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+  } catch (e) {
+    console.error('[claude-code] Failed to write Bedrock settings:', e);
+  }
 }
 
 /**
@@ -599,7 +630,8 @@ export class ClaudeCodeProvider extends EventEmitter {
       '--print',                        // Non-interactive, print result
       '--output-format', 'stream-json', // Streaming JSON lines
       '--verbose',                      // Include tool use info
-      ...(this.config.model ? ['--model', this.config.model] : []),
+      // Skip --model flag when bedrockModelId is set — ANTHROPIC_MODEL env var takes precedence
+      ...((this.config.model && !(this.config.authMethod === 'bedrock' && this.config.bedrockModelId)) ? ['--model', this.config.model] : []),
       ...getCliModeArgs(this.config.mode),
       message,
     ];
@@ -629,6 +661,18 @@ export class ClaudeCodeProvider extends EventEmitter {
       // Forward AWS_PROFILE if configured (for SSO / named profiles / ada)
       if (this.config.awsProfile) {
         env.AWS_PROFILE = this.config.awsProfile;
+      }
+      // Bedrock model ID — set via ANTHROPIC_MODEL env var (region-scoped IDs like global.anthropic.claude-sonnet-4-6)
+      if (this.config.bedrockModelId) {
+        env.ANTHROPIC_MODEL = this.config.bedrockModelId;
+      }
+      // Small/fast model override for Bedrock
+      if (this.config.bedrockSmallModelId) {
+        env.ANTHROPIC_SMALL_FAST_MODEL = this.config.bedrockSmallModelId;
+      }
+      // Write awsAuthRefresh to ~/.claude/settings.json if configured
+      if (this.config.awsAuthRefresh) {
+        writeClaudeCodeBedrockSettings(this.config.awsAuthRefresh);
       }
       // AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
       // ~/.aws/credentials, SSO tokens) are inherited from process.env via the spread above.

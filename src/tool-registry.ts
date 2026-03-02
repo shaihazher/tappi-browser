@@ -31,6 +31,8 @@ import * as projectManager from './project-manager';
 import * as codingMemory from './coding-memory';
 import { loadUserProfileTxt, saveUserProfileTxt, getUserProfileTxtPath } from './user-profile';
 import { profileManager } from './profile-manager';
+import { sessionManager } from './session-manager';
+import { listIdentities } from './password-vault';
 import { createRecipeTools } from './recipes';
 import * as path from 'path';
 import * as os from 'os';
@@ -1218,7 +1220,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     // ═══ BROWSER PROFILE TOOLS (always available) ═══
-    ...createProfileTools(options),
+    ...createProfileTools(browserCtx, options),
 
     // ═══ APP RECIPE TOOLS (always available) ═══
     ...createRecipeTools(),
@@ -2317,7 +2319,7 @@ function createCodingMemoryTools() {
 
 // ─── Browser Profile Tools ───────────────────────────────────────────────────
 
-function createProfileTools(options?: ToolRegistryOptions) {
+function createProfileTools(browserCtx: BrowserContext, options?: ToolRegistryOptions) {
   return {
     browser_profile: tool({
       description: 'Manage browser profiles. Profiles isolate bookmarks, passwords, cookies, and browsing data. Use to switch between work/personal contexts or manage multiple accounts.',
@@ -2366,6 +2368,54 @@ function createProfileTools(options?: ToolRegistryOptions) {
           }
           default:
             return '❌ Unknown action.';
+        }
+      },
+    }),
+
+    site_identity: tool({
+      description: 'Manage per-site identities for multi-account workflows. Each identity gets an isolated session (cookies, storage) so you can be logged into the same site with different accounts simultaneously. When you see a [👤 domain: ...] context hint, use this tool to switch between identities.',
+      inputSchema: z.object({
+        action: z.enum(['list', 'open', 'register']).describe(
+          'list: show all known identities for a domain. open: open a tab with an isolated session for a specific identity. register: manually track a new identity for a domain.'
+        ),
+        domain: z.string().describe('The site domain (e.g. "twitter.com", "github.com")'),
+        username: z.string().optional().describe('Username/account name for open/register actions'),
+      }),
+      execute: async ({ action, domain, username }: { action: string; domain: string; username?: string }) => {
+        // Normalize domain — strip protocol/www if accidentally included
+        const cleanDomain = domain.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
+
+        switch (action) {
+          case 'list': {
+            // Merge identities from password vault + active session registrations
+            const vaultIdentities = listIdentities(cleanDomain);
+            const sessionIdentities = sessionManager.getSiteIdentities(cleanDomain).map(i => i.username);
+            const all = [...new Set([...vaultIdentities, ...sessionIdentities])];
+            if (all.length === 0) return `No identities found for ${cleanDomain}.`;
+            // Mark which ones have active sessions
+            const activeSet = new Set(sessionIdentities);
+            return `Identities for ${cleanDomain}:\n` + all.map(u =>
+              `  @${u}${activeSet.has(u) ? ' (active session)' : ''}`
+            ).join('\n');
+          }
+          case 'open': {
+            if (!username) return '❌ Need a username to open an identity session.';
+            const partition = sessionManager.getSiteIdentityPartition(cleanDomain, username);
+            sessionManager.registerSiteIdentity(cleanDomain, username);
+            const url = `https://${cleanDomain}`;
+            const tabId = browserCtx.tabManager.createTab(url, partition, { background: true });
+            browserCtx.tabManager.setAgentTarget(tabId);
+            const tabs = browserCtx.tabManager.getTabList();
+            const tabIndex = tabs.findIndex((t: any) => t.id === tabId);
+            return `✓ Opened ${cleanDomain} as @${username} in tab [${tabIndex}] with isolated session.\nPartition: ${partition}\n💡 Call elements() to interact with the page.`;
+          }
+          case 'register': {
+            if (!username) return '❌ Need a username to register.';
+            sessionManager.registerSiteIdentity(cleanDomain, username);
+            return `✓ Registered identity @${username} for ${cleanDomain}. Use site_identity({ action: "open", domain: "${cleanDomain}", username: "${username}" }) to open an isolated tab.`;
+          }
+          default:
+            return '❌ Unknown action. Use list, open, or register.';
         }
       },
     }),
@@ -2564,6 +2614,18 @@ DO NOT USE FOR: Changing user preferences (use update_user_profile instead).
 
 **What's isolated per profile:** bookmarks, saved passwords, cookies, browsing history, downloads.
 **Note:** Switching profiles closes all open tabs and opens a fresh tab. The conversation continues but browsing context changes completely.
+
+### SITE IDENTITY (MULTI-ACCOUNT)
+USE WHEN: User wants to use multiple accounts on the same site simultaneously (e.g., "open Twitter as @second_account").
+DO NOT USE FOR: Switching browser profiles (use browser_profile instead). Site identities are per-site session isolation within the same profile.
+
+**Workflow:**
+1. \`site_identity({ action: "list", domain: "twitter.com" })\` → see all known identities
+2. \`site_identity({ action: "open", domain: "twitter.com", username: "work_account" })\` → open isolated tab
+3. \`site_identity({ action: "register", domain: "github.com", username: "personal" })\` → manually track an identity
+
+**How it works:** Each identity gets its own session partition (cookies, localStorage, etc.). Tabs opened with different identities are fully isolated — logging into one doesn't affect the other.
+**Context hint:** When you see \`[👤 domain: ...]\` in your context, it means identities are available. Use this tool to switch.
 
 ### APP RECIPES (GUIDED WORKFLOWS)
 USE WHEN: Performing common tasks on supported apps (Gmail, Sheets, YouTube, etc.).

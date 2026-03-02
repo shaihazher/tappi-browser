@@ -2825,7 +2825,7 @@ body.coding-mode .team-redirect-send {
   left: 16px;
   right: 16px;
   width: auto;
-  max-width: 400px;
+  max-width: 440px;
   max-height: 520px;
   background: var(--bg-primary);
   border: 1px solid var(--border);
@@ -2836,7 +2836,10 @@ body.coding-mode .team-redirect-send {
   overflow-x: hidden;
 }
 
-/* When Claude Code is active, shrink model list to make room for CC settings */
+/* When Claude Code is active, expand dropdown and shrink model list for CC settings */
+.model-dropdown.cc-active {
+  max-height: 620px;
+}
 .model-dropdown.cc-active .model-list {
   max-height: 180px;
 }
@@ -3017,6 +3020,10 @@ body.coding-mode .team-redirect-send {
   background: var(--bg-primary);
   color: var(--text-primary);
   box-sizing: border-box;
+}
+.cc-input-mono {
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 11px;
 }
 .cc-bedrock-status {
   margin-top: 6px;

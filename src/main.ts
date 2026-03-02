@@ -1169,6 +1169,9 @@ function createWindow() {
           workingDir: (currentConfig as any).workspacePath || require('os').homedir(),
           awsRegion: (currentConfig.llm as any).claudeCodeBedrockRegion,
           awsProfile: (currentConfig.llm as any).claudeCodeBedrockProfile,
+          bedrockModelId: (currentConfig.llm as any).claudeCodeBedrockModelId,
+          bedrockSmallModelId: (currentConfig.llm as any).claudeCodeBedrockSmallModelId,
+          awsAuthRefresh: (currentConfig.llm as any).claudeCodeAwsAuthRefresh,
           agentTeams: !!(currentConfig.llm as any).claudeCodeAgentTeams,
         });
       } else {
@@ -1182,6 +1185,9 @@ function createWindow() {
           tappiApiToken: apiToken,
           awsRegion: (currentConfig.llm as any).claudeCodeBedrockRegion,
           awsProfile: (currentConfig.llm as any).claudeCodeBedrockProfile,
+          bedrockModelId: (currentConfig.llm as any).claudeCodeBedrockModelId,
+          bedrockSmallModelId: (currentConfig.llm as any).claudeCodeBedrockSmallModelId,
+          awsAuthRefresh: (currentConfig.llm as any).claudeCodeAwsAuthRefresh,
           agentTeams: !!(currentConfig.llm as any).claudeCodeAgentTeams,
         };
       }

@@ -102,6 +102,9 @@ let currentModelConfig = {
   claudeCodeAuth: 'oauth',
   claudeCodeBedrockRegion: '',
   claudeCodeBedrockProfile: '',
+  claudeCodeBedrockModelId: '',
+  claudeCodeBedrockSmallModelId: '',
+  claudeCodeAwsAuthRefresh: '',
   claudeCodeAgentTeams: false,
 };
 let availableModels = [];
@@ -213,6 +216,9 @@ async function loadModelConfig() {
       currentModelConfig.claudeCodeAuth = config.llm.claudeCodeAuth || 'oauth';
       currentModelConfig.claudeCodeBedrockRegion = config.llm.claudeCodeBedrockRegion || '';
       currentModelConfig.claudeCodeBedrockProfile = config.llm.claudeCodeBedrockProfile || '';
+      currentModelConfig.claudeCodeBedrockModelId = config.llm.claudeCodeBedrockModelId || '';
+      currentModelConfig.claudeCodeBedrockSmallModelId = config.llm.claudeCodeBedrockSmallModelId || '';
+      currentModelConfig.claudeCodeAwsAuthRefresh = config.llm.claudeCodeAwsAuthRefresh || '';
       currentModelConfig.claudeCodeAgentTeams = !!config.llm.claudeCodeAgentTeams;
     }
     updateModelButton();
@@ -353,6 +359,9 @@ async function saveModelConfig(options = {}) {
     llmUpdate.claudeCodeAuth = currentModelConfig.claudeCodeAuth || 'oauth';
     llmUpdate.claudeCodeBedrockRegion = currentModelConfig.claudeCodeBedrockRegion || '';
     llmUpdate.claudeCodeBedrockProfile = currentModelConfig.claudeCodeBedrockProfile || '';
+    llmUpdate.claudeCodeBedrockModelId = currentModelConfig.claudeCodeBedrockModelId || '';
+    llmUpdate.claudeCodeBedrockSmallModelId = currentModelConfig.claudeCodeBedrockSmallModelId || '';
+    llmUpdate.claudeCodeAwsAuthRefresh = currentModelConfig.claudeCodeAwsAuthRefresh || '';
     llmUpdate.claudeCodeAgentTeams = !!currentModelConfig.claudeCodeAgentTeams;
 
     await window.aria.saveConfig({ llm: llmUpdate });
@@ -423,6 +432,12 @@ async function openModelDropdown() {
   if (bedrockRegionInput) bedrockRegionInput.value = currentModelConfig.claudeCodeBedrockRegion || '';
   const bedrockProfileInput = document.getElementById('aria-cc-bedrock-profile');
   if (bedrockProfileInput) bedrockProfileInput.value = currentModelConfig.claudeCodeBedrockProfile || '';
+  const bedrockModelInput = document.getElementById('aria-cc-bedrock-model');
+  if (bedrockModelInput) bedrockModelInput.value = currentModelConfig.claudeCodeBedrockModelId || '';
+  const bedrockSmallModelInput = document.getElementById('aria-cc-bedrock-small-model');
+  if (bedrockSmallModelInput) bedrockSmallModelInput.value = currentModelConfig.claudeCodeBedrockSmallModelId || '';
+  const bedrockAuthRefreshInput = document.getElementById('aria-cc-bedrock-auth-refresh');
+  if (bedrockAuthRefreshInput) bedrockAuthRefreshInput.value = currentModelConfig.claudeCodeAwsAuthRefresh || '';
   const agentTeamsCheckbox = document.getElementById('aria-cc-agent-teams');
   if (agentTeamsCheckbox) agentTeamsCheckbox.checked = !!currentModelConfig.claudeCodeAgentTeams;
 
@@ -684,6 +699,24 @@ function bindModelPickerEvents() {
   // Bedrock profile input change
   document.getElementById('aria-cc-bedrock-profile')?.addEventListener('change', (e) => {
     currentModelConfig.claudeCodeBedrockProfile = e.target.value.trim();
+    saveModelConfig({ includeProvider: true });
+  });
+
+  // Bedrock model ID input change
+  document.getElementById('aria-cc-bedrock-model')?.addEventListener('change', (e) => {
+    currentModelConfig.claudeCodeBedrockModelId = e.target.value.trim();
+    saveModelConfig({ includeProvider: true });
+  });
+
+  // Bedrock small/fast model ID input change
+  document.getElementById('aria-cc-bedrock-small-model')?.addEventListener('change', (e) => {
+    currentModelConfig.claudeCodeBedrockSmallModelId = e.target.value.trim();
+    saveModelConfig({ includeProvider: true });
+  });
+
+  // Bedrock credential refresh command input change
+  document.getElementById('aria-cc-bedrock-auth-refresh')?.addEventListener('change', (e) => {
+    currentModelConfig.claudeCodeAwsAuthRefresh = e.target.value.trim();
     saveModelConfig({ includeProvider: true });
   });
 
