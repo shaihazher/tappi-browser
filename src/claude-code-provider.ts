@@ -151,6 +151,64 @@ export async function installClaudeCode(
   return installClaudeCli(onProgress);
 }
 
+/**
+ * Get the currently installed CLI version by reading package.json.
+ * Returns null if not installed.
+ */
+export async function getCliVersion(): Promise<string | null> {
+  try {
+    const pkgPath = path.join(CLI_INSTALL_DIR, 'node_modules', CLI_PACKAGE, 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+    return pkg.version || null;
+  } catch { return null; }
+}
+
+/**
+ * Check npm registry for the latest available CLI version.
+ * Returns the version string, or null on failure.
+ */
+export async function getLatestCliVersion(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const proc = spawn('npm', ['view', CLI_PACKAGE, 'version'], {
+      cwd: CLI_INSTALL_DIR,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env },
+    });
+    let stdout = '';
+    proc.stdout?.on('data', (d) => { stdout += d.toString(); });
+    proc.on('exit', (code) => resolve(code === 0 ? stdout.trim() : null));
+    proc.on('error', () => resolve(null));
+  });
+}
+
+/**
+ * Update the CLI to the latest version.
+ * Runs `npm install @anthropic-ai/claude-code@latest` in the install directory.
+ */
+export async function updateClaudeCli(
+  onProgress?: (msg: string) => void,
+): Promise<void> {
+  if (!fs.existsSync(CLI_INSTALL_DIR)) {
+    throw new Error('CLI not installed — install first');
+  }
+  return new Promise((resolve, reject) => {
+    onProgress?.('Updating Claude Code CLI...');
+    const proc = spawn('npm', ['install', `${CLI_PACKAGE}@latest`], {
+      cwd: CLI_INSTALL_DIR,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env },
+    });
+    let stderr = '';
+    proc.stderr?.on('data', (d) => { stderr += d.toString(); });
+    proc.stdout?.on('data', (d) => { onProgress?.(d.toString().trim()); });
+    proc.on('exit', (code) => {
+      if (code === 0) { onProgress?.('Updated successfully.'); resolve(); }
+      else reject(new Error(`npm install failed (code ${code}): ${stderr.slice(0, 500)}`));
+    });
+    proc.on('error', (err) => reject(err));
+  });
+}
+
 // ── Authentication ───────────────────────────────────────────────────────────
 
 /**
@@ -343,6 +401,20 @@ export async function loginClaudeCode(
 export function buildTappiSystemPrompt(): string {
   return `You are Aria, an AI assistant integrated into Tappi Browser. You have full access to the browser's capabilities via its HTTP API.
 
+## Environment
+You are running as a Claude Code CLI process spawned by Tappi Browser (an Electron app). The user is NOT in a terminal — they are chatting with you in Tappi's built-in chat panel.
+
+**Message flow:** User types in chat UI → Tappi spawns you as a CLI subprocess → your text output streams back and renders as markdown in the chat panel.
+
+**What the user sees:** Your text responses rendered as markdown, plus formatted tool-use indicators (e.g. 🔧 Bash, 🔧 Read). They do NOT see stderr, raw CLI output, JSON stream data, or your internal tool results in full.
+
+**Why HTTP API:** You are a separate process from the browser. The localhost API (port 18901) is the bridge — it's how you control browser tabs, read pages, manage files, and run shell commands inside Tappi. This is not a workaround; it's the designed architecture.
+
+**Important:**
+- Present yourself as "Aria" — the user knows you as Tappi's assistant, not as "Claude Code"
+- Never tell the user to "run this command" or "check your terminal" — they only have the chat interface
+- Markdown formatting (headers, code blocks, lists) renders well in the chat UI — use it freely
+
 ## Tappi Browser API
 
 Base URL: http://localhost:18901
@@ -425,9 +497,9 @@ For EVERY request:
  * Write awsAuthRefresh to ~/.claude/settings.json for Bedrock credential auto-refresh.
  * Safely merges with existing settings to avoid overwriting other config.
  */
-function writeClaudeCodeBedrockSettings(awsAuthRefresh: string): void {
+function writeClaudeCodeBedrockSettings(awsAuthRefresh: string, projectDir: string): void {
   try {
-    const claudeDir = path.join(os.homedir(), '.claude');
+    const claudeDir = path.join(projectDir, '.claude');
     fs.mkdirSync(claudeDir, { recursive: true });
     const settingsPath = path.join(claudeDir, 'settings.json');
     let settings: Record<string, any> = {};
@@ -670,9 +742,9 @@ export class ClaudeCodeProvider extends EventEmitter {
       if (this.config.bedrockSmallModelId) {
         env.ANTHROPIC_SMALL_FAST_MODEL = this.config.bedrockSmallModelId;
       }
-      // Write awsAuthRefresh to ~/.claude/settings.json if configured
+      // Write awsAuthRefresh to project-scoped settings (not global ~/.claude/)
       if (this.config.awsAuthRefresh) {
-        writeClaudeCodeBedrockSettings(this.config.awsAuthRefresh);
+        writeClaudeCodeBedrockSettings(this.config.awsAuthRefresh, claudeMdDir);
       }
       // AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
       // ~/.aws/credentials, SSO tokens) are inherited from process.env via the spread above.

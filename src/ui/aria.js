@@ -509,6 +509,25 @@ async function updateClaudeCodeStatus() {
       return;
     }
 
+    // Fetch version info and show update button if available
+    if (window.aria.getClaudeCodeVersion) {
+      try {
+        const ver = await window.aria.getClaudeCodeVersion();
+        const versionEl = document.getElementById('aria-cc-version');
+        const updateBtn = document.getElementById('aria-cc-update-btn');
+        if (versionEl && ver.current) {
+          versionEl.textContent = `v${ver.current}`;
+          versionEl.classList.remove('hidden');
+        }
+        if (updateBtn) {
+          updateBtn.classList.toggle('hidden', !ver.updateAvailable);
+          if (ver.updateAvailable && ver.latest) {
+            updateBtn.textContent = `Update to v${ver.latest}`;
+          }
+        }
+      } catch {}
+    }
+
     // Installed — check auth status based on method
     if (authMethod === 'oauth' && window.aria.checkClaudeAuth) {
       try {
@@ -668,6 +687,27 @@ function bindModelPickerEvents() {
       }
     } finally {
       if (loginBtn) loginBtn.disabled = false;
+    }
+  });
+
+  // Claude Code update button
+  document.getElementById('aria-cc-update-btn')?.addEventListener('click', async () => {
+    const updateBtn = document.getElementById('aria-cc-update-btn');
+    const ccStatus = document.getElementById('aria-cc-status');
+    if (updateBtn) updateBtn.disabled = true;
+    if (ccStatus) { ccStatus.textContent = 'Updating Claude Code CLI...'; ccStatus.classList.remove('hidden', 'error'); }
+    try {
+      const result = await window.aria.updateClaudeCode();
+      if (result.success) {
+        if (updateBtn) updateBtn.classList.add('hidden');
+        updateClaudeCodeStatus(); // Refresh to show new version
+      } else {
+        if (ccStatus) { ccStatus.textContent = 'Update failed: ' + result.error; ccStatus.classList.add('error'); }
+      }
+    } catch (err) {
+      if (ccStatus) { ccStatus.textContent = 'Update failed: ' + (err.message || err); ccStatus.classList.add('error'); }
+    } finally {
+      if (updateBtn) updateBtn.disabled = false;
     }
   });
 

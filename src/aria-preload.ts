@@ -115,6 +115,10 @@ contextBridge.exposeInMainWorld('aria', {
     ipcRenderer.invoke('claude-code:check-bedrock'),
   loginClaudeCode: () =>
     ipcRenderer.invoke('claude-code:login'),
+  getClaudeCodeVersion: () =>
+    ipcRenderer.invoke('claude-code:get-version'),
+  updateClaudeCode: () =>
+    ipcRenderer.invoke('claude-code:update'),
   onClaudeCodeOAuthStatus: (cb: (data: { phase: string; message: string }) => void) => {
     ipcRenderer.on('oauth:claude-code:status', (_e, data) => cb(data));
   },

@@ -126,6 +126,9 @@ interface TappiConfig {
     claudeCodeAuth?: 'api-key' | 'oauth' | 'bedrock'; // CC auth method (default: oauth — uses CC's built-in login)
     claudeCodeBedrockRegion?: string;   // AWS region for Claude Code Bedrock mode
     claudeCodeBedrockProfile?: string;  // AWS profile name for Claude Code Bedrock mode
+    claudeCodeBedrockModelId?: string;  // Bedrock model ID for Claude Code
+    claudeCodeBedrockSmallModelId?: string; // Bedrock small/fast model ID for Claude Code
+    claudeCodeAwsAuthRefresh?: string;  // AWS credential refresh command for Claude Code Bedrock
     claudeCodeAgentTeams?: boolean;     // Enable experimental agent teams
   };
   searchEngine: string;
@@ -1175,6 +1178,10 @@ function createWindow() {
           agentTeams: !!(currentConfig.llm as any).claudeCodeAgentTeams,
         });
       } else {
+        // Capture previous values to detect model/auth changes
+        const prevModel = activeClaudeCodeProvider.config.model;
+        const prevBedrockModelId = activeClaudeCodeProvider.config.bedrockModelId;
+        const prevAuth = activeClaudeCodeProvider.config.authMethod;
         // Update mode/auth/model in case they changed
         activeClaudeCodeProvider.config = {
           ...activeClaudeCodeProvider.config,
@@ -1190,6 +1197,12 @@ function createWindow() {
           awsAuthRefresh: (currentConfig.llm as any).claudeCodeAwsAuthRefresh,
           agentTeams: !!(currentConfig.llm as any).claudeCodeAgentTeams,
         };
+        // Reset session if model-affecting fields changed (prevents stale --resume)
+        if (ccModel !== prevModel ||
+            (currentConfig.llm as any).claudeCodeBedrockModelId !== prevBedrockModelId ||
+            ccAuth !== prevAuth) {
+          activeClaudeCodeProvider.resetSession();
+        }
       }
 
       const effectiveConvId = convId || activeConversationId || 'default';
@@ -1447,6 +1460,22 @@ function createWindow() {
     } catch (err: any) {
       console.error('[claude-code] install error:', err);
       return { success: false, error: err.message || 'Installation failed' };
+    }
+  });
+
+  ipcMain.handle('claude-code:get-version', async () => {
+    const { getCliVersion, getLatestCliVersion } = await import('./claude-code-provider');
+    const [current, latest] = await Promise.all([getCliVersion(), getLatestCliVersion()]);
+    return { current, latest, updateAvailable: !!(current && latest && current !== latest) };
+  });
+
+  ipcMain.handle('claude-code:update', async () => {
+    const { updateClaudeCli } = await import('./claude-code-provider');
+    try {
+      await updateClaudeCli((msg) => console.log('[claude-code] update:', msg));
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Update failed' };
     }
   });
 
@@ -2183,6 +2212,9 @@ Rules:
       if ((updates.llm as any).claudeCodeBedrockRegion !== undefined) (currentConfig.llm as any).claudeCodeBedrockRegion = (updates.llm as any).claudeCodeBedrockRegion;
       if ((updates.llm as any).claudeCodeBedrockProfile !== undefined) (currentConfig.llm as any).claudeCodeBedrockProfile = (updates.llm as any).claudeCodeBedrockProfile;
       if ((updates.llm as any).claudeCodeAgentTeams !== undefined) (currentConfig.llm as any).claudeCodeAgentTeams = (updates.llm as any).claudeCodeAgentTeams;
+      if ((updates.llm as any).claudeCodeBedrockModelId !== undefined) (currentConfig.llm as any).claudeCodeBedrockModelId = (updates.llm as any).claudeCodeBedrockModelId;
+      if ((updates.llm as any).claudeCodeBedrockSmallModelId !== undefined) (currentConfig.llm as any).claudeCodeBedrockSmallModelId = (updates.llm as any).claudeCodeBedrockSmallModelId;
+      if ((updates.llm as any).claudeCodeAwsAuthRefresh !== undefined) (currentConfig.llm as any).claudeCodeAwsAuthRefresh = (updates.llm as any).claudeCodeAwsAuthRefresh;
       // Phase 10: Secondary model routing re-enabled — no longer force-clearing.
     }
     if ((updates as any).rawApiKey !== undefined) {

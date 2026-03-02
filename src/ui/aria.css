@@ -2985,6 +2985,16 @@ body.coding-mode .team-redirect-send {
   margin-top: 8px;
   width: 100%;
 }
+.cc-version {
+  font-size: 11px;
+  color: var(--text-dim, #888);
+  margin-left: 4px;
+}
+.cc-version.hidden { display: none; }
+#aria-cc-update-btn {
+  background: var(--accent-color, #4a9eff);
+  color: #fff;
+}
 .cc-status {
   margin-top: 6px;
   font-size: 11px;
