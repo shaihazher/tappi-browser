@@ -15,6 +15,42 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { waitForLoad, waitForContent } from './browser-tools';
 
+// ─── Screenshot helpers ───
+
+const SCREENSHOT_MAX_DIM = 2048;
+
+/**
+ * Safely capture page with retry for "display surface not available" errors,
+ * then validate dimensions and resize if needed for Claude API compatibility.
+ */
+export async function safeCapturePage(wc: WebContents): Promise<Electron.NativeImage> {
+  let image: Electron.NativeImage;
+  try {
+    image = await wc.capturePage();
+  } catch (e: any) {
+    if (e?.message?.includes('display surface')) {
+      // Page is mid-navigation — wait for load and retry once
+      await waitForLoad(wc, 3000);
+      image = await wc.capturePage();
+    } else {
+      throw e;
+    }
+  }
+
+  const { width, height } = image.getSize();
+  if (width === 0 || height === 0) {
+    throw new Error('Cannot capture screenshot — a dialog may be blocking the page (captured 0×0 image)');
+  }
+
+  // Downscale for Claude API compatibility on Retina/high-DPI displays
+  if (width > SCREENSHOT_MAX_DIM || height > SCREENSHOT_MAX_DIM) {
+    return width >= height
+      ? image.resize({ width: SCREENSHOT_MAX_DIM })
+      : image.resize({ height: SCREENSHOT_MAX_DIM });
+  }
+  return image;
+}
+
 // ─── Helpers ───
 
 async function callPreload(wc: WebContents, fn: string, ...args: any[]): Promise<any> {
@@ -494,7 +530,7 @@ function cullOldScreenshots() {
 }
 
 export async function pageScreenshot(wc: WebContents, filePath?: string): Promise<string> {
-  const image = await wc.capturePage();
+  const image = await safeCapturePage(wc);
   // Always save to file — never return inline base64 (it would be 1M+ tokens in conversation history)
   const resolved = filePath
     ? path.resolve(filePath)

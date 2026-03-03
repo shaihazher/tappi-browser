@@ -397,7 +397,7 @@ async function handleRequest(
     if (method === 'GET' && m) {
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
-      const image = await wc.capturePage();
+      const image = await pageTools.safeCapturePage(wc);
       const png = image.toPNG();
       res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length });
       res.end(png);
