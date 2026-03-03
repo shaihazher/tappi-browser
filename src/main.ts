@@ -57,6 +57,8 @@ import {
   searchConversations,
   getConversation,
   generateAutoTitleFallback,
+  saveClaudeCodeSessionId,
+  getClaudeCodeSessionId,
 } from './conversation-store';
 import {
   createProject,
@@ -1241,6 +1243,12 @@ function createWindow() {
 
       const effectiveConvId = convId || activeConversationId || 'default';
 
+      // Restore persisted session for current conversation (e.g. after app restart)
+      if (activeClaudeCodeProvider.getSessionId() === null && effectiveConvId !== 'default') {
+        const savedSid = getClaudeCodeSessionId(effectiveConvId);
+        if (savedSid) activeClaudeCodeProvider.setSessionId(savedSid);
+      }
+
       // Broadcast stream start
       try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-start', {}); } catch {}
       try { mainWindow.webContents.send('agent:stream-start', {}); } catch {}
@@ -1281,6 +1289,9 @@ function createWindow() {
         if (ccResponseBuffer.trim()) {
           addConversationMessage(effectiveConvId, 'assistant', ccResponseBuffer);
         }
+        // Persist Claude Code session for resume across restarts
+        const ccSid = activeClaudeCodeProvider.getSessionId();
+        if (ccSid) saveClaudeCodeSessionId(effectiveConvId, ccSid);
         // If plan mode completed, notify UI so it can show approve/edit buttons
         if (activeClaudeCodeProvider.isPlanPending) {
           try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('aria:cc-plan-complete', { conversationId: effectiveConvId }); } catch {}
@@ -1449,9 +1460,10 @@ function createWindow() {
     activeConversationId = conversationId;
     // Clear in-memory history so next agent run starts fresh with the loaded conv
     clearHistory('default');
-    // Reset Claude Code session — each conversation is independent
+    // Restore Claude Code session for the switched-to conversation
     if (activeClaudeCodeProvider) {
-      activeClaudeCodeProvider.resetSession();
+      const savedSid = getClaudeCodeSessionId(conversationId);
+      activeClaudeCodeProvider.setSessionId(savedSid); // null if no CC session
     }
     return { success: true, conversationId };
   });

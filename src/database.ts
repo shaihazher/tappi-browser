@@ -159,6 +159,7 @@ export function initDatabase(dbPath?: string): Database.Database {
   // Safe migrations: add project_id + mode columns to conversations if not present
   try { db.exec(`ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL`); } catch {}
   try { db.exec(`ALTER TABLE conversations ADD COLUMN mode TEXT DEFAULT 'chat'`); } catch {}
+  try { db.exec(`ALTER TABLE conversations ADD COLUMN cc_session_id TEXT DEFAULT NULL`); } catch {}
 
   // FTS5 for full-text search across conversation messages
   db.exec(`

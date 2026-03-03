@@ -346,3 +346,16 @@ export function agentReadConversation(
 
   return lines.join('\n');
 }
+
+// ─── Claude Code session persistence ──────────────────────────────────────────
+
+export function saveClaudeCodeSessionId(conversationId: string, sessionId: string): void {
+  getDb().prepare('UPDATE conversations SET cc_session_id = ? WHERE id = ?')
+    .run(sessionId, conversationId);
+}
+
+export function getClaudeCodeSessionId(conversationId: string): string | null {
+  const row = getDb().prepare('SELECT cc_session_id FROM conversations WHERE id = ?')
+    .get(conversationId) as { cc_session_id: string | null } | undefined;
+  return row?.cc_session_id ?? null;
+}

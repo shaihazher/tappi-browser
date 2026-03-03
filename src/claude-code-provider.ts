@@ -1157,4 +1157,8 @@ export class ClaudeCodeProvider extends EventEmitter {
   resetSession(): void {
     this.sessionId = null;
   }
+
+  setSessionId(id: string | null): void {
+    this.sessionId = id;
+  }
 }
