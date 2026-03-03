@@ -162,9 +162,22 @@ function renderMarkdown(text) {
     let html = marked.parse(text);
     // Sanitize with DOMPurify (defense-in-depth alongside CSP)
     html = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
-    return html;
+    // Post-process: style tool-call blockquotes
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    tmp.querySelectorAll('blockquote').forEach(bq => {
+      if (bq.innerHTML.includes('🔧')) {
+        bq.classList.add('tool-block');
+      }
+    });
+    return tmp.innerHTML;
   } catch (e) {
-    return '<pre style="white-space:pre-wrap;margin:0;font-family:inherit;">' + escHtml(text) + '</pre>';
+    const segments = text.split(/\n\n+/);
+    const rendered = segments.map(seg => {
+      try { return marked.parse(seg); } catch { return '<p>' + escHtml(seg) + '</p>'; }
+    }).join('');
+    const sanitized = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(rendered) : rendered;
+    return sanitized || '<pre style="white-space:pre-wrap;margin:0;font-family:inherit;">' + escHtml(text) + '</pre>';
   }
 }
 

@@ -1144,6 +1144,33 @@ body.dark-mode .aria-msg.assistant .md-content a {
   font-style: italic;
 }
 
+/* Tool call blocks (Claude Code) */
+.aria-msg.assistant .md-content blockquote.tool-block {
+  font-style: normal;
+  color: var(--text-primary);
+  border-left: 3px solid #7c3aed;
+  background: rgba(124, 58, 237, 0.04);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  padding: 8px 12px;
+  margin: 8px 0;
+}
+
+body.dark-mode .aria-msg.assistant .md-content blockquote.tool-block {
+  border-left-color: #a78bfa;
+  background: rgba(167, 139, 250, 0.06);
+}
+
+.aria-msg.assistant .md-content blockquote.tool-block em {
+  font-style: normal;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.aria-msg.assistant .md-content blockquote.tool-block pre {
+  margin: 6px 0 2px 0;
+  font-size: 12px;
+}
+
 .aria-msg.assistant .md-content table {
   border-collapse: collapse;
   margin: 10px 0;

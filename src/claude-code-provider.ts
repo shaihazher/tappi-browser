@@ -1046,12 +1046,12 @@ export class ClaudeCodeProvider extends EventEmitter {
     if (msg.type === 'tool_result' || (msg.role === 'user' && msg.content && Array.isArray(msg.content))) {
       const content = msg.content;
       if (typeof content === 'string' && content.trim()) {
-        this.emit('chunk', { text: `\n> _Result:_ ${this._truncate(content, 500)}\n\n`, done: false } as CCChunkEvent);
+        this.emit('chunk', { text: '\n' + this._blockquotify('_Result:_ ' + this._truncate(content, 500)) + '\n\n', done: false } as CCChunkEvent);
       } else if (Array.isArray(content)) {
         for (const block of content) {
           if (block.type === 'tool_result' && block.content) {
             const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
-            this.emit('chunk', { text: `\n> _Result:_ ${this._truncate(text, 500)}\n\n`, done: false } as CCChunkEvent);
+            this.emit('chunk', { text: '\n' + this._blockquotify('_Result:_ ' + this._truncate(text, 500)) + '\n\n', done: false } as CCChunkEvent);
           }
         }
       }
@@ -1069,7 +1069,7 @@ export class ClaudeCodeProvider extends EventEmitter {
 
   /** Format a tool_use block from a complete assistant message as markdown */
   private _formatToolUse(name: string, input: any): string {
-    let md = `\n\n> **🔧 ${name}**\n`;
+    let md = '\n\n' + this._blockquotify(`**🔧 ${name}**`) + '\n';
     md += this._formatToolInput(name, input) || '';
     return md;
   }
@@ -1084,7 +1084,7 @@ export class ClaudeCodeProvider extends EventEmitter {
       case 'Edit':
         return `> \`${input.file_path || ''}\`\n\n`;
       case 'Bash':
-        return `> \`\`\`\n> ${this._truncate(input.command || '', 200)}\n> \`\`\`\n\n`;
+        return this._blockquotify('```\n' + this._truncate(input.command || '', 200) + '\n```') + '\n\n';
       case 'Glob':
         return `> Pattern: \`${input.pattern || ''}\`\n\n`;
       case 'Grep':
@@ -1095,7 +1095,7 @@ export class ClaudeCodeProvider extends EventEmitter {
         // Generic: show first meaningful key
         const keys = Object.keys(input).slice(0, 2);
         const summary = keys.map(k => `${k}: ${this._truncate(String(input[k] ?? ''), 100)}`).join(', ');
-        return summary ? `> ${summary}\n\n` : '';
+        return summary ? this._blockquotify(summary) + '\n\n' : '';
       }
     }
   }
@@ -1104,6 +1104,11 @@ export class ClaudeCodeProvider extends EventEmitter {
   private _truncate(text: string, maxLen: number): string {
     if (text.length <= maxLen) return text;
     return text.slice(0, maxLen) + '…';
+  }
+
+  /** Prefix every line with `> ` so multiline text stays inside a single blockquote */
+  private _blockquotify(text: string): string {
+    return text.split('\n').map(line => '> ' + line).join('\n');
   }
 
   /**
