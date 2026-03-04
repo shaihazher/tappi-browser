@@ -2848,15 +2848,35 @@ function renderExtensions(exts) {
         <div class="api-service-url">${escHtml(ext.path)}</div>
       </div>
       <div class="api-service-actions">
+        <button class="ext-toggle-btn ext-toggle-settings ${ext.enabled !== false ? 'on' : ''}"
+                data-id="${escHtml(ext.id)}">${ext.enabled !== false ? 'ON' : 'OFF'}</button>
         <button class="api-action-btn ext-remove-btn" data-id="${escHtml(ext.id)}" title="Remove">🗑</button>
       </div>`;
     list.appendChild(card);
   }
+  // Wire toggle buttons
+  list.querySelectorAll('.ext-toggle-settings').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      const isOn = btn.classList.contains('on');
+      if (isOn) {
+        await window.tappi.disableExtension(id);
+      } else {
+        await window.tappi.enableExtension(id);
+      }
+      loadExtensions();
+      if (extPopup && !extPopup.classList.contains('hidden')) loadExtPopup();
+    });
+  });
+  // Wire remove buttons
   list.querySelectorAll('.ext-remove-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.id;
       const result = await window.tappi.removeExtension(id);
-      if (result && result.success !== false) loadExtensions();
+      if (result && result.success !== false) {
+        loadExtensions();
+        if (extPopup && !extPopup.classList.contains('hidden')) loadExtPopup();
+      }
     });
   });
 }
@@ -2884,9 +2904,98 @@ document.getElementById('ext-install-crx-btn')?.addEventListener('click', async 
   loadExtensions();
 });
 
+// ═══════════════════════════════════════════
+//  EXTENSIONS TOOLBAR POPUP
+// ═══════════════════════════════════════════
+
+const extPopupBtn = document.getElementById('btn-extensions');
+const extPopup = document.getElementById('extensions-popup');
+
+function toggleExtPopup() {
+  extPopup.classList.toggle('hidden');
+  if (!extPopup.classList.contains('hidden')) {
+    loadExtPopup();
+  }
+}
+
+function closeExtPopup() {
+  extPopup.classList.add('hidden');
+}
+
+async function loadExtPopup() {
+  const list = document.getElementById('ext-popup-list');
+  const exts = await window.tappi.getExtensions();
+  if (!exts || exts.length === 0) {
+    list.innerHTML = '<div class="ext-popup-empty">No extensions installed</div>';
+    return;
+  }
+  list.innerHTML = '';
+  for (const ext of exts) {
+    const row = document.createElement('div');
+    row.className = 'ext-popup-row';
+    row.innerHTML = `
+      <div class="ext-popup-info">
+        <span class="ext-popup-name">${escHtml(ext.name)}</span>
+        <span class="ext-popup-version">v${escHtml(ext.version)}</span>
+      </div>
+      <div class="ext-popup-controls">
+        <button class="ext-toggle-btn ${ext.enabled !== false ? 'on' : ''}"
+                data-id="${escHtml(ext.id)}" title="${ext.enabled !== false ? 'Disable' : 'Enable'}">
+          ${ext.enabled !== false ? 'ON' : 'OFF'}
+        </button>
+        <button class="ext-remove-popup-btn" data-id="${escHtml(ext.id)}" title="Remove">🗑</button>
+      </div>`;
+    list.appendChild(row);
+  }
+  // Wire toggles
+  list.querySelectorAll('.ext-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      const isOn = btn.classList.contains('on');
+      if (isOn) {
+        await window.tappi.disableExtension(id);
+      } else {
+        await window.tappi.enableExtension(id);
+      }
+      loadExtPopup();
+      if (currentSettingsTab === 'extensions') loadExtensions();
+    });
+  });
+  // Wire remove
+  list.querySelectorAll('.ext-remove-popup-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await window.tappi.removeExtension(btn.dataset.id);
+      loadExtPopup();
+      if (currentSettingsTab === 'extensions') loadExtensions();
+    });
+  });
+}
+
+extPopupBtn?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleExtPopup();
+});
+
+document.getElementById('ext-popup-close')?.addEventListener('click', closeExtPopup);
+
+document.getElementById('ext-popup-manage')?.addEventListener('click', () => {
+  closeExtPopup();
+  openSettings();
+  switchSettingsTab('extensions');
+});
+
+document.addEventListener('click', (e) => {
+  if (extPopup && !extPopup.classList.contains('hidden') &&
+      !extPopup.contains(e.target) && e.target !== extPopupBtn) {
+    closeExtPopup();
+  }
+});
+
+// Consolidated onExtensionsUpdated listener — refreshes both settings tab and popup
 if (window.tappi.onExtensionsUpdated) {
   window.tappi.onExtensionsUpdated(() => {
     if (currentSettingsTab === 'extensions') loadExtensions();
+    if (extPopup && !extPopup.classList.contains('hidden')) loadExtPopup();
   });
 }
 

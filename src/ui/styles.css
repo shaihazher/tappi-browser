@@ -3129,3 +3129,121 @@ body.dark-mode #autocomplete-dropdown {
 .interrupt-flash {
   animation: interrupt-flash 1.2s ease-out;
 }
+
+/* ─── Extensions toolbar button ─── */
+.extensions-btn {
+  font-size: 14px;
+  position: relative;
+}
+
+/* ─── Extensions popup (follows profile-popup pattern) ─── */
+.extensions-popup {
+  position: absolute;
+  top: 38px;
+  right: 72px;
+  width: 260px;
+  background: var(--surface, #16213e);
+  border: 1px solid var(--border, rgba(var(--overlay-rgb),0.1));
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  z-index: 999;
+  overflow: hidden;
+}
+
+.extensions-popup-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px 6px;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border, rgba(var(--overlay-rgb),0.08));
+}
+
+.extensions-popup-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border, rgba(var(--overlay-rgb),0.08));
+}
+
+/* Extension rows in popup */
+.ext-popup-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  transition: background 0.1s;
+}
+.ext-popup-row:hover {
+  background: rgba(var(--overlay-rgb), 0.05);
+}
+
+.ext-popup-info {
+  flex: 1;
+  min-width: 0;
+}
+.ext-popup-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.ext-popup-version {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-left: 4px;
+}
+
+.ext-popup-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.ext-toggle-btn {
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  min-width: 38px;
+}
+.ext-toggle-btn.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.ext-remove-popup-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+.ext-remove-popup-btn:hover {
+  opacity: 1;
+}
+
+.ext-popup-empty {
+  padding: 16px 12px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+#ext-popup-list {
+  max-height: 240px;
+  overflow-y: auto;
+}

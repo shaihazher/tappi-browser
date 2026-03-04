@@ -46,7 +46,7 @@ import { cleanupAllSubAgents } from './sub-agent';
 import { cleanupAllTeams, getActiveTeam, getTeamStatusUI, setTeamUpdateCallback, interruptTeammate, getActiveTeamId } from './team-manager';
 import { scheduleProfileUpdate, deleteProfile, loadUserProfileTxt, saveUserProfileTxt, loadProfile, generateProfile } from './user-profile';
 import { purgeSession } from './output-buffer';
-import { installExtension, installFromCrx, listExtensions, getExtension, removeExtension, loadPersistedExtensionsForProfile } from './extension-manager';
+import { installExtension, installFromCrx, listExtensions, getExtension, removeExtension, enableExtension, disableExtension, loadPersistedExtensionsForProfile } from './extension-manager';
 import { initCronManager, updateCronContext, addJob as cronAddJob, listJobs as cronListJobs, updateJob as cronUpdateJob, deleteJob as cronDeleteJob, runJobNow as cronRunJobNow, getJobsList, getActiveJobCount, cleanupCron } from './cron-manager';
 import {
   createConversation,
@@ -2723,6 +2723,8 @@ Rules:
   });
   ipcMain.handle('extensions:get', (_e, id: string) => getExtension(id));
   ipcMain.handle('extensions:remove', (_e, id: string) => removeExtension(id));
+  ipcMain.handle('extensions:enable', (_e, id: string) => enableExtension(id));
+  ipcMain.handle('extensions:disable', (_e, id: string) => disableExtension(id));
 
   // ─── API Services IPC ───
   ipcMain.handle('api-services:list', () => {

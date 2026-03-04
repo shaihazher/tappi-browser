@@ -122,6 +122,8 @@ contextBridge.exposeInMainWorld('tappi', {
   installExtension: (data: { path: string; allowFileAccess?: boolean }) => ipcRenderer.invoke('extensions:install', data),
   getExtensionDetails: (id: string) => ipcRenderer.invoke('extensions:get', id),
   removeExtension: (id: string) => ipcRenderer.invoke('extensions:remove', id),
+  enableExtension: (id: string) => ipcRenderer.invoke('extensions:enable', id),
+  disableExtension: (id: string) => ipcRenderer.invoke('extensions:disable', id),
   selectFile: (options: { title?: string; filters?: any[] }) => ipcRenderer.invoke('dialog:select-file', options),
   onExtensionsUpdated: (callback: () => void) => {
     ipcRenderer.on('extensions:updated', () => callback());

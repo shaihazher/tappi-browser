@@ -29,6 +29,7 @@
     </div>
     <!-- Profile indicator (Phase 8.4.4) -->
     <button id="profile-indicator" class="nav-btn profile-indicator" title="Profile — click to switch">👤</button>
+    <button id="btn-extensions" class="nav-btn extensions-btn" title="Extensions">🧩</button>
     <button id="btn-overflow" class="nav-btn" title="Menu">⋮</button>
   </div>
 
@@ -47,6 +48,18 @@
     <div class="profile-popup-actions">
       <button id="profile-new-btn" class="secondary-btn small">+ New Profile</button>
       <button id="profile-settings-btn" class="ghost-btn small">Settings →</button>
+    </div>
+  </div>
+
+  <!-- Extensions popup -->
+  <div id="extensions-popup" class="hidden extensions-popup">
+    <div class="extensions-popup-header">
+      <span>Extensions</span>
+      <button id="ext-popup-close" class="ghost-btn small">✕</button>
+    </div>
+    <div id="ext-popup-list"></div>
+    <div class="extensions-popup-actions">
+      <button id="ext-popup-manage" class="ghost-btn small">Manage Extensions →</button>
     </div>
   </div>
 

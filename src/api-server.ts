@@ -855,6 +855,17 @@ async function handleRequest(
         if ('error' in result) return err(res, 404, result.error);
         return json(res, 200, result);
       }
+      if (method === 'PATCH') {
+        const body = await readBody(req);
+        if (typeof body.enabled === 'boolean') {
+          const { enableExtension, disableExtension } = require('./extension-manager');
+          const fn = body.enabled ? enableExtension : disableExtension;
+          const result = await fn(m.id);
+          if ('error' in result) return err(res, 400, result.error);
+          return json(res, 200, result);
+        }
+        return err(res, 400, 'Missing field: enabled');
+      }
       if (method === 'DELETE') {
         const { removeExtension } = require('./extension-manager');
         const result = await removeExtension(m.id);

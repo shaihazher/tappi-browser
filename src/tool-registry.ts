@@ -1940,7 +1940,7 @@ function createWorktreeTools(repoPath?: string) {
  * Always available.
  */
 function createExtensionTools() {
-  const { installExtension, listExtensions, getExtension, removeExtension } = require('./extension-manager');
+  const { installExtension, listExtensions, getExtension, removeExtension, enableExtension, disableExtension } = require('./extension-manager');
 
   return {
     extension_install: tool({
@@ -1983,6 +1983,19 @@ function createExtensionTools() {
       }),
       execute: async ({ id }: { id: string }) => {
         const result = await removeExtension(id);
+        return JSON.stringify(result, null, 2);
+      },
+    }),
+
+    extension_toggle: tool({
+      description: 'Enable or disable a Chrome extension by ID or name. Disabled extensions stay installed but are not loaded.',
+      inputSchema: z.object({
+        id: z.string().describe('Extension ID or name'),
+        enabled: z.boolean().describe('true to enable, false to disable'),
+      }),
+      execute: async ({ id, enabled }: { id: string; enabled: boolean }) => {
+        const fn = enabled ? enableExtension : disableExtension;
+        const result = await fn(id);
         return JSON.stringify(result, null, 2);
       },
     }),
@@ -2721,16 +2734,19 @@ USE WHEN: User wants to install, manage, or remove Chrome extensions.
 DO NOT USE FOR: Browser settings or preferences (use config tools instead).
 
 **Workflow:**
-1. \`extension_list()\` → see all installed extensions
+1. \`extension_list()\` → see all installed extensions (includes disabled)
 2. \`extension_install({ path: "/path/to/extension" })\` → install from unpacked directory
 3. \`extension_install({ path: "/path/to/file.crx" })\` → install from .crx file (auto-extracted)
 4. \`extension_get({ id: "ext-id-or-name" })\` → get details
-5. \`extension_remove({ id: "ext-id-or-name" })\` → uninstall
+5. \`extension_toggle({ id: "ext-id-or-name", enabled: false })\` → disable (unload but keep installed)
+6. \`extension_toggle({ id: "ext-id-or-name", enabled: true })\` → re-enable (reload)
+7. \`extension_remove({ id: "ext-id-or-name" })\` → fully uninstall
 
 **Notes:**
 - Extensions persist across restarts and are per-profile
 - .crx files downloaded in the browser are auto-installed
 - CRX-sourced extensions are fully cleaned up on removal (extracted directory deleted)
+- Disabled extensions stay in persistence but are not loaded into the session
 
 ### ERROR RECOVERY
 - "Element not found" or wrong index → call \`elements()\` again (indexes shift after page changes)

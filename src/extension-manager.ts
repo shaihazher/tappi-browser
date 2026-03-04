@@ -22,6 +22,7 @@ export interface ExtensionEntry {
   allowFileAccess?: boolean;
   addedAt: string;
   source: 'unpacked' | 'crx';
+  enabled: boolean;
 }
 
 interface ExtensionsFile {
@@ -36,6 +37,7 @@ export interface ExtensionInfo {
   allowFileAccess?: boolean;
   addedAt?: string;
   source?: 'unpacked' | 'crx';
+  enabled: boolean;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -189,6 +191,7 @@ export async function installExtension(
       allowFileAccess: options?.allowFileAccess,
       addedAt: new Date().toISOString(),
       source,
+      enabled: true,
     });
     writePersistence(data);
 
@@ -200,6 +203,7 @@ export async function installExtension(
       allowFileAccess: options?.allowFileAccess,
       addedAt: data.extensions[data.extensions.length - 1].addedAt,
       source,
+      enabled: true,
     };
   } catch (e: any) {
     return { error: e.message || String(e) };
@@ -226,7 +230,7 @@ export async function installFromCrx(
 }
 
 /**
- * List all loaded extensions, enriched with persistence metadata.
+ * List all extensions (loaded + disabled), enriched with persistence metadata.
  */
 export function listExtensions(): ExtensionInfo[] {
   try {
@@ -234,9 +238,14 @@ export function listExtensions(): ExtensionInfo[] {
     const loaded = ses.getAllExtensions();
     const persisted = readPersistence();
 
-    return loaded.map(ext => {
+    const results: ExtensionInfo[] = [];
+    const seenPaths = new Set<string>();
+
+    // Add loaded (enabled) extensions
+    for (const ext of loaded) {
+      seenPaths.add(ext.path);
       const entry = persisted.extensions.find(e => e.path === ext.path);
-      return {
+      results.push({
         id: ext.id,
         name: ext.name,
         version: ext.version,
@@ -244,8 +253,36 @@ export function listExtensions(): ExtensionInfo[] {
         allowFileAccess: entry?.allowFileAccess,
         addedAt: entry?.addedAt,
         source: entry?.source,
-      };
-    });
+        enabled: true,
+      });
+    }
+
+    // Add disabled extensions from persistence
+    for (const entry of persisted.extensions) {
+      if (seenPaths.has(entry.path)) continue;
+      if (entry.enabled === false) {
+        // Read manifest.json to get name/version
+        try {
+          const manifestPath = path.join(entry.path, 'manifest.json');
+          if (!fs.existsSync(manifestPath)) continue;
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+          results.push({
+            id: `disabled-${Buffer.from(entry.path).toString('base64url').slice(0, 16)}`,
+            name: manifest.name || path.basename(entry.path),
+            version: manifest.version || '0.0.0',
+            path: entry.path,
+            allowFileAccess: entry.allowFileAccess,
+            addedAt: entry.addedAt,
+            source: entry.source,
+            enabled: false,
+          });
+        } catch {
+          // Skip entries with unreadable manifests
+        }
+      }
+    }
+
+    return results;
   } catch (e: any) {
     console.error('[extensions] listExtensions error:', e);
     return [];
@@ -259,7 +296,7 @@ export function getExtension(idOrName: string): ExtensionInfo | { error: string 
   try {
     const ses = sessionManager.getProfileSession();
 
-    // Try by ID first
+    // Try by ID first (loaded extensions)
     const ext = ses.getExtension(idOrName);
     if (ext) {
       const persisted = readPersistence();
@@ -272,10 +309,11 @@ export function getExtension(idOrName: string): ExtensionInfo | { error: string 
         allowFileAccess: entry?.allowFileAccess,
         addedAt: entry?.addedAt,
         source: entry?.source,
+        enabled: true,
       };
     }
 
-    // Fallback: case-insensitive name search
+    // Fallback: case-insensitive name search in loaded extensions
     const all = ses.getAllExtensions();
     const match = all.find(e => e.name.toLowerCase() === idOrName.toLowerCase());
     if (match) {
@@ -289,7 +327,32 @@ export function getExtension(idOrName: string): ExtensionInfo | { error: string 
         allowFileAccess: entry?.allowFileAccess,
         addedAt: entry?.addedAt,
         source: entry?.source,
+        enabled: true,
       };
+    }
+
+    // Also check disabled extensions in persistence
+    const persisted = readPersistence();
+    for (const entry of persisted.extensions) {
+      if (entry.enabled === false) {
+        try {
+          const manifestPath = path.join(entry.path, 'manifest.json');
+          if (!fs.existsSync(manifestPath)) continue;
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+          if (manifest.name?.toLowerCase() === idOrName.toLowerCase()) {
+            return {
+              id: `disabled-${Buffer.from(entry.path).toString('base64url').slice(0, 16)}`,
+              name: manifest.name,
+              version: manifest.version || '0.0.0',
+              path: entry.path,
+              allowFileAccess: entry.allowFileAccess,
+              addedAt: entry.addedAt,
+              source: entry.source,
+              enabled: false,
+            };
+          }
+        } catch {}
+      }
     }
 
     return { error: `Extension not found: ${idOrName}` };
@@ -299,26 +362,46 @@ export function getExtension(idOrName: string): ExtensionInfo | { error: string 
 }
 
 /**
- * Remove an extension by ID or name.
+ * Remove an extension by ID or name (including disabled extensions).
  */
 export async function removeExtension(idOrName: string): Promise<{ success: boolean; error?: string }> {
   try {
     const ses = sessionManager.getProfileSession();
 
-    // Resolve to extension object
+    // Resolve to extension object (loaded ones)
     let ext = ses.getExtension(idOrName);
     if (!ext) {
       const all = ses.getAllExtensions();
       ext = all.find(e => e.name.toLowerCase() === idOrName.toLowerCase()) || null;
     }
-    if (!ext) {
-      return { success: false, error: `Extension not found: ${idOrName}` };
+
+    let extPath: string | undefined;
+
+    if (ext) {
+      extPath = ext.path;
+      // Remove from Electron session
+      ses.removeExtension(ext.id);
+    } else {
+      // Check disabled extensions in persistence
+      const data = readPersistence();
+      for (const entry of data.extensions) {
+        if (entry.enabled === false) {
+          try {
+            const manifestPath = path.join(entry.path, 'manifest.json');
+            if (!fs.existsSync(manifestPath)) continue;
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+            if (manifest.name?.toLowerCase() === idOrName.toLowerCase()) {
+              extPath = entry.path;
+              break;
+            }
+          } catch {}
+        }
+      }
     }
 
-    const extPath = ext.path;
-
-    // Remove from Electron session
-    ses.removeExtension(ext.id);
+    if (!extPath) {
+      return { success: false, error: `Extension not found: ${idOrName}` };
+    }
 
     // Update persistence
     const data = readPersistence();
@@ -346,6 +429,110 @@ export async function removeExtension(idOrName: string): Promise<{ success: bool
 }
 
 /**
+ * Disable an extension — unloads from session but keeps in persistence.
+ */
+export async function disableExtension(idOrName: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const ses = sessionManager.getProfileSession();
+
+    // Resolve to loaded extension
+    let ext = ses.getExtension(idOrName);
+    if (!ext) {
+      const all = ses.getAllExtensions();
+      ext = all.find(e => e.name.toLowerCase() === idOrName.toLowerCase()) || null;
+    }
+    if (!ext) {
+      return { success: false, error: `Extension not found or already disabled: ${idOrName}` };
+    }
+
+    const extPath = ext.path;
+
+    // Unload from session
+    ses.removeExtension(ext.id);
+
+    // Update persistence: set enabled = false
+    const data = readPersistence();
+    const entry = data.extensions.find(e => e.path === extPath);
+    if (entry) {
+      entry.enabled = false;
+      writePersistence(data);
+    }
+
+    return { success: true };
+  } catch (e: any) {
+    return { success: false, error: e.message || String(e) };
+  }
+}
+
+/**
+ * Enable a previously disabled extension — reloads into session.
+ */
+export async function enableExtension(idOrName: string): Promise<ExtensionInfo | { error: string }> {
+  try {
+    const ses = sessionManager.getProfileSession();
+    const data = readPersistence();
+
+    // Find the disabled entry by name (read manifest) or by checking if idOrName matches a persisted path pattern
+    let targetEntry: ExtensionEntry | undefined;
+
+    for (const entry of data.extensions) {
+      if (entry.enabled !== false) continue;
+      try {
+        const manifestPath = path.join(entry.path, 'manifest.json');
+        if (!fs.existsSync(manifestPath)) continue;
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        if (manifest.name?.toLowerCase() === idOrName.toLowerCase()) {
+          targetEntry = entry;
+          break;
+        }
+      } catch {}
+    }
+
+    // Also try matching by the synthetic disabled ID
+    if (!targetEntry) {
+      for (const entry of data.extensions) {
+        if (entry.enabled !== false) continue;
+        const syntheticId = `disabled-${Buffer.from(entry.path).toString('base64url').slice(0, 16)}`;
+        if (syntheticId === idOrName) {
+          targetEntry = entry;
+          break;
+        }
+      }
+    }
+
+    if (!targetEntry) {
+      return { error: `Disabled extension not found: ${idOrName}` };
+    }
+
+    if (!fs.existsSync(targetEntry.path) || !fs.existsSync(path.join(targetEntry.path, 'manifest.json'))) {
+      return { error: `Extension directory missing: ${targetEntry.path}` };
+    }
+
+    // Load into session
+    const ext = await ses.loadExtension(targetEntry.path, {
+      allowFileAccess: targetEntry.allowFileAccess ?? false,
+    });
+
+    // Update persistence: set enabled = true
+    targetEntry.enabled = true;
+    writePersistence(data);
+
+    return {
+      id: ext.id,
+      name: ext.name,
+      version: ext.version,
+      path: ext.path,
+      allowFileAccess: targetEntry.allowFileAccess,
+      addedAt: targetEntry.addedAt,
+      source: targetEntry.source,
+      enabled: true,
+    };
+  } catch (e: any) {
+    return { error: e.message || String(e) };
+  }
+}
+
+/**
  * Load all persisted extensions for a profile. Called at boot and on profile switch.
  * Skips missing directories and auto-cleans stale entries.
  */
@@ -358,6 +545,16 @@ export async function loadPersistedExtensionsForProfile(profileName?: string): P
 
   for (let i = 0; i < data.extensions.length; i++) {
     const entry = data.extensions[i];
+
+    // Backward compat: treat missing enabled field as true
+    if (entry.enabled === undefined) entry.enabled = true;
+
+    // Skip disabled extensions
+    if (entry.enabled === false) {
+      console.log(`[extensions] Skipping disabled: ${entry.path}`);
+      continue;
+    }
+
     if (!fs.existsSync(entry.path) || !fs.existsSync(path.join(entry.path, 'manifest.json'))) {
       console.warn(`[extensions] Skipping missing extension dir: ${entry.path}`);
       staleIndexes.push(i);
