@@ -316,6 +316,7 @@ interface AgentRunOptions {
   codexToolRetryCount?: number; // Internal guard: codex empty-tool-call recovery retries
   codexForceNonStream?: boolean; // Internal guard: retry codex once via non-stream generateText
   attachments?: ProcessedAttachment[]; // File attachments for multimodal messages
+  scriptId?: string;  // Script ID when executing a stored script — enables script_persist_fix tool
 }
 
 // Task-type addendums removed (Phase 9.12) — the agent decides when/if to spawn sub-agents.
@@ -466,6 +467,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
 
     const tools = createTools(browserCtx, sessionId, {
       developerMode, llmConfig, worktreeIsolation, agentBrowsingDataAccess, conversationId, projectWorkingDir,
+      scriptId: opts.scriptId,
       onSubAgentProgress: (data) => broadcast('agent:subagent-progress', data),
       onProfileSwitch: (name: string) => new Promise((resolve) => {
         agentEvents.emit('profile:switch-request', name, (result: any) => {

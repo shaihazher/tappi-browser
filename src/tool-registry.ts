@@ -34,6 +34,7 @@ import { profileManager } from './profile-manager';
 import { sessionManager } from './session-manager';
 import { listIdentities } from './password-vault';
 import { createRecipeTools } from './recipes';
+import { updateScript } from './script-store';
 import * as path from 'path';
 import * as os from 'os';
 import { getWorkspacePath, expandTilde, DEFAULT_WORKSPACE } from './workspace-resolver';
@@ -60,6 +61,7 @@ export interface ToolRegistryOptions {
   projectWorkingDir?: string;  // Phase 9.099: project-scoped CWD for exec/file tools
   lockedTabId?: string;        // Sub-agent tab isolation: force all browser tools to this tab
   subAgentTaskType?: string;   // Sub-agent task type — used to filter tools down to what's needed
+  scriptId?: string;           // Set when executing a stored script — enables script_persist_fix tool
   onSubAgentProgress?: (data: any) => void;  // Progress callback for sub-agent UI chips
   onProfileSwitch?: (name: string) => Promise<{ success: boolean; error?: string }>;  // Profile switch callback
 }
@@ -1317,6 +1319,22 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
 </div>`;
       },
     }),
+
+    // ═══ SCRIPT PERSIST-FIX TOOL (only when executing a stored script) ═══
+    ...(options?.scriptId ? {
+      script_persist_fix: tool({
+        description: 'Persist a fix to the currently executing script definition. Use this when you fix a bug in the script\'s Python code during execution and want the fix to be saved for future runs. Provide the corrected full scriptBody.',
+        inputSchema: z.object({
+          scriptBody: z.string().describe('The corrected full script body (Python code or mixed content) to save'),
+          summary: z.string().describe('Brief description of what was fixed'),
+        }),
+        execute: async ({ scriptBody, summary }: { scriptBody: string; summary: string }) => {
+          const result = updateScript(options.scriptId!, { scriptBody });
+          if (!result) return '❌ Failed to persist fix — script not found.';
+          return `✅ Script fix persisted: ${summary}. Future runs will use the corrected code.`;
+        },
+      }),
+    } : {}),
   };
 }
 

@@ -1080,6 +1080,9 @@ function createWindow() {
   // ─── Claude Code Provider State ──────────────────────────────────────────
   let activeClaudeCodeProvider: any = null;
 
+  // ─── Script Execution: pending scriptId for agent persist-fix tool ───
+  let pendingScriptId: string | null = null;
+
   ipcMain.on('aria:send', async (_e, message: string, conversationId?: string, codingMode?: boolean, attachments?: Array<{ name: string; mimeType: string; size: number; data: ArrayBuffer }>) => {
     const apiKey = decryptApiKey(currentConfig.llm.apiKey);
     // Claude Code with OAuth/Bedrock doesn't need an API key — it handles its own auth
@@ -1318,6 +1321,11 @@ function createWindow() {
     }
 
     // ─── Standard Agent Routing ────────────────────────────────────────────
+    // Consume pendingScriptId (set by scripts:execute handler) so the agent
+    // gets the script_persist_fix tool when executing a stored script.
+    const scriptId = pendingScriptId;
+    pendingScriptId = null;
+
     const browserCtx: BrowserContext = { window: mainWindow, tabManager, config: currentConfig };
     runAgent({
       userMessage: message,
@@ -1348,6 +1356,7 @@ function createWindow() {
       conversationId: convId || activeConversationId || undefined,
       ariaWebContents: tabManager?.ariaWebContents,
       attachments: processedAttachments,
+      scriptId: scriptId || undefined,
     });
   });
 
@@ -1531,6 +1540,7 @@ function createWindow() {
     const executionMessage = buildExecutionPrompt(script, inputs, specialInstructions || undefined);
     incrementRunCount(scriptId);
 
+    pendingScriptId = scriptId;
     ariaWC.send('scripts:execute-ready', { message: executionMessage, conversationId });
   });
 

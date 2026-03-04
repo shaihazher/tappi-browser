@@ -23,9 +23,9 @@ const SCRIPTIFY_SYSTEM_PROMPT = `You are a script generator. Analyze the convers
 Your task:
 1. Identify the core repeatable workflow from the conversation
 2. Classify the script type:
-   - "automated": Deterministic tool-call sequences (scraping, form-filling, file operations)
-   - "semi-automated": Tool calls mixed with LLM reasoning on intermediate results
-   - "playbook": Creative/orchestration tasks requiring agent judgment
+   - "automated": Deterministic workflows — generate an executable Python script that the agent will write to a file and run
+   - "semi-automated": Hybrid — Python scripts for deterministic actions (scraping, data processing, API calls) combined with LLM reasoning prompts for analysis/decision steps
+   - "playbook": Creative/orchestration tasks requiring agent judgment — Python scripts optional, use when beneficial
 3. Extract variable inputs (things that would change between runs) vs constant values
 4. Generate the script body appropriate to the type
 5. Define an input schema for the variable parts
@@ -35,6 +35,9 @@ IMPORTANT:
 - For browser automation: use descriptive element finding (not hardcoded selectors)
 - Include error handling guidance
 - Make the script general-purpose, not tied to specific values from this conversation
+- For automated and semi-automated scripts: generate clean, well-structured Python code with proper error handling (try/except), logging, and clear variable names
+- Use standard libraries where possible; note any pip dependencies in the description
+- The Python code will be written to a temp file and executed by the agent — ensure it is self-contained and runnable
 
 Also identify any domains that required authentication during the conversation.
 Include an "authRequirements" array in your JSON output:
@@ -61,7 +64,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
     ]
   },
   "authRequirements": [],
-  "scriptBody": "The full script content as a string. For automated: step-by-step instructions referencing {{field_name}} placeholders. For semi-automated: hybrid steps mixing deterministic actions and reasoning prompts. For playbook: structured step-by-step playbook with phases."
+  "scriptBody": "For automated: a complete, executable Python script with {{field_name}} placeholders for variable inputs. For semi-automated: a mix of executable Python code blocks (for deterministic steps) and natural language reasoning prompts (for analysis steps), clearly delineated. For playbook: structured step-by-step playbook with phases; include Python code blocks where they add value."
 }`;
 
 // ─── Scriptify: Conversation → Script (Vercel AI SDK path) ───
@@ -207,6 +210,8 @@ IMPORTANT:
 - Preserve existing input fields unless the user asks to modify them
 - If adding new inputs, follow the existing inputSchema format
 - Maintain the same level of detail and quality in the scriptBody
+- For automated and semi-automated scripts: scriptBody should contain executable Python code with proper error handling, logging, and clear variable names
+- Use standard libraries where possible; note any pip dependencies in the description
 - Keep authRequirements unchanged unless the user specifically mentions auth changes
 
 Respond with ONLY a JSON object (no markdown fences, no explanation):
@@ -228,7 +233,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
     ]
   },
   "authRequirements": [],
-  "scriptBody": "The full updated script content"
+  "scriptBody": "For automated: a complete, executable Python script with {{field_name}} placeholders. For semi-automated: a mix of executable Python code blocks and reasoning prompts. For playbook: structured step-by-step playbook with optional Python code blocks."
 }`;
 
 // ─── Update Script Definition ───
@@ -384,6 +389,11 @@ export function buildExecutionPrompt(script: Script, inputs: Record<string, any>
     authPreamble = authLines.join('\n') + '\n\n';
   }
 
+  // Persist-fix guidance for scripts with Python code
+  const persistFixGuidance = (script.scriptType === 'automated' || script.scriptType === 'semi-automated')
+    ? '\n\nIf any code in this script fails during execution, fix the error and re-run. If the fix is a genuine bug correction (not a one-off environment issue), use the script_persist_fix tool to save the corrected code for future runs.'
+    : '';
+
   if (isBulk) {
     const rows = inputs as Record<string, any>[];
     const header = `You are executing the script "${script.name}" in bulk mode for ${rows.length} inputs.\n\nProcess each row sequentially and report results for each.\n\n`;
@@ -393,24 +403,24 @@ export function buildExecutionPrompt(script: Script, inputs: Record<string, any>
       return `--- Row ${i + 1} of ${rows.length} ---\nInputs: ${JSON.stringify(row)}\n\n${resolved}`;
     }).join('\n\n');
 
-    const bulkPrompt = header + authPreamble + getTypeInstructions(script.scriptType) + '\n\n' + rowPrompts;
+    const bulkPrompt = header + authPreamble + getTypeInstructions(script.scriptType) + persistFixGuidance + '\n\n' + rowPrompts;
     return specialInstructions ? bulkPrompt + `\n\nADDITIONAL INSTRUCTIONS FOR THIS RUN:\n${specialInstructions}` : bulkPrompt;
   }
 
   // Single execution
   const resolvedBody = substituteInputs(script.scriptBody, inputs as Record<string, any>);
-  const singlePrompt = `You are executing the script "${script.name}".\n\n${authPreamble}${getTypeInstructions(script.scriptType)}\n\n${resolvedBody}`;
+  const singlePrompt = `You are executing the script "${script.name}".\n\n${authPreamble}${getTypeInstructions(script.scriptType)}${persistFixGuidance}\n\n${resolvedBody}`;
   return specialInstructions ? singlePrompt + `\n\nADDITIONAL INSTRUCTIONS FOR THIS RUN:\n${specialInstructions}` : singlePrompt;
 }
 
 function getTypeInstructions(scriptType: string): string {
   switch (scriptType) {
     case 'automated':
-      return 'Execute the following steps sequentially. Use the appropriate tools for each step. If a step fails, report the error and attempt to fix it before continuing.';
+      return 'This script contains Python code. Write it to a temporary file and execute it with `python3`. If the script fails, read the error traceback, fix the code, and re-run. Report the final output.';
     case 'semi-automated':
-      return 'Follow these steps. For deterministic steps, use tools directly. For analysis/reasoning steps, think through the intermediate results and decide the best course of action.';
+      return 'This script contains Python code blocks for deterministic steps and reasoning prompts for analysis steps. For Python blocks: write to a temp file and execute with `python3`. For reasoning steps: think through the results and decide the best course of action. If any code fails, fix and re-run.';
     case 'playbook':
-      return 'Follow this playbook step by step. Use your judgment for creative and orchestration decisions. Ensure quality at each phase before proceeding to the next.';
+      return 'Follow this playbook step by step. Use your judgment for creative and orchestration decisions. Execute any embedded Python code blocks as needed. Ensure quality at each phase before proceeding to the next.';
     default:
       return 'Follow the instructions below.';
   }
