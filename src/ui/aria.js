@@ -117,6 +117,13 @@ let isEnhancing = false;
 let enhanceMode = 'quick';
 let enhanceDropdownOpen = false;
 
+// Phase 10: Scriptify state
+let scriptsData = [];
+let selectedScriptId = null;
+let scriptInputMode = 'single';
+let scriptBulkRows = [];
+let isScriptifying = false;
+
 // Phase 9.13: Model picker state
 let currentModelConfig = {
   provider: 'anthropic',
@@ -2391,6 +2398,7 @@ function setStreamingState(streaming) {
     clearTimeout(_streamRenderTimer);
     ariaInput.focus();
   }
+  updateScriptifyBtnState();
 }
 
 // ═══════════════════════════════════════════
@@ -2789,6 +2797,7 @@ window.aria.onConversationSwitched(async data => {
     // Phase 9.09: Update active project indicator
     _detectCurrentProject();
     await loadMessagesForConversation(currentConversationId);
+    updateScriptifyBtnState();
   }
 });
 
@@ -3786,6 +3795,444 @@ if (window.aria && window.aria.onPresentDownload) {
   });
 } else {
   console.log('[aria.js] onPresentDownload not available on window.aria');
+}
+
+// ═══════════════════════════════════════════
+//  SCRIPTIFY (Phase 10)
+// ═══════════════════════════════════════════
+
+const ariaScriptifyBtn = document.getElementById('aria-scriptify-btn');
+const ariaScriptsBtn = document.getElementById('aria-scripts-btn');
+const scriptsModalOverlay = document.getElementById('scripts-modal-overlay');
+const scriptsModalClose = document.getElementById('scripts-modal-close');
+const scriptsSearch = document.getElementById('scripts-search');
+const scriptsList = document.getElementById('scripts-list');
+const scriptsDetailEmpty = document.getElementById('scripts-detail-empty');
+const scriptsDetailContent = document.getElementById('scripts-detail-content');
+const scriptsDetailName = document.getElementById('scripts-detail-name');
+const scriptsDetailType = document.getElementById('scripts-detail-type');
+const scriptsDetailDesc = document.getElementById('scripts-detail-desc');
+const scriptsDeleteBtn = document.getElementById('scripts-delete-btn');
+const scriptsModeSingle = document.getElementById('scripts-mode-single');
+const scriptsModeBulk = document.getElementById('scripts-mode-bulk');
+const scriptsSingleForm = document.getElementById('scripts-single-form');
+const scriptsBulkForm = document.getElementById('scripts-bulk-form');
+const scriptsBulkFile = document.getElementById('scripts-bulk-file');
+const scriptsBulkStatus = document.getElementById('scripts-bulk-status');
+const scriptsExecuteBtn = document.getElementById('scripts-execute-btn');
+const scriptsAuthSection = document.getElementById('scripts-auth-section');
+const scriptsAuthList = document.getElementById('scripts-auth-list');
+
+/** Enable/disable Scriptify button based on current state */
+function updateScriptifyBtnState() {
+  if (!ariaScriptifyBtn) return;
+  const canScriptify = currentConversationId && messages.length > 0 && !isStreaming && !isScriptifying;
+  ariaScriptifyBtn.disabled = !canScriptify;
+}
+
+/** Render the scripts list in the modal sidebar */
+function renderScriptsList(filter) {
+  if (!scriptsList) return;
+  const q = (filter || '').toLowerCase().trim();
+  const filtered = q
+    ? scriptsData.filter(s => s.name.toLowerCase().includes(q) || (s.description || '').toLowerCase().includes(q))
+    : scriptsData;
+
+  if (filtered.length === 0) {
+    scriptsList.innerHTML = `<div class="scripts-detail-empty" style="padding:20px;text-align:center;font-size:12px;color:var(--text-dim);">${q ? 'No matching scripts' : 'No scripts yet'}</div>`;
+    return;
+  }
+
+  scriptsList.innerHTML = filtered.map(s => {
+    const active = s.id === selectedScriptId ? ' active' : '';
+    const meta = s.runCount > 0 ? `${s.runCount} run${s.runCount > 1 ? 's' : ''}` : 'Never run';
+    return `<div class="scripts-list-item${active}" data-id="${escAttr(s.id)}">
+      <span class="scripts-item-name">${escHtml(s.name)}</span>
+      <span class="scripts-item-meta">${escHtml(s.scriptType)} · ${escHtml(meta)}</span>
+    </div>`;
+  }).join('');
+
+  // Click handlers for list items
+  scriptsList.querySelectorAll('.scripts-list-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const id = item.getAttribute('data-id');
+      selectScript(id);
+    });
+  });
+}
+
+/** Select a script and show its details */
+function selectScript(id) {
+  selectedScriptId = id;
+  const script = scriptsData.find(s => s.id === id);
+  if (!script) return;
+
+  // Update list active state
+  scriptsList.querySelectorAll('.scripts-list-item').forEach(item => {
+    item.classList.toggle('active', item.getAttribute('data-id') === id);
+  });
+
+  // Show detail panel
+  if (scriptsDetailEmpty) scriptsDetailEmpty.classList.add('hidden');
+  if (scriptsDetailContent) scriptsDetailContent.classList.remove('hidden');
+
+  scriptsDetailName.textContent = script.name;
+  scriptsDetailType.textContent = script.scriptType;
+  scriptsDetailType.setAttribute('data-type', script.scriptType);
+  scriptsDetailDesc.textContent = script.description || 'No description.';
+
+  // Render auth requirements
+  if (scriptsAuthSection && scriptsAuthList) {
+    if (script.authRequirements && script.authRequirements.length > 0) {
+      scriptsAuthSection.classList.remove('hidden');
+      scriptsAuthList.innerHTML = script.authRequirements.map(req => {
+        const typeLabel = req.authType === 'credentials' ? 'credentials' : req.authType === 'session' ? 'session' : 'either';
+        return `<div class="scripts-auth-item">
+          <span class="scripts-auth-icon">⏳</span>
+          <span class="scripts-auth-domain">${escHtml(req.domain)}</span>
+          <span class="scripts-auth-desc">${escHtml(req.description || '')}</span>
+          <span class="scripts-auth-type">${escHtml(typeLabel)}</span>
+        </div>`;
+      }).join('');
+
+      // Async check auth status
+      const domains = script.authRequirements.map(r => r.domain);
+      if (window.aria.checkAuthStatus) {
+        window.aria.checkAuthStatus(domains).then(statuses => {
+          if (!statuses) return;
+          const items = scriptsAuthList.querySelectorAll('.scripts-auth-item');
+          items.forEach((item, i) => {
+            const iconEl = item.querySelector('.scripts-auth-icon');
+            if (!iconEl || !statuses[i]) return;
+            const req = script.authRequirements[i];
+            if (statuses[i].hasCredentials) {
+              iconEl.textContent = '✅';
+            } else if (req.authType === 'session') {
+              iconEl.textContent = '⚠️';
+            } else {
+              iconEl.textContent = '⚠️';
+            }
+          });
+        }).catch(() => {});
+      }
+    } else {
+      scriptsAuthSection.classList.add('hidden');
+      scriptsAuthList.innerHTML = '';
+    }
+  }
+
+  // Reset input mode
+  scriptInputMode = 'single';
+  scriptBulkRows = [];
+  if (scriptsModeSingle) scriptsModeSingle.classList.add('active');
+  if (scriptsModeBulk) scriptsModeBulk.classList.remove('active');
+  if (scriptsSingleForm) scriptsSingleForm.classList.remove('hidden');
+  if (scriptsBulkForm) scriptsBulkForm.classList.add('hidden');
+  if (scriptsBulkStatus) scriptsBulkStatus.classList.add('hidden');
+
+  // Generate input form
+  generateInputForm(script.inputSchema ? script.inputSchema.fields : []);
+}
+
+/** Generate form fields from input schema */
+function generateInputForm(fields) {
+  if (!scriptsSingleForm) return;
+  if (!fields || fields.length === 0) {
+    scriptsSingleForm.innerHTML = '<p style="color:var(--text-dim);font-size:12px;">This script has no configurable inputs.</p>';
+    return;
+  }
+
+  scriptsSingleForm.innerHTML = fields.map(field => {
+    const reqMark = field.required ? ' <span style="color:var(--accent);">*</span>' : '';
+    const desc = field.description ? `<small style="color:var(--text-dim);font-size:11px;">${escHtml(field.description)}</small>` : '';
+    let input = '';
+
+    switch (field.type) {
+      case 'select':
+        input = `<select id="script-field-${escAttr(field.name)}" class="script-field-input">
+          ${(field.options || []).map(o => `<option value="${escAttr(o)}"${field.default === o ? ' selected' : ''}>${escHtml(o)}</option>`).join('')}
+        </select>`;
+        break;
+      case 'boolean':
+        input = `<label style="display:flex;align-items:center;gap:6px;font-size:13px;">
+          <input type="checkbox" id="script-field-${escAttr(field.name)}" class="script-field-input"${field.default ? ' checked' : ''}>
+          ${escHtml(field.name)}
+        </label>`;
+        break;
+      case 'number':
+        input = `<input type="number" id="script-field-${escAttr(field.name)}" class="script-field-input"
+          placeholder="${escAttr(field.placeholder || '')}"${field.default !== undefined ? ` value="${escAttr(String(field.default))}"` : ''}>`;
+        break;
+      default:
+        input = `<input type="text" id="script-field-${escAttr(field.name)}" class="script-field-input"
+          placeholder="${escAttr(field.placeholder || '')}"${field.default !== undefined ? ` value="${escAttr(String(field.default))}"` : ''}>`;
+    }
+
+    return `<div class="scripts-field-group">
+      <label>${escHtml(field.name)}${reqMark}</label>
+      ${desc}
+      ${input}
+    </div>`;
+  }).join('');
+}
+
+/** Gather inputs from the single form */
+function gatherFormInputs() {
+  const script = scriptsData.find(s => s.id === selectedScriptId);
+  if (!script || !script.inputSchema || !script.inputSchema.fields) return {};
+  const inputs = {};
+  for (const field of script.inputSchema.fields) {
+    const el = document.getElementById(`script-field-${field.name}`);
+    if (!el) continue;
+    if (field.type === 'boolean') {
+      inputs[field.name] = el.checked;
+    } else if (field.type === 'number') {
+      inputs[field.name] = el.value ? Number(el.value) : undefined;
+    } else {
+      inputs[field.name] = el.value || undefined;
+    }
+  }
+  return inputs;
+}
+
+// ─── Scriptify button handler ───
+if (ariaScriptifyBtn) {
+  ariaScriptifyBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!currentConversationId || isStreaming || isScriptifying) return;
+
+    isScriptifying = true;
+    ariaScriptifyBtn.disabled = true;
+    ariaScriptifyBtn.textContent = '⏳';
+
+    try {
+      const result = await window.aria.scriptifyConversation(currentConversationId);
+      if (result && result.success) {
+        // Show success notification in chat
+        appendMessage('assistant', `📜 **Script created:** "${escHtml(result.script.name)}"\n\n${escHtml(result.script.description)}\n\nOpen the **Scripts** panel (📂) to view, configure, and run it.`);
+      } else {
+        appendMessage('assistant', `❌ Script generation failed: ${escHtml(result?.error || 'Unknown error')}`);
+      }
+    } catch (err) {
+      console.error('[aria.js] scriptify error:', err);
+      appendMessage('assistant', `❌ Script generation failed: ${escHtml(err.message || 'Unknown error')}`);
+    } finally {
+      isScriptifying = false;
+      ariaScriptifyBtn.textContent = '📜';
+      updateScriptifyBtnState();
+    }
+  });
+}
+
+// ─── Scripts button handler ───
+if (ariaScriptsBtn) {
+  ariaScriptsBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!scriptsModalOverlay) return;
+
+    // Load scripts
+    try {
+      scriptsData = await window.aria.listScripts() || [];
+    } catch (err) {
+      console.error('[aria.js] listScripts error:', err);
+      scriptsData = [];
+    }
+
+    // Reset state
+    selectedScriptId = null;
+    scriptInputMode = 'single';
+    scriptBulkRows = [];
+    if (scriptsSearch) scriptsSearch.value = '';
+    if (scriptsDetailEmpty) scriptsDetailEmpty.classList.remove('hidden');
+    if (scriptsDetailContent) scriptsDetailContent.classList.add('hidden');
+
+    renderScriptsList();
+    scriptsModalOverlay.classList.remove('hidden');
+  });
+}
+
+// ─── Modal close ───
+if (scriptsModalClose) {
+  scriptsModalClose.addEventListener('click', () => {
+    if (scriptsModalOverlay) scriptsModalOverlay.classList.add('hidden');
+  });
+}
+if (scriptsModalOverlay) {
+  scriptsModalOverlay.addEventListener('click', (e) => {
+    if (e.target === scriptsModalOverlay) {
+      scriptsModalOverlay.classList.add('hidden');
+    }
+  });
+}
+
+// ─── Search scripts ───
+if (scriptsSearch) {
+  scriptsSearch.addEventListener('input', () => {
+    renderScriptsList(scriptsSearch.value);
+  });
+}
+
+// ─── Mode toggle ───
+if (scriptsModeSingle) {
+  scriptsModeSingle.addEventListener('click', () => {
+    scriptInputMode = 'single';
+    scriptsModeSingle.classList.add('active');
+    if (scriptsModeBulk) scriptsModeBulk.classList.remove('active');
+    if (scriptsSingleForm) scriptsSingleForm.classList.remove('hidden');
+    if (scriptsBulkForm) scriptsBulkForm.classList.add('hidden');
+  });
+}
+if (scriptsModeBulk) {
+  scriptsModeBulk.addEventListener('click', () => {
+    scriptInputMode = 'bulk';
+    scriptsModeBulk.classList.add('active');
+    if (scriptsModeSingle) scriptsModeSingle.classList.remove('active');
+    if (scriptsSingleForm) scriptsSingleForm.classList.add('hidden');
+    if (scriptsBulkForm) scriptsBulkForm.classList.remove('hidden');
+  });
+}
+
+// ─── Bulk file upload ───
+if (scriptsBulkFile) {
+  scriptsBulkFile.addEventListener('change', async () => {
+    const file = scriptsBulkFile.files[0];
+    if (!file || !selectedScriptId) return;
+
+    if (scriptsBulkStatus) {
+      scriptsBulkStatus.classList.remove('hidden');
+      scriptsBulkStatus.textContent = 'Parsing file...';
+    }
+
+    try {
+      const arrayBuf = await file.arrayBuffer();
+      const result = await window.aria.parseBulkInput(selectedScriptId, arrayBuf, file.name);
+
+      if (result && result.success) {
+        scriptBulkRows = result.rows || [];
+        let statusHtml = `✓ ${result.validCount} of ${result.totalRows} rows valid`;
+        if (result.errors && result.errors.length > 0) {
+          statusHtml += `<br><span style="color:var(--accent);">${result.errors.slice(0, 3).map(e => escHtml(e)).join('<br>')}</span>`;
+          if (result.errors.length > 3) statusHtml += `<br>...and ${result.errors.length - 3} more errors`;
+        }
+        if (scriptsBulkStatus) scriptsBulkStatus.innerHTML = statusHtml;
+      } else {
+        scriptBulkRows = [];
+        const errMsg = (result?.errors || ['Unknown error']).map(e => escHtml(e)).join('<br>');
+        if (scriptsBulkStatus) scriptsBulkStatus.innerHTML = `<span style="color:var(--accent);">❌ ${errMsg}</span>`;
+      }
+    } catch (err) {
+      console.error('[aria.js] bulk parse error:', err);
+      scriptBulkRows = [];
+      if (scriptsBulkStatus) scriptsBulkStatus.innerHTML = `<span style="color:var(--accent);">❌ ${escHtml(err.message || 'Parse failed')}</span>`;
+    }
+  });
+}
+
+// ─── Execute script ───
+if (scriptsExecuteBtn) {
+  scriptsExecuteBtn.addEventListener('click', () => {
+    if (!selectedScriptId) return;
+
+    let inputs;
+    if (scriptInputMode === 'bulk') {
+      if (scriptBulkRows.length === 0) return;
+      inputs = scriptBulkRows;
+    } else {
+      inputs = gatherFormInputs();
+    }
+
+    // Close modal
+    if (scriptsModalOverlay) scriptsModalOverlay.classList.add('hidden');
+
+    // Hide welcome
+    hideWelcome();
+
+    // Show execution message in chat
+    const script = scriptsData.find(s => s.id === selectedScriptId);
+    const name = script ? script.name : 'Script';
+    const rowInfo = Array.isArray(inputs) ? ` (${inputs.length} rows)` : '';
+    appendMessage('user', `▶ Execute script: ${name}${rowInfo}`);
+
+    // Trigger execution via IPC (skipAuthCheck = false for normal flow)
+    window.aria.executeScript(selectedScriptId, inputs, currentConversationId, false);
+  });
+}
+
+// ─── Delete script ───
+if (scriptsDeleteBtn) {
+  scriptsDeleteBtn.addEventListener('click', async () => {
+    if (!selectedScriptId) return;
+    const script = scriptsData.find(s => s.id === selectedScriptId);
+    if (!script) return;
+
+    // Simple confirmation
+    if (!confirm(`Delete script "${script.name}"?`)) return;
+
+    try {
+      await window.aria.deleteScript(selectedScriptId);
+      scriptsData = scriptsData.filter(s => s.id !== selectedScriptId);
+      selectedScriptId = null;
+      if (scriptsDetailEmpty) scriptsDetailEmpty.classList.remove('hidden');
+      if (scriptsDetailContent) scriptsDetailContent.classList.add('hidden');
+      renderScriptsList(scriptsSearch ? scriptsSearch.value : '');
+    } catch (err) {
+      console.error('[aria.js] delete script error:', err);
+    }
+  });
+}
+
+// ─── Handle script execution routing ───
+// When main process sends the execution prompt back, route it through sendMessage
+if (window.aria && window.aria.onScriptExecuteReady) {
+  window.aria.onScriptExecuteReady((data) => {
+    if (data && data.message) {
+      // Send the execution prompt as a user message through the normal pipeline
+      window.aria.sendMessage(data.message, data.conversationId || currentConversationId);
+    }
+  });
+}
+
+// ─── Handle script execution errors ───
+if (window.aria && window.aria.onScriptExecuteError) {
+  window.aria.onScriptExecuteError((data) => {
+    if (data && data.error) {
+      appendMessage('system', `Script execution failed: ${escHtml(data.error)}`);
+    }
+  });
+}
+
+// ─── Handle auth-required for scripts ───
+if (window.aria && window.aria.onScriptAuthRequired) {
+  window.aria.onScriptAuthRequired((data) => {
+    if (!data || !data.missing) return;
+    const lines = data.missing.map(m => {
+      const icon = m.hasStoredCredentials ? '✅' : '⚠️';
+      return `${icon} **${escHtml(m.domain)}** — ${escHtml(m.description)} _(${escHtml(m.authType)})_`;
+    });
+    const msg = `🔐 **Authentication required before running this script:**\n\n${lines.join('\n')}\n\n` +
+      `Please log in to the required sites first, or <a href="#" class="run-anyway-link" ` +
+      `data-script-id="${escAttr(data.scriptId)}" ` +
+      `data-inputs='${escAttr(JSON.stringify(data.inputs))}' ` +
+      `data-conversation-id="${escAttr(data.conversationId || '')}">Run Anyway</a>.`;
+    appendMessage('system', msg);
+
+    // Attach click handler for "Run Anyway" links
+    setTimeout(() => {
+      document.querySelectorAll('.run-anyway-link').forEach(link => {
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          const sid = link.getAttribute('data-script-id');
+          let inp;
+          try { inp = JSON.parse(link.getAttribute('data-inputs') || '{}'); } catch { inp = {}; }
+          const cid = link.getAttribute('data-conversation-id') || currentConversationId;
+          window.aria.executeScript(sid, inp, cid, true);
+          link.textContent = 'Running...';
+          link.style.pointerEvents = 'none';
+          link.style.opacity = '0.5';
+        });
+      });
+    }, 100);
+  });
 }
 
 // Wait for DOM + preload to be ready

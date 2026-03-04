@@ -43,6 +43,26 @@ Every major AI browser has telemetry. They're VC-backed companies with boards de
 
 Comet only works with Perplexity's models. Atlas only works with OpenAI. Want to try Claude? Too bad. Want to run a local model? Can't do it.
 
+### Architecture Comparison
+
+Both Comet and Tappi are standalone browsers. But the architecture is fundamentally different:
+
+| Aspect | Comet | Atlas | Tappi |
+|--------|-------|-------|-------|
+| **Base** | Chromium + bundled extensions | ChatGPT integration | **Electron browser** |
+| **Agent location** | Cloud (WebSocket to Perplexity API) | Cloud | **Inside browser (Electron main)** |
+| **Tools** | `chrome.debugger` via extensions | ChatGPT tools | **Browser-native (preload scripts)** |
+| **Page representation** | Accessibility tree YAML | DOM-based | **Indexed elements** |
+| **Token cost per page** | 500-5,000 | 5,000-50,000 | **50-400** |
+| **Shadow DOM** | Partial | Limited | **Full piercing** |
+| **Cloud dependency** | Yes — agent runs on their servers | Yes | **No — BYOK, local models work** |
+| **Telemetry** | Full | Full | **Zero** |
+| **Source** | Closed | Closed | **MIT open source** |
+
+Comet bundles 3 Chrome extensions (`comet-agent`, `perplexity.crx`, etc.) that use `chrome.debugger` API and communicate via WebSocket to Perplexity's cloud. The agent runs on their servers.
+
+Tappi's agent runs **inside the browser itself** (Electron main process). Tools are native via preload scripts. No cloud dependency for tool execution.
+
 ## How Tappi Achieves 3-10x Token Savings
 
 We designed Tappi differently from the ground up.
@@ -51,13 +71,14 @@ We designed Tappi differently from the ground up.
 
 Most AI browsers dump entire DOM trees into context — 50KB of HTML, 12,500+ tokens, just to "see" the page.
 
-Tappi indexes elements once and the agent references them by ID internally. When you ask *"Find the best price for this product"*, the agent:
+Tappi uses a preload script (`content-preload.js`) that injects into each tab and:
 
-1. Indexes interactive elements on the page
-2. Identifies search boxes, buttons, links by their indexed IDs
-3. Executes clicks and types using compact references like `click e42`
+1. Walks the DOM with **recursive shadow DOM piercing**
+2. Indexes only interactive elements (buttons, links, inputs, ARIA roles)
+3. Stamps each with a numeric ID (`data-tappi-idx`) directly in the DOM
+4. Agent references them compactly: `click 42` instead of 500-token selectors
 
-**Result:** 3-10x fewer tokens than DOM-dumping approaches.
+**Result:** 50-400 tokens per page vs 5,000-50,000 for DOM dumps.
 
 ### 2. Aggressive Context Management
 
@@ -69,9 +90,17 @@ Agent: "I found the function in conversation-turn-47.md — grep shows it's on l
 
 You can load full files when needed (up to 10K tokens). Otherwise: grep first, load later.
 
-### 3. Native Browser Automation
+### 3. Tappi IS the Browser
 
-Tappi uses Chrome DevTools Protocol (CDP) directly — not Selenium, not Puppeteer, not Playwright. The automation *is* the browser. No detection possible because there's nothing to detect.
+Both Comet and Tappi are standalone browsers. But Comet bundles Chrome extensions that use `chrome.debugger` API and communicate via WebSocket to Perplexity's cloud LLMs. The agent runs on their servers.
+
+Tappi has the AI agent built **into the browser itself**. The agent runs in the Electron main process and calls tools that are **browser-native** — via preload scripts that inject into each tab. No cloud dependency for tool execution.
+
+This means:
+- Tools run inside the browser, not as an external automation layer
+- Shadow DOM piercing works natively (Reddit, GitHub, modern component frameworks)
+- No fingerprinting possible — there's nothing to detect
+- Zero latency between agent decision and browser action
 
 ### A Real-World Comparison
 

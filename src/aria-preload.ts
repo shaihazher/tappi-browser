@@ -243,4 +243,29 @@ contextBridge.exposeInMainWorld('aria', {
   onDeepComplete: (cb: (data: any) => void) => {
     ipcRenderer.on('agent:deep-complete', (_e, data) => cb(data));
   },
+
+  // ─── Scripts (Scriptify) ───
+  scriptifyConversation: (conversationId: string) =>
+    ipcRenderer.invoke('scripts:scriptify', conversationId),
+  listScripts: () =>
+    ipcRenderer.invoke('scripts:list'),
+  getScript: (scriptId: string) =>
+    ipcRenderer.invoke('scripts:get', scriptId),
+  deleteScript: (scriptId: string) =>
+    ipcRenderer.invoke('scripts:delete', scriptId),
+  executeScript: (scriptId: string, inputs: any, conversationId?: string, skipAuthCheck?: boolean) =>
+    ipcRenderer.send('scripts:execute', scriptId, inputs, conversationId, skipAuthCheck),
+  parseBulkInput: (scriptId: string, fileData: ArrayBuffer, filename: string) =>
+    ipcRenderer.invoke('scripts:parse-bulk', scriptId, fileData, filename),
+  onScriptExecuteReady: (cb: (data: { message: string; conversationId?: string }) => void) => {
+    ipcRenderer.on('scripts:execute-ready', (_e, data) => cb(data));
+  },
+  onScriptExecuteError: (cb: (data: { error: string }) => void) => {
+    ipcRenderer.on('scripts:execute-error', (_e, data) => cb(data));
+  },
+  onScriptAuthRequired: (cb: (data: { scriptId: string; inputs: any; conversationId?: string; missing: any[] }) => void) => {
+    ipcRenderer.on('scripts:auth-required', (_e, data) => cb(data));
+  },
+  checkAuthStatus: (domains: string[]) =>
+    ipcRenderer.invoke('scripts:check-auth', domains),
 });

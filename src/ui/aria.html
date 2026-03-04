@@ -108,6 +108,9 @@
             </button>
           </div>
         </div>
+        <!-- Scriptify + Scripts (Phase 10) -->
+        <button id="aria-scriptify-btn" title="Scriptify conversation" disabled>📜</button>
+        <button id="aria-scripts-btn" title="Scripts">📂</button>
         <button id="aria-stop-btn" class="hidden" title="Stop (Esc)">⏹</button>
         <button id="aria-send-btn" title="Send (⏎)">↑</button>
       </div>
@@ -196,6 +199,52 @@
         </div>
       </div>
     </div><!-- end #aria-input-wrapper -->
+  </div>
+
+  <!-- Scripts Modal (Phase 10: Scriptify) -->
+  <div id="scripts-modal-overlay" class="scripts-modal-overlay hidden">
+    <div class="scripts-modal">
+      <div class="scripts-modal-header">
+        <span class="scripts-modal-title">Scripts</span>
+        <button id="scripts-modal-close" class="scripts-modal-close-btn">&times;</button>
+      </div>
+      <div class="scripts-modal-body">
+        <div class="scripts-sidebar">
+          <input id="scripts-search" type="text" placeholder="Search scripts…" class="scripts-search-input" spellcheck="false">
+          <div id="scripts-list" class="scripts-list"></div>
+        </div>
+        <div class="scripts-detail">
+          <div id="scripts-detail-empty" class="scripts-detail-empty">
+            <p>Select a script to view details</p>
+          </div>
+          <div id="scripts-detail-content" class="scripts-detail-content hidden">
+            <div class="scripts-detail-header">
+              <h3 id="scripts-detail-name"></h3>
+              <span id="scripts-detail-type" class="scripts-type-badge"></span>
+              <button id="scripts-delete-btn" class="scripts-delete-btn" title="Delete script">🗑</button>
+            </div>
+            <p id="scripts-detail-desc" class="scripts-detail-desc"></p>
+            <div id="scripts-auth-section" class="scripts-auth-section hidden">
+              <div class="scripts-auth-header">🔐 Authentication Required</div>
+              <div id="scripts-auth-list" class="scripts-auth-list"></div>
+            </div>
+            <div class="scripts-input-section">
+              <div class="scripts-input-mode-toggle">
+                <button id="scripts-mode-single" class="scripts-mode-btn active">1×1</button>
+                <button id="scripts-mode-bulk" class="scripts-mode-btn">Bulk CSV/Excel</button>
+              </div>
+              <div id="scripts-single-form" class="scripts-single-form"></div>
+              <div id="scripts-bulk-form" class="scripts-bulk-form hidden">
+                <label class="scripts-bulk-label">Upload CSV or Excel file</label>
+                <input id="scripts-bulk-file" type="file" accept=".csv,.xlsx,.xls">
+                <div id="scripts-bulk-status" class="scripts-bulk-status hidden"></div>
+              </div>
+            </div>
+            <button id="scripts-execute-btn" class="scripts-execute-btn">Execute Script</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="vendor/dompurify.min.js"></script>

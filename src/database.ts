@@ -156,6 +156,27 @@ export function initDatabase(dbPath?: string): Database.Database {
   `);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_project_artifacts ON project_artifacts(project_id)`);
 
+  // ─── Scripts (Phase 10: Scriptify) ───
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scripts (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      script_type TEXT NOT NULL DEFAULT 'agent',
+      input_schema TEXT,
+      script_body TEXT NOT NULL,
+      source_conversation_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_run TEXT,
+      run_count INTEGER DEFAULT 0,
+      archived INTEGER DEFAULT 0
+    )
+  `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_scripts_updated ON scripts(updated_at DESC)`);
+  // Migration: add auth_requirements column if missing
+  try { db.exec(`ALTER TABLE scripts ADD COLUMN auth_requirements TEXT`); } catch {}
+
   // Safe migrations: add project_id + mode columns to conversations if not present
   try { db.exec(`ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL`); } catch {}
   try { db.exec(`ALTER TABLE conversations ADD COLUMN mode TEXT DEFAULT 'chat'`); } catch {}
