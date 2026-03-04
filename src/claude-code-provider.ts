@@ -728,7 +728,7 @@ export async function generateTitleViaCli(
       resolve(null);
     }, 15_000);
 
-    proc.on('exit', (code) => {
+    proc.on('close', (code) => {
       clearTimeout(timeout);
       // Flush remaining lineBuffer
       if (lineBuffer.trim()) {
@@ -873,7 +873,7 @@ export async function scriptifyViaCli(
       resolve(null);
     }, 60_000);
 
-    proc.on('exit', (code) => {
+    proc.on('close', (code) => {
       clearTimeout(timeout);
       // Flush remaining lineBuffer
       if (lineBuffer.trim()) {
@@ -1024,7 +1024,7 @@ export async function generateProfileViaCli(
       resolve(null);
     }, 30_000);
 
-    proc.on('exit', (code) => {
+    proc.on('close', (code) => {
       clearTimeout(timeout);
       // Flush remaining lineBuffer
       if (lineBuffer.trim()) {
@@ -1173,7 +1173,7 @@ export async function executeCronViaCli(
       resolve({ text: 'Cron job timed out after 5 minutes', success: false });
     }, 300_000); // 5 min timeout for multi-step browser automation
 
-    proc.on('exit', (code) => {
+    proc.on('close', (code) => {
       clearTimeout(timeout);
       // Flush remaining lineBuffer
       if (lineBuffer.trim()) {
