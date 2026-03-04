@@ -663,8 +663,27 @@ export async function generateTitleViaCli(
     });
 
     let textResult = '';
+    let resultText = '';  // authoritative final text from 'result' message
     let stderr = '';
     let lineBuffer = '';
+
+    const processMessage = (msg: any) => {
+      if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+        textResult += msg.delta.text;
+      }
+      // 'result' is the authoritative final output — overwrite, don't append
+      if (msg.type === 'result' && msg.result) {
+        resultText = msg.result;
+      }
+      // Skip 'assistant' — it duplicates content_block_delta text
+    };
+
+    const flushLineBuffer = () => {
+      if (lineBuffer.trim()) {
+        try { processMessage(JSON.parse(lineBuffer)); } catch {}
+        lineBuffer = '';
+      }
+    };
 
     proc.stdout?.on('data', (data: Buffer) => {
       lineBuffer += data.toString();
@@ -674,25 +693,8 @@ export async function generateTitleViaCli(
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          const msg = JSON.parse(line);
-          // Collect text from streaming deltas
-          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
-            textResult += msg.delta.text;
-          }
-          // Also collect from assistant messages
-          if (msg.type === 'assistant' && msg.message?.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'text' && block.text) {
-                textResult += block.text;
-              }
-            }
-          }
-          // Collect from result
-          if (msg.type === 'result' && msg.result) {
-            textResult += msg.result;
-          }
+          processMessage(JSON.parse(line));
         } catch {
-          // Not JSON — might be raw text
           if (line.trim()) textResult += line.trim();
         }
       }
@@ -703,61 +705,20 @@ export async function generateTitleViaCli(
     // Timeout: title generation should be fast
     const timeout = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch {}
-      // Flush remaining lineBuffer before resolving
-      if (lineBuffer.trim()) {
-        try {
-          const msg = JSON.parse(lineBuffer);
-          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
-            textResult += msg.delta.text;
-          }
-          if (msg.type === 'assistant' && msg.message?.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'text' && block.text) {
-                textResult += block.text;
-              }
-            }
-          }
-          if (msg.type === 'result' && msg.result) {
-            textResult += msg.result;
-          }
-        } catch {
-          if (lineBuffer.trim()) textResult += lineBuffer.trim();
-        }
-        lineBuffer = '';
-      }
+      flushLineBuffer();
       resolve(null);
     }, 15_000);
 
     proc.on('close', (code) => {
       clearTimeout(timeout);
-      // Flush remaining lineBuffer
-      if (lineBuffer.trim()) {
-        try {
-          const msg = JSON.parse(lineBuffer);
-          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
-            textResult += msg.delta.text;
-          }
-          if (msg.type === 'assistant' && msg.message?.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'text' && block.text) {
-                textResult += block.text;
-              }
-            }
-          }
-          if (msg.type === 'result' && msg.result) {
-            textResult += msg.result;
-          }
-        } catch {
-          if (lineBuffer.trim()) textResult += lineBuffer.trim();
-        }
-        lineBuffer = '';
-      }
+      flushLineBuffer();
+      const finalText = resultText || textResult;
       if (code !== 0) {
         console.error('[claude-code] title gen failed:', stderr.slice(0, 200));
         resolve(null);
         return;
       }
-      const title = textResult.replace(/^["']|["']$/g, '').replace(/[.!?]+$/, '').trim();
+      const title = finalText.replace(/^["']|["']$/g, '').replace(/[.!?]+$/, '').trim();
       resolve(title && title.length > 2 && title.length < 80 ? title : null);
     });
 
@@ -813,8 +774,25 @@ export async function scriptifyViaCli(
     proc.stdin?.end();
 
     let textResult = '';
+    let resultText = '';  // authoritative final text from 'result' message
     let stderr = '';
     let lineBuffer = '';
+
+    const processMessage = (msg: any) => {
+      if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+        textResult += msg.delta.text;
+      }
+      if (msg.type === 'result' && msg.result) {
+        resultText = msg.result;
+      }
+    };
+
+    const flushLineBuffer = () => {
+      if (lineBuffer.trim()) {
+        try { processMessage(JSON.parse(lineBuffer)); } catch {}
+        lineBuffer = '';
+      }
+    };
 
     proc.stdout?.on('data', (data: Buffer) => {
       lineBuffer += data.toString();
@@ -824,20 +802,7 @@ export async function scriptifyViaCli(
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          const msg = JSON.parse(line);
-          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
-            textResult += msg.delta.text;
-          }
-          if (msg.type === 'assistant' && msg.message?.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'text' && block.text) {
-                textResult += block.text;
-              }
-            }
-          }
-          if (msg.type === 'result' && msg.result) {
-            textResult += msg.result;
-          }
+          processMessage(JSON.parse(line));
         } catch {
           if (line.trim()) textResult += line.trim();
         }
@@ -848,69 +813,28 @@ export async function scriptifyViaCli(
 
     const timeout = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch {}
-      // Flush remaining lineBuffer before resolving
-      if (lineBuffer.trim()) {
-        try {
-          const msg = JSON.parse(lineBuffer);
-          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
-            textResult += msg.delta.text;
-          }
-          if (msg.type === 'assistant' && msg.message?.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'text' && block.text) {
-                textResult += block.text;
-              }
-            }
-          }
-          if (msg.type === 'result' && msg.result) {
-            textResult += msg.result;
-          }
-        } catch {
-          if (lineBuffer.trim()) textResult += lineBuffer.trim();
-        }
-        lineBuffer = '';
-      }
+      flushLineBuffer();
       resolve(null);
     }, 60_000);
 
     proc.on('close', (code) => {
       clearTimeout(timeout);
-      // Flush remaining lineBuffer
-      if (lineBuffer.trim()) {
-        try {
-          const msg = JSON.parse(lineBuffer);
-          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
-            textResult += msg.delta.text;
-          }
-          if (msg.type === 'assistant' && msg.message?.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'text' && block.text) {
-                textResult += block.text;
-              }
-            }
-          }
-          if (msg.type === 'result' && msg.result) {
-            textResult += msg.result;
-          }
-        } catch {
-          if (lineBuffer.trim()) textResult += lineBuffer.trim();
-        }
-        lineBuffer = '';
-      }
+      flushLineBuffer();
       if (code !== 0) {
         console.error('[claude-code] scriptify CLI failed:', stderr.slice(0, 300));
         resolve(null);
         return;
       }
+      // Use result message if available, fall back to streamed deltas
+      let text = (resultText || textResult).trim();
       // Strip markdown fences and parse JSON
-      let text = textResult.trim();
       if (text.startsWith('```')) {
         text = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
       }
       try {
         resolve(JSON.parse(text));
       } catch {
-        console.error('[claude-code] scriptify parse failed, raw:', text.slice(0, 300));
+        console.error('[claude-code] scriptify parse failed, raw:', text.slice(0, 500));
         resolve(null);
       }
     });
@@ -964,8 +888,25 @@ export async function generateProfileViaCli(
     proc.stdin?.end();
 
     let textResult = '';
+    let resultText = '';
     let stderr = '';
     let lineBuffer = '';
+
+    const processMessage = (msg: any) => {
+      if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+        textResult += msg.delta.text;
+      }
+      if (msg.type === 'result' && msg.result) {
+        resultText = msg.result;
+      }
+    };
+
+    const flushLineBuffer = () => {
+      if (lineBuffer.trim()) {
+        try { processMessage(JSON.parse(lineBuffer)); } catch {}
+        lineBuffer = '';
+      }
+    };
 
     proc.stdout?.on('data', (data: Buffer) => {
       lineBuffer += data.toString();
@@ -975,20 +916,7 @@ export async function generateProfileViaCli(
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          const msg = JSON.parse(line);
-          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
-            textResult += msg.delta.text;
-          }
-          if (msg.type === 'assistant' && msg.message?.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'text' && block.text) {
-                textResult += block.text;
-              }
-            }
-          }
-          if (msg.type === 'result' && msg.result) {
-            textResult += msg.result;
-          }
+          processMessage(JSON.parse(line));
         } catch {
           if (line.trim()) textResult += line.trim();
         }
@@ -999,61 +927,20 @@ export async function generateProfileViaCli(
 
     const timeout = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch {}
-      // Flush remaining lineBuffer before resolving
-      if (lineBuffer.trim()) {
-        try {
-          const msg = JSON.parse(lineBuffer);
-          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
-            textResult += msg.delta.text;
-          }
-          if (msg.type === 'assistant' && msg.message?.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'text' && block.text) {
-                textResult += block.text;
-              }
-            }
-          }
-          if (msg.type === 'result' && msg.result) {
-            textResult += msg.result;
-          }
-        } catch {
-          if (lineBuffer.trim()) textResult += lineBuffer.trim();
-        }
-        lineBuffer = '';
-      }
+      flushLineBuffer();
       resolve(null);
     }, 30_000);
 
     proc.on('close', (code) => {
       clearTimeout(timeout);
-      // Flush remaining lineBuffer
-      if (lineBuffer.trim()) {
-        try {
-          const msg = JSON.parse(lineBuffer);
-          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
-            textResult += msg.delta.text;
-          }
-          if (msg.type === 'assistant' && msg.message?.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'text' && block.text) {
-                textResult += block.text;
-              }
-            }
-          }
-          if (msg.type === 'result' && msg.result) {
-            textResult += msg.result;
-          }
-        } catch {
-          if (lineBuffer.trim()) textResult += lineBuffer.trim();
-        }
-        lineBuffer = '';
-      }
+      flushLineBuffer();
+      const finalText = resultText || textResult;
       if (code !== 0) {
         console.error('[claude-code] profile gen CLI failed:', stderr.slice(0, 200));
         resolve(null);
         return;
       }
-      resolve(textResult.trim() || null);
+      resolve(finalText.trim() || null);
     });
 
     proc.on('error', () => {
@@ -1113,8 +1000,25 @@ export async function executeCronViaCli(
     proc.stdin?.end();
 
     let textResult = '';
+    let resultText = '';
     let stderr = '';
     let lineBuffer = '';
+
+    const processMessage = (msg: any) => {
+      if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+        textResult += msg.delta.text;
+      }
+      if (msg.type === 'result' && msg.result) {
+        resultText = msg.result;
+      }
+    };
+
+    const flushLineBuffer = () => {
+      if (lineBuffer.trim()) {
+        try { processMessage(JSON.parse(lineBuffer)); } catch {}
+        lineBuffer = '';
+      }
+    };
 
     proc.stdout?.on('data', (data: Buffer) => {
       lineBuffer += data.toString();
@@ -1124,20 +1028,7 @@ export async function executeCronViaCli(
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          const msg = JSON.parse(line);
-          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
-            textResult += msg.delta.text;
-          }
-          if (msg.type === 'assistant' && msg.message?.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'text' && block.text) {
-                textResult += block.text;
-              }
-            }
-          }
-          if (msg.type === 'result' && msg.result) {
-            textResult += msg.result;
-          }
+          processMessage(JSON.parse(line));
         } catch {
           if (line.trim()) textResult += line.trim();
         }
@@ -1148,59 +1039,18 @@ export async function executeCronViaCli(
 
     const timeout = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch {}
-      // Flush remaining lineBuffer before resolving
-      if (lineBuffer.trim()) {
-        try {
-          const msg = JSON.parse(lineBuffer);
-          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
-            textResult += msg.delta.text;
-          }
-          if (msg.type === 'assistant' && msg.message?.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'text' && block.text) {
-                textResult += block.text;
-              }
-            }
-          }
-          if (msg.type === 'result' && msg.result) {
-            textResult += msg.result;
-          }
-        } catch {
-          if (lineBuffer.trim()) textResult += lineBuffer.trim();
-        }
-        lineBuffer = '';
-      }
+      flushLineBuffer();
       resolve({ text: 'Cron job timed out after 5 minutes', success: false });
     }, 300_000); // 5 min timeout for multi-step browser automation
 
     proc.on('close', (code) => {
       clearTimeout(timeout);
-      // Flush remaining lineBuffer
-      if (lineBuffer.trim()) {
-        try {
-          const msg = JSON.parse(lineBuffer);
-          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
-            textResult += msg.delta.text;
-          }
-          if (msg.type === 'assistant' && msg.message?.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'text' && block.text) {
-                textResult += block.text;
-              }
-            }
-          }
-          if (msg.type === 'result' && msg.result) {
-            textResult += msg.result;
-          }
-        } catch {
-          if (lineBuffer.trim()) textResult += lineBuffer.trim();
-        }
-        lineBuffer = '';
-      }
+      flushLineBuffer();
+      const finalText = resultText || textResult;
       if (code !== 0) {
         console.error('[claude-code] cron CLI failed:', stderr.slice(0, 300));
       }
-      resolve({ text: textResult.trim() || stderr.slice(0, 200), success: code === 0 });
+      resolve({ text: finalText.trim() || stderr.slice(0, 200), success: code === 0 });
     });
 
     proc.on('error', (err) => {
