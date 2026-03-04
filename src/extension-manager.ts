@@ -303,23 +303,14 @@ function patchServiceWorkerPolyfill(extensionDir: string): void {
       return;
     }
 
-    const originalSW = manifest.background.service_worker;
+    const currentSW = manifest.background.service_worker;
     const polyfillFile = 'tappi-nm-polyfill.js';
     const entryFile = 'tappi-sw-entry.js';
     const polyfillPath = path.join(extensionDir, polyfillFile);
     const entryPath = path.join(extensionDir, entryFile);
 
-    // Resolve the real original SW (handle migration from old _tappi_sw_entry.js)
-    const currentSW = manifest.background.service_worker;
-    const realOriginalSW = currentSW === '_tappi_sw_entry.js'
-      ? (() => {
-          try {
-            const oldEntry = fs.readFileSync(path.join(extensionDir, '_tappi_sw_entry.js'), 'utf-8');
-            const match = oldEntry.match(/import '\.\/(.+)';?\s*$/m);
-            return match?.[1] || originalSW;
-          } catch { return originalSW; }
-        })()
-      : originalSW;
+    // Find the extension's real service worker (not our wrapper/polyfill files)
+    const originalSW = findOriginalServiceWorker(extensionDir, currentSW);
 
     // Clean up old underscore-prefixed files (reserved by Chromium)
     for (const old of ['_tappi_nm_polyfill.js', '_tappi_sw_entry.js', '_tappi_sw_activator.html']) {
@@ -330,26 +321,56 @@ function patchServiceWorkerPolyfill(extensionDir: string): void {
     // Always write fresh polyfill with current bridge port/token
     fs.writeFileSync(polyfillPath, buildServiceWorkerPolyfill(bridge.port, bridge.token));
 
-    // If already patched (new entry file), just update the polyfill
-    if (currentSW === entryFile) {
-      console.log(`[extensions] Updated polyfill for: ${extensionDir}`);
-      return;
-    }
-
-    // Write wrapper entry module that imports polyfill first, then original SW
+    // Always write/refresh wrapper entry (ensures broken imports are repaired)
     fs.writeFileSync(
       entryPath,
-      `import './${polyfillFile}';\nimport './${realOriginalSW}';\n`,
+      `import './${polyfillFile}';\nimport './${originalSW}';\n`,
     );
 
-    // Update manifest to use our wrapper entry
-    manifest.background.service_worker = entryFile;
-    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-
-    console.log(`[extensions] Patched service worker for native messaging: ${extensionDir}`);
+    // Update manifest if needed
+    if (currentSW !== entryFile) {
+      manifest.background.service_worker = entryFile;
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+      console.log(`[extensions] Patched service worker for native messaging: ${extensionDir}`);
+    } else {
+      console.log(`[extensions] Updated polyfill for: ${extensionDir}`);
+    }
   } catch (e) {
     console.warn('[extensions] Failed to patch service worker polyfill:', e);
   }
+}
+
+/**
+ * Resolve the extension's original service worker filename, ignoring our
+ * injected wrapper/polyfill files. Reads existing entry files to trace back
+ * to the real SW, falling back to a directory scan.
+ */
+function findOriginalServiceWorker(extensionDir: string, currentSW: string): string {
+  const ownFiles = ['tappi-sw-entry.js', '_tappi_sw_entry.js'];
+
+  // If manifest points to the untouched original, use it directly
+  if (!ownFiles.includes(currentSW)) {
+    return currentSW;
+  }
+
+  // Read our entry file(s) to extract the original SW import (last import line)
+  for (const entry of ['tappi-sw-entry.js', '_tappi_sw_entry.js']) {
+    try {
+      const content = fs.readFileSync(path.join(extensionDir, entry), 'utf-8');
+      const match = content.match(/import '\.\/(.+)';?\s*$/m);
+      if (match?.[1] && !ownFiles.includes(match[1]) &&
+          fs.existsSync(path.join(extensionDir, match[1]))) {
+        return match[1];
+      }
+    } catch {}
+  }
+
+  // Fallback: scan for common SW filenames
+  for (const name of ['background.js', 'service-worker.js', 'sw.js']) {
+    if (fs.existsSync(path.join(extensionDir, name))) return name;
+  }
+
+  return 'background.js';
 }
 
 // ─── Service Worker Activation ───────────────────────────────────────────────
