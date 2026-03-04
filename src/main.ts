@@ -1555,6 +1555,38 @@ function createWindow() {
     return parseBulkFile(scriptId, Buffer.from(fileData), filename);
   });
 
+  // ─── Script Scheduling ──────────────────────────────────────────────────
+  ipcMain.handle('scripts:schedule', (_e, data: { scriptId: string; inputs: any; schedule: any; name?: string }) => {
+    try {
+      const script = getScript(data.scriptId);
+      if (!script) return { success: false, error: 'Script not found.' };
+
+      // Prevent duplicate active schedules for the same script
+      const existing = getJobsList().find(j => j.scriptId === data.scriptId && j.enabled);
+      if (existing) return { success: false, error: 'An active schedule already exists for this script. Cancel it first.' };
+
+      const jobName = data.name || `Script: ${script.name}`;
+      const taskPlaceholder = `[Scheduled script: ${script.name}]`;
+      const result = cronAddJob(jobName, taskPlaceholder, data.schedule, data.scriptId, data.inputs);
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to schedule script.' };
+    }
+  });
+
+  ipcMain.handle('scripts:get-schedules', (_e, scriptId: string) => {
+    return getJobsList().filter(j => j.scriptId === scriptId);
+  });
+
+  ipcMain.handle('scripts:cancel-schedule', (_e, jobId: string) => {
+    try {
+      const result = cronDeleteJob(jobId);
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to cancel schedule.' };
+    }
+  });
+
   ipcMain.handle('aria:new-chat', () => {
     // Create a new conversation and switch to it
     const conv = createConversation();

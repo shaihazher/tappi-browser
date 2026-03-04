@@ -253,6 +253,49 @@
                 placeholder="Optional: e.g. 'Only process the first 5 results' or 'Save output as PDF instead'"
                 rows="2"></textarea>
             </div>
+            <!-- Schedule Section -->
+            <div id="scripts-schedule-section" class="scripts-schedule-section hidden">
+              <div id="scripts-schedule-header" class="scripts-schedule-header">
+                <span>⏰ Schedule</span>
+                <span id="scripts-schedule-chevron" class="scripts-schedule-chevron">▶</span>
+              </div>
+              <div id="scripts-schedule-active" class="scripts-schedule-active hidden">
+                <span id="scripts-schedule-active-text"></span>
+                <button id="scripts-schedule-cancel-btn" class="scripts-schedule-cancel-btn">Cancel Schedule</button>
+              </div>
+              <div id="scripts-schedule-form" class="scripts-schedule-form hidden">
+                <div class="scripts-sched-type-row">
+                  <button id="scripts-sched-type-once" class="scripts-sched-type-btn active">Once</button>
+                  <button id="scripts-sched-type-recurring" class="scripts-sched-type-btn">Recurring</button>
+                </div>
+                <div id="scripts-sched-once-fields">
+                  <label class="scripts-sched-label">Run at</label>
+                  <input id="scripts-sched-datetime" type="datetime-local" class="scripts-sched-input">
+                </div>
+                <div id="scripts-sched-recurring-fields" class="hidden">
+                  <label class="scripts-sched-label">Kind</label>
+                  <select id="scripts-sched-kind" class="scripts-sched-input">
+                    <option value="interval">Interval</option>
+                    <option value="daily">Daily</option>
+                    <option value="cron">Cron Expression</option>
+                  </select>
+                  <div id="scripts-sched-interval-fields">
+                    <label class="scripts-sched-label">Every (minutes)</label>
+                    <input id="scripts-sched-interval-min" type="number" class="scripts-sched-input" min="1" value="30" placeholder="30">
+                  </div>
+                  <div id="scripts-sched-daily-fields" class="hidden">
+                    <label class="scripts-sched-label">Time of day</label>
+                    <input id="scripts-sched-daily-time" type="time" class="scripts-sched-input" value="09:00">
+                  </div>
+                  <div id="scripts-sched-cron-fields" class="hidden">
+                    <label class="scripts-sched-label">Cron expression (5-field)</label>
+                    <input id="scripts-sched-cron-expr" type="text" class="scripts-sched-input" placeholder="*/15 * * * *">
+                  </div>
+                </div>
+                <p class="scripts-sched-note">Current input values above will be saved and used for scheduled runs.</p>
+                <button id="scripts-schedule-btn" class="scripts-schedule-btn">Schedule Script</button>
+              </div>
+            </div>
             <button id="scripts-execute-btn" class="scripts-execute-btn">Execute Script</button>
           </div>
         </div>

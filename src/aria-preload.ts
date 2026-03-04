@@ -270,4 +270,15 @@ contextBridge.exposeInMainWorld('aria', {
   },
   checkAuthStatus: (domains: string[]) =>
     ipcRenderer.invoke('scripts:check-auth', domains),
+
+  // ─── Script Scheduling ───
+  scheduleScript: (data: { scriptId: string; inputs: any; schedule: any; name?: string }) =>
+    ipcRenderer.invoke('scripts:schedule', data),
+  getScriptSchedules: (scriptId: string) =>
+    ipcRenderer.invoke('scripts:get-schedules', scriptId),
+  cancelScriptSchedule: (jobId: string) =>
+    ipcRenderer.invoke('scripts:cancel-schedule', jobId),
+  onCronJobsUpdated: (cb: (jobs: any[]) => void) => {
+    ipcRenderer.on('cron:jobs-updated', (_e, jobs) => cb(jobs));
+  },
 });

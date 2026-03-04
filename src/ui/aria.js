@@ -4048,6 +4048,11 @@ if (ariaScriptsBtn) {
     if (scriptsSearch) scriptsSearch.value = '';
     if (scriptsDetailEmpty) scriptsDetailEmpty.classList.remove('hidden');
     if (scriptsDetailContent) scriptsDetailContent.classList.add('hidden');
+    // Reset schedule section
+    if (scriptsScheduleSection) scriptsScheduleSection.classList.add('hidden');
+    if (scriptsScheduleForm) scriptsScheduleForm.classList.add('hidden');
+    if (scriptsScheduleActive) scriptsScheduleActive.classList.add('hidden');
+    if (scriptsScheduleChevron) scriptsScheduleChevron.classList.remove('open');
 
     renderScriptsList();
     scriptsModalOverlay.classList.remove('hidden');
@@ -4083,6 +4088,8 @@ if (scriptsModeSingle) {
     if (scriptsModeBulk) scriptsModeBulk.classList.remove('active');
     if (scriptsSingleForm) scriptsSingleForm.classList.remove('hidden');
     if (scriptsBulkForm) scriptsBulkForm.classList.add('hidden');
+    // Show schedule section in single mode
+    if (scriptsScheduleSection && selectedScriptId) scriptsScheduleSection.classList.remove('hidden');
   });
 }
 if (scriptsModeBulk) {
@@ -4092,6 +4099,8 @@ if (scriptsModeBulk) {
     if (scriptsModeSingle) scriptsModeSingle.classList.remove('active');
     if (scriptsSingleForm) scriptsSingleForm.classList.add('hidden');
     if (scriptsBulkForm) scriptsBulkForm.classList.remove('hidden');
+    // Hide schedule section in bulk mode (scheduling only supports single inputs)
+    if (scriptsScheduleSection) scriptsScheduleSection.classList.add('hidden');
   });
 }
 
@@ -4284,6 +4293,236 @@ if (window.aria && window.aria.onScriptAuthRequired) {
       });
     }, 100);
   });
+}
+
+// ─── Script Scheduling ─────────────────────────────────────────────────
+
+const scriptsScheduleSection = document.getElementById('scripts-schedule-section');
+const scriptsScheduleHeader = document.getElementById('scripts-schedule-header');
+const scriptsScheduleChevron = document.getElementById('scripts-schedule-chevron');
+const scriptsScheduleActive = document.getElementById('scripts-schedule-active');
+const scriptsScheduleActiveText = document.getElementById('scripts-schedule-active-text');
+const scriptsScheduleCancelBtn = document.getElementById('scripts-schedule-cancel-btn');
+const scriptsScheduleForm = document.getElementById('scripts-schedule-form');
+const scriptsSchedTypeOnce = document.getElementById('scripts-sched-type-once');
+const scriptsSchedTypeRecurring = document.getElementById('scripts-sched-type-recurring');
+const scriptsSchedOnceFields = document.getElementById('scripts-sched-once-fields');
+const scriptsSchedRecurringFields = document.getElementById('scripts-sched-recurring-fields');
+const scriptsSchedDatetime = document.getElementById('scripts-sched-datetime');
+const scriptsSchedKind = document.getElementById('scripts-sched-kind');
+const scriptsSchedIntervalFields = document.getElementById('scripts-sched-interval-fields');
+const scriptsSchedDailyFields = document.getElementById('scripts-sched-daily-fields');
+const scriptsSchedCronFields = document.getElementById('scripts-sched-cron-fields');
+const scriptsSchedIntervalMin = document.getElementById('scripts-sched-interval-min');
+const scriptsSchedDailyTime = document.getElementById('scripts-sched-daily-time');
+const scriptsSchedCronExpr = document.getElementById('scripts-sched-cron-expr');
+const scriptsScheduleBtn = document.getElementById('scripts-schedule-btn');
+
+let scriptScheduleType = 'once';
+let scriptActiveSchedules = [];
+
+// Toggle collapse
+if (scriptsScheduleHeader) {
+  scriptsScheduleHeader.addEventListener('click', () => {
+    const isOpen = scriptsScheduleForm && !scriptsScheduleForm.classList.contains('hidden');
+    if (scriptsScheduleForm) scriptsScheduleForm.classList.toggle('hidden', isOpen);
+    if (scriptsScheduleChevron) scriptsScheduleChevron.classList.toggle('open', !isOpen);
+  });
+}
+
+// Schedule type toggle (Once / Recurring)
+if (scriptsSchedTypeOnce) {
+  scriptsSchedTypeOnce.addEventListener('click', () => {
+    scriptScheduleType = 'once';
+    scriptsSchedTypeOnce.classList.add('active');
+    if (scriptsSchedTypeRecurring) scriptsSchedTypeRecurring.classList.remove('active');
+    if (scriptsSchedOnceFields) scriptsSchedOnceFields.classList.remove('hidden');
+    if (scriptsSchedRecurringFields) scriptsSchedRecurringFields.classList.add('hidden');
+  });
+}
+if (scriptsSchedTypeRecurring) {
+  scriptsSchedTypeRecurring.addEventListener('click', () => {
+    scriptScheduleType = 'recurring';
+    scriptsSchedTypeRecurring.classList.add('active');
+    if (scriptsSchedTypeOnce) scriptsSchedTypeOnce.classList.remove('active');
+    if (scriptsSchedOnceFields) scriptsSchedOnceFields.classList.add('hidden');
+    if (scriptsSchedRecurringFields) scriptsSchedRecurringFields.classList.remove('hidden');
+  });
+}
+
+// Recurring kind change — show/hide sub-fields
+if (scriptsSchedKind) {
+  scriptsSchedKind.addEventListener('change', () => {
+    const kind = scriptsSchedKind.value;
+    if (scriptsSchedIntervalFields) scriptsSchedIntervalFields.classList.toggle('hidden', kind !== 'interval');
+    if (scriptsSchedDailyFields) scriptsSchedDailyFields.classList.toggle('hidden', kind !== 'daily');
+    if (scriptsSchedCronFields) scriptsSchedCronFields.classList.toggle('hidden', kind !== 'cron');
+  });
+}
+
+/** Build schedule object from form state */
+function buildScheduleFromForm() {
+  if (scriptScheduleType === 'once') {
+    const dt = scriptsSchedDatetime ? scriptsSchedDatetime.value : '';
+    if (!dt) return null;
+    return { kind: 'once', runAt: new Date(dt).toISOString() };
+  }
+  // Recurring
+  const kind = scriptsSchedKind ? scriptsSchedKind.value : 'interval';
+  switch (kind) {
+    case 'interval': {
+      const mins = parseInt(scriptsSchedIntervalMin ? scriptsSchedIntervalMin.value : '30', 10);
+      if (!mins || mins < 1) return null;
+      return { kind: 'interval', intervalMs: mins * 60000 };
+    }
+    case 'daily': {
+      const time = scriptsSchedDailyTime ? scriptsSchedDailyTime.value : '09:00';
+      return { kind: 'daily', timeOfDay: time };
+    }
+    case 'cron': {
+      const expr = scriptsSchedCronExpr ? scriptsSchedCronExpr.value.trim() : '';
+      if (!expr) return null;
+      return { kind: 'cron', cronExpr: expr };
+    }
+    default:
+      return null;
+  }
+}
+
+/** Load and render active schedules for selected script */
+async function loadScriptSchedules(scriptId) {
+  scriptActiveSchedules = [];
+  if (!scriptId || !window.aria.getScriptSchedules) {
+    if (scriptsScheduleActive) scriptsScheduleActive.classList.add('hidden');
+    return;
+  }
+  try {
+    scriptActiveSchedules = await window.aria.getScriptSchedules(scriptId) || [];
+  } catch { scriptActiveSchedules = []; }
+
+  renderScheduleBadge();
+}
+
+function renderScheduleBadge() {
+  const activeJob = scriptActiveSchedules.find(j => j.enabled);
+  if (activeJob && scriptsScheduleActive && scriptsScheduleActiveText) {
+    let desc = '';
+    const s = activeJob.schedule;
+    switch (s.kind) {
+      case 'once': desc = s.runAt ? `Once at ${new Date(s.runAt).toLocaleString()}` : 'Once (no time)'; break;
+      case 'interval': {
+        const ms = s.intervalMs || 60000;
+        desc = ms >= 3600000 ? `Every ${(ms / 3600000).toFixed(ms % 3600000 ? 1 : 0)}h` : `Every ${Math.round(ms / 60000)}min`;
+        break;
+      }
+      case 'daily': desc = `Daily at ${s.timeOfDay || '09:00'}`; break;
+      case 'cron': desc = `Cron: ${s.cronExpr || ''}`; break;
+      default: desc = 'Scheduled';
+    }
+    if (activeJob.nextRun) desc += ` — next: ${new Date(activeJob.nextRun).toLocaleString()}`;
+    scriptsScheduleActiveText.textContent = desc;
+    scriptsScheduleActive.classList.remove('hidden');
+    scriptsScheduleActive.setAttribute('data-job-id', activeJob.id);
+  } else {
+    if (scriptsScheduleActive) scriptsScheduleActive.classList.add('hidden');
+  }
+}
+
+// Cancel schedule button
+if (scriptsScheduleCancelBtn) {
+  scriptsScheduleCancelBtn.addEventListener('click', async () => {
+    const jobId = scriptsScheduleActive ? scriptsScheduleActive.getAttribute('data-job-id') : null;
+    if (!jobId) return;
+    scriptsScheduleCancelBtn.disabled = true;
+    scriptsScheduleCancelBtn.textContent = 'Canceling…';
+    try {
+      await window.aria.cancelScriptSchedule(jobId);
+      if (selectedScriptId) await loadScriptSchedules(selectedScriptId);
+    } catch (err) {
+      console.error('[aria.js] cancel schedule error:', err);
+    }
+    scriptsScheduleCancelBtn.disabled = false;
+    scriptsScheduleCancelBtn.textContent = 'Cancel Schedule';
+  });
+}
+
+// Schedule button
+if (scriptsScheduleBtn) {
+  scriptsScheduleBtn.addEventListener('click', async () => {
+    if (!selectedScriptId) return;
+    const schedule = buildScheduleFromForm();
+    if (!schedule) return;
+
+    const inputs = gatherFormInputs();
+
+    scriptsScheduleBtn.disabled = true;
+    scriptsScheduleBtn.textContent = 'Scheduling…';
+    try {
+      const result = await window.aria.scheduleScript({
+        scriptId: selectedScriptId,
+        inputs,
+        schedule,
+      });
+      if (result && result.success) {
+        // Collapse form, reload badge
+        if (scriptsScheduleForm) scriptsScheduleForm.classList.add('hidden');
+        if (scriptsScheduleChevron) scriptsScheduleChevron.classList.remove('open');
+        await loadScriptSchedules(selectedScriptId);
+      } else {
+        console.error('[aria.js] schedule error:', result?.error);
+        scriptsScheduleBtn.textContent = result?.error || 'Failed';
+        setTimeout(() => { scriptsScheduleBtn.textContent = 'Schedule Script'; }, 2000);
+        scriptsScheduleBtn.disabled = false;
+        return;
+      }
+    } catch (err) {
+      console.error('[aria.js] schedule error:', err);
+    }
+    scriptsScheduleBtn.disabled = false;
+    scriptsScheduleBtn.textContent = 'Schedule Script';
+  });
+}
+
+// Live updates — refresh badge when cron jobs change
+if (window.aria && window.aria.onCronJobsUpdated) {
+  window.aria.onCronJobsUpdated((jobs) => {
+    if (!selectedScriptId) return;
+    scriptActiveSchedules = (jobs || []).filter(j => j.scriptId === selectedScriptId);
+    renderScheduleBadge();
+  });
+}
+
+// Hook into selectScript — show schedule section and load schedules
+const _origSelectScript = typeof selectScript === 'function' ? selectScript : null;
+{
+  // Patch selectScript to also handle schedule section
+  const origBody = selectScript;
+  // We can't easily override, so we'll use a MutationObserver-like approach.
+  // Instead, add a post-hook by wrapping the function.
+  const origFn = selectScript;
+  window.__selectScriptOrig = origFn;
+}
+// We need to hook after selectScript runs. Use event delegation on script list clicks
+// since selectScript is called in those handlers. Instead, let's patch it properly.
+// The simplest approach: redefine selectScript.
+{
+  const _origSelect = selectScript;
+  selectScript = function(id) {
+    _origSelect(id);
+    // Show/hide schedule section
+    if (scriptsScheduleSection) {
+      if (id && scriptInputMode !== 'bulk') {
+        scriptsScheduleSection.classList.remove('hidden');
+      } else {
+        scriptsScheduleSection.classList.add('hidden');
+      }
+    }
+    // Reset schedule form state
+    if (scriptsScheduleForm) scriptsScheduleForm.classList.add('hidden');
+    if (scriptsScheduleChevron) scriptsScheduleChevron.classList.remove('open');
+    // Load schedules
+    if (id) loadScriptSchedules(id);
+  };
 }
 
 // Wait for DOM + preload to be ready

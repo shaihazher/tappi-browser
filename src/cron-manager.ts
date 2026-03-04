@@ -28,10 +28,11 @@ import type { BrowserWindow } from 'electron';
 // ─── Types ───
 
 export interface CronJobSchedule {
-  kind: 'interval' | 'cron' | 'daily';
+  kind: 'interval' | 'cron' | 'daily' | 'once';
   intervalMs?: number;       // for 'interval'
   cronExpr?: string;         // for 'cron': standard 5-field cron
   timeOfDay?: string;        // for 'daily': "HH:MM" in local time
+  runAt?: string;            // for 'once': ISO datetime
 }
 
 export interface CronJobRun {
@@ -53,6 +54,8 @@ export interface CronJob {
   lastStatus?: 'success' | 'error';
   nextRun?: string;
   runs: CronJobRun[];
+  scriptId?: string;                    // bound script ID
+  scriptInputs?: Record<string, any>;   // saved form inputs
 }
 
 // ─── Constants ───
@@ -199,6 +202,13 @@ function computeNextRun(job: CronJob): Date | null {
       return nextCronOccurrence(schedule.cronExpr, now);
     }
 
+    case 'once': {
+      if (job.lastRun) return null; // already fired
+      if (!schedule.runAt) return null;
+      const runAt = new Date(schedule.runAt);
+      return runAt > now ? runAt : null;
+    }
+
     default:
       return null;
   }
@@ -250,6 +260,23 @@ async function executeJob(job: CronJob): Promise<void> {
   mainWindow.webContents.send('cron:job-running', { id: job.id, name: job.name });
 
   try {
+    // Resolve task prompt — use script if bound, otherwise use job.task
+    let taskPrompt = job.task;
+    if (job.scriptId) {
+      try {
+        const { getScript } = require('./script-store');
+        const { buildExecutionPrompt } = require('./scriptify-engine');
+        const script = getScript(job.scriptId);
+        if (script) {
+          taskPrompt = buildExecutionPrompt(script, job.scriptInputs || {});
+        } else {
+          console.warn(`[cron] Script ${job.scriptId} not found (deleted?), falling back to stored task`);
+        }
+      } catch (e) {
+        console.warn('[cron] Failed to resolve script for job:', e);
+      }
+    }
+
     // Route to CLI for claude-code provider (all auth methods)
     if (llmConfig.provider === 'claude-code') {
       const { executeCronViaCli } = await import('./claude-code-provider');
@@ -263,7 +290,7 @@ async function executeJob(job: CronJob): Promise<void> {
       const browserState = (() => {
         try { return browserTools.getBrowserState(browserCtx!); } catch { return '(unavailable)'; }
       })();
-      const fullTask = `[Current time: ${timeStr} (${tz})]\n[Browser: ${browserState}]\n\n${job.task}`;
+      const fullTask = `[Current time: ${timeStr} (${tz})]\n[Browser: ${browserState}]\n\n${taskPrompt}`;
 
       const cliResult = await executeCronViaCli(fullTask, CRON_AGENT_PROMPT, llmConfig.apiKey, llmConfig.model);
       const durationMs = Date.now() - startTime;
@@ -298,7 +325,7 @@ async function executeJob(job: CronJob): Promise<void> {
       try { return browserTools.getBrowserState(browserCtx!); } catch { return '(unavailable)'; }
     })();
 
-    const fullTask = `[Current time: ${timeStr} (${tz})]\n[Browser: ${browserState}]\n\n${job.task}`;
+    const fullTask = `[Current time: ${timeStr} (${tz})]\n[Browser: ${browserState}]\n\n${taskPrompt}`;
 
     addMessage(sessionId, { role: 'user', content: fullTask });
 
@@ -360,6 +387,11 @@ async function executeJob(job: CronJob): Promise<void> {
     });
 
   } finally {
+    // Auto-disable one-off jobs after execution
+    if (job.schedule.kind === 'once') {
+      job.enabled = false;
+    }
+
     // Cleanup isolated session
     cleanupSession(sessionId);
     purgeSession(sessionId);
@@ -417,7 +449,7 @@ export function updateCronContext(ctx: BrowserContext, config: LLMConfig, develo
   devMode = developerMode;
 }
 
-export function addJob(name: string, task: string, schedule: CronJobSchedule): string {
+export function addJob(name: string, task: string, schedule: CronJobSchedule, scriptId?: string, scriptInputs?: Record<string, any>): string {
   const id = crypto.randomUUID();
   const job: CronJob = {
     id,
@@ -427,6 +459,8 @@ export function addJob(name: string, task: string, schedule: CronJobSchedule): s
     enabled: true,
     createdAt: new Date().toISOString(),
     runs: [],
+    ...(scriptId ? { scriptId } : {}),
+    ...(scriptInputs ? { scriptInputs } : {}),
   };
 
   jobs.set(id, job);
@@ -524,6 +558,8 @@ function formatSchedule(s: CronJobSchedule): string {
       return `daily at ${s.timeOfDay || '09:00'}`;
     case 'cron':
       return s.cronExpr || '(invalid)';
+    case 'once':
+      return s.runAt ? `once at ${new Date(s.runAt).toLocaleString()}` : '(once, no time set)';
     default:
       return '(unknown)';
   }
