@@ -2865,7 +2865,7 @@ function renderExtensions(exts) {
         await window.tappi.enableExtension(id);
       }
       loadExtensions();
-      if (extPopup && !extPopup.classList.contains('hidden')) loadExtPopup();
+      if (extOverlay && !extOverlay.classList.contains('hidden')) loadExtPopup();
     });
   });
   // Wire remove buttons
@@ -2875,7 +2875,7 @@ function renderExtensions(exts) {
       const result = await window.tappi.removeExtension(id);
       if (result && result.success !== false) {
         loadExtensions();
-        if (extPopup && !extPopup.classList.contains('hidden')) loadExtPopup();
+        if (extOverlay && !extOverlay.classList.contains('hidden')) loadExtPopup();
       }
     });
   });
@@ -2909,24 +2909,24 @@ document.getElementById('ext-install-crx-btn')?.addEventListener('click', async 
 // ═══════════════════════════════════════════
 
 const extPopupBtn = document.getElementById('btn-extensions');
-const extPopup = document.getElementById('extensions-popup');
+const extOverlay = document.getElementById('extensions-overlay');
 
-function toggleExtPopup() {
-  extPopup.classList.toggle('hidden');
-  if (!extPopup.classList.contains('hidden')) {
-    loadExtPopup();
-  }
+function openExtPopup() {
+  window.tappi.showOverlay();
+  extOverlay.classList.remove('hidden');
+  loadExtPopup();
 }
 
 function closeExtPopup() {
-  extPopup.classList.add('hidden');
+  extOverlay.classList.add('hidden');
+  window.tappi.hideOverlay();
 }
 
 async function loadExtPopup() {
   const list = document.getElementById('ext-popup-list');
   const exts = await window.tappi.getExtensions();
   if (!exts || exts.length === 0) {
-    list.innerHTML = '<div class="ext-popup-empty">No extensions installed</div>';
+    list.innerHTML = '<div class="panel-list-empty">No extensions installed</div>';
     return;
   }
   list.innerHTML = '';
@@ -2971,10 +2971,7 @@ async function loadExtPopup() {
   });
 }
 
-extPopupBtn?.addEventListener('click', (e) => {
-  e.stopPropagation();
-  toggleExtPopup();
-});
+extPopupBtn?.addEventListener('click', () => openExtPopup());
 
 document.getElementById('ext-popup-close')?.addEventListener('click', closeExtPopup);
 
@@ -2984,18 +2981,16 @@ document.getElementById('ext-popup-manage')?.addEventListener('click', () => {
   switchSettingsTab('extensions');
 });
 
-document.addEventListener('click', (e) => {
-  if (extPopup && !extPopup.classList.contains('hidden') &&
-      !extPopup.contains(e.target) && e.target !== extPopupBtn) {
-    closeExtPopup();
-  }
+// Close on backdrop click
+extOverlay?.addEventListener('click', (e) => {
+  if (e.target === extOverlay) closeExtPopup();
 });
 
-// Consolidated onExtensionsUpdated listener — refreshes both settings tab and popup
+// Consolidated onExtensionsUpdated listener — refreshes both settings tab and panel
 if (window.tappi.onExtensionsUpdated) {
   window.tappi.onExtensionsUpdated(() => {
     if (currentSettingsTab === 'extensions') loadExtensions();
-    if (extPopup && !extPopup.classList.contains('hidden')) loadExtPopup();
+    if (extOverlay && !extOverlay.classList.contains('hidden')) loadExtPopup();
   });
 }
 

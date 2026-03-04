@@ -51,15 +51,17 @@
     </div>
   </div>
 
-  <!-- Extensions popup -->
-  <div id="extensions-popup" class="hidden extensions-popup">
-    <div class="extensions-popup-header">
-      <span>Extensions</span>
-      <button id="ext-popup-close" class="ghost-btn small">✕</button>
-    </div>
-    <div id="ext-popup-list"></div>
-    <div class="extensions-popup-actions">
-      <button id="ext-popup-manage" class="ghost-btn small">Manage Extensions →</button>
+  <!-- Extensions panel overlay -->
+  <div id="extensions-overlay" class="hidden panel-overlay">
+    <div class="panel-container" style="width:380px;">
+      <div class="panel-header">
+        <span>Extensions</span>
+        <div class="panel-header-actions">
+          <button id="ext-popup-manage" class="ghost-btn small">Settings →</button>
+          <button class="panel-close-btn" id="ext-popup-close">✕</button>
+        </div>
+      </div>
+      <div id="ext-popup-list" class="panel-list"></div>
     </div>
   </div>
 
