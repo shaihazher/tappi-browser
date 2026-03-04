@@ -304,16 +304,34 @@ function patchServiceWorkerPolyfill(extensionDir: string): void {
     }
 
     const originalSW = manifest.background.service_worker;
-    const polyfillFile = '_tappi_nm_polyfill.js';
-    const entryFile = '_tappi_sw_entry.js';
+    const polyfillFile = 'tappi-nm-polyfill.js';
+    const entryFile = 'tappi-sw-entry.js';
     const polyfillPath = path.join(extensionDir, polyfillFile);
     const entryPath = path.join(extensionDir, entryFile);
+
+    // Resolve the real original SW (handle migration from old _tappi_sw_entry.js)
+    const currentSW = manifest.background.service_worker;
+    const realOriginalSW = currentSW === '_tappi_sw_entry.js'
+      ? (() => {
+          try {
+            const oldEntry = fs.readFileSync(path.join(extensionDir, '_tappi_sw_entry.js'), 'utf-8');
+            const match = oldEntry.match(/import '\.\/(.+)';?\s*$/m);
+            return match?.[1] || originalSW;
+          } catch { return originalSW; }
+        })()
+      : originalSW;
+
+    // Clean up old underscore-prefixed files (reserved by Chromium)
+    for (const old of ['_tappi_nm_polyfill.js', '_tappi_sw_entry.js', '_tappi_sw_activator.html']) {
+      const oldPath = path.join(extensionDir, old);
+      try { if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath); } catch {}
+    }
 
     // Always write fresh polyfill with current bridge port/token
     fs.writeFileSync(polyfillPath, buildServiceWorkerPolyfill(bridge.port, bridge.token));
 
-    // If already patched (entry file points to us), just update the polyfill
-    if (manifest.background.service_worker === entryFile) {
+    // If already patched (new entry file), just update the polyfill
+    if (currentSW === entryFile) {
       console.log(`[extensions] Updated polyfill for: ${extensionDir}`);
       return;
     }
@@ -321,7 +339,7 @@ function patchServiceWorkerPolyfill(extensionDir: string): void {
     // Write wrapper entry module that imports polyfill first, then original SW
     fs.writeFileSync(
       entryPath,
-      `import './${polyfillFile}';\nimport './${originalSW}';\n`,
+      `import './${polyfillFile}';\nimport './${realOriginalSW}';\n`,
     );
 
     // Update manifest to use our wrapper entry
@@ -353,11 +371,18 @@ async function activateExtensionServiceWorker(
   );
   if (alreadyRunning) return;
 
-  try {
-    await ses.serviceWorkers.startWorkerForScope(scope);
-    console.log(`[extensions] Service worker started for ${extId}`);
-  } catch (e) {
-    console.warn(`[extensions] startWorkerForScope failed for ${extId}:`, e);
+  // Retry a few times — the SW may not be registered immediately after loadExtension
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 500));
+      await ses.serviceWorkers.startWorkerForScope(scope);
+      console.log(`[extensions] Service worker started for ${extId}`);
+      return;
+    } catch (e) {
+      if (attempt === 2) {
+        console.warn(`[extensions] startWorkerForScope failed for ${extId}:`, e);
+      }
+    }
   }
 }
 
