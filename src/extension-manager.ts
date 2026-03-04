@@ -346,7 +346,7 @@ function patchServiceWorkerPolyfill(extensionDir: string): void {
  * to the real SW, falling back to a directory scan.
  */
 function findOriginalServiceWorker(extensionDir: string, currentSW: string): string {
-  const ownFiles = ['tappi-sw-entry.js', '_tappi_sw_entry.js'];
+  const ownFiles = ['tappi-sw-entry.js', '_tappi_sw_entry.js', 'tappi-nm-polyfill.js', '_tappi_nm_polyfill.js'];
 
   // If manifest points to the untouched original, use it directly
   if (!ownFiles.includes(currentSW)) {
@@ -357,7 +357,8 @@ function findOriginalServiceWorker(extensionDir: string, currentSW: string): str
   for (const entry of ['tappi-sw-entry.js', '_tappi_sw_entry.js']) {
     try {
       const content = fs.readFileSync(path.join(extensionDir, entry), 'utf-8');
-      const match = content.match(/import '\.\/(.+)';?\s*$/m);
+      const matches = [...content.matchAll(/import '\.\/([^']+)'/g)];
+      const match = matches.at(-1);
       if (match?.[1] && !ownFiles.includes(match[1]) &&
           fs.existsSync(path.join(extensionDir, match[1]))) {
         return match[1];
