@@ -757,16 +757,17 @@ function createWindow() {
     });
   }
 
-  // Load persisted extensions for active profile
-  loadPersistedExtensionsForProfile().catch(e =>
-    console.error('[main] Extension auto-load error:', e)
-  );
-
   // ── Native Messaging Bridge ──
-  // Discover hosts and start bridge server, then inject polyfill into extension
-  // background pages that declare the nativeMessaging permission.
+  // Start bridge BEFORE loading extensions so MV3 service worker polyfills
+  // can be written with valid port/token during patchServiceWorkerPolyfill().
   discoverNativeHosts();
   startNativeMessagingBridge(extensionHasPermission).then(({ port: bridgePort, token: bridgeToken }) => {
+    // Now load persisted extensions — bridge is ready for polyfill injection
+    loadPersistedExtensionsForProfile().catch(e =>
+      console.error('[main] Extension auto-load error:', e)
+    );
+
+    // Inject polyfill into MV2 extension background pages via dom-ready
     app.on('web-contents-created', (_event, webContents) => {
       webContents.on('dom-ready', () => {
         const url = webContents.getURL();
