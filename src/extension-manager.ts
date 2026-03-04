@@ -127,6 +127,29 @@ function unpackCrx(crxPath: string, destDir: string): string {
   return destDir;
 }
 
+// ─── Permission Helpers ──────────────────────────────────────────────────────
+
+/**
+ * Check if an extension has a given permission declared in its manifest.
+ * Looks up the extension path via the active session, then reads manifest.json.
+ */
+export function extensionHasPermission(extensionId: string, permission: string): boolean {
+  try {
+    const ses = sessionManager.getProfileSession();
+    const ext = ses.getExtension(extensionId);
+    if (!ext) return false;
+
+    const manifestPath = path.join(ext.path, 'manifest.json');
+    if (!fs.existsSync(manifestPath)) return false;
+
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    const permissions: string[] = manifest.permissions || [];
+    return permissions.includes(permission);
+  } catch {
+    return false;
+  }
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**

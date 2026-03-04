@@ -46,7 +46,9 @@ import { cleanupAllSubAgents } from './sub-agent';
 import { cleanupAllTeams, getActiveTeam, getTeamStatusUI, setTeamUpdateCallback, interruptTeammate, getActiveTeamId } from './team-manager';
 import { scheduleProfileUpdate, deleteProfile, loadUserProfileTxt, saveUserProfileTxt, loadProfile, generateProfile } from './user-profile';
 import { purgeSession } from './output-buffer';
-import { installExtension, installFromCrx, listExtensions, getExtension, removeExtension, enableExtension, disableExtension, loadPersistedExtensionsForProfile } from './extension-manager';
+import { installExtension, installFromCrx, listExtensions, getExtension, removeExtension, enableExtension, disableExtension, loadPersistedExtensionsForProfile, extensionHasPermission } from './extension-manager';
+import { discoverNativeHosts, cleanupNativeHosts } from './native-messaging';
+import { startNativeMessagingBridge, stopNativeMessagingBridge, buildPolyfillScript } from './native-messaging-bridge';
 import { initCronManager, updateCronContext, addJob as cronAddJob, listJobs as cronListJobs, updateJob as cronUpdateJob, deleteJob as cronDeleteJob, runJobNow as cronRunJobNow, getJobsList, getActiveJobCount, cleanupCron } from './cron-manager';
 import {
   createConversation,
@@ -759,6 +761,28 @@ function createWindow() {
   loadPersistedExtensionsForProfile().catch(e =>
     console.error('[main] Extension auto-load error:', e)
   );
+
+  // ── Native Messaging Bridge ──
+  // Discover hosts and start bridge server, then inject polyfill into extension
+  // background pages that declare the nativeMessaging permission.
+  discoverNativeHosts();
+  startNativeMessagingBridge(extensionHasPermission).then(({ port: bridgePort, token: bridgeToken }) => {
+    app.on('web-contents-created', (_event, webContents) => {
+      webContents.on('dom-ready', () => {
+        const url = webContents.getURL();
+        if (!url.startsWith('chrome-extension://')) return;
+
+        try {
+          const extId = new URL(url).hostname;
+          if (!extensionHasPermission(extId, 'nativeMessaging')) return;
+
+          webContents.executeJavaScript(buildPolyfillScript(extId, bridgePort, bridgeToken))
+            .catch(() => {}); // Ignore if context is destroyed
+          console.log(`[tappi] Native messaging polyfill injected for extension: ${extId}`);
+        } catch {}
+      });
+    });
+  }).catch(e => console.error('[main] Native messaging bridge start error:', e));
 
   // Initialize cron manager
   {
@@ -3915,6 +3939,8 @@ app.on('window-all-closed', () => {
   cleanupAllTeams();
   captureCleanupOnQuit(); // Phase 8.6: stop any in-progress recording
   stopApiServer();        // Phase 8.45: stop HTTP API server
+  cleanupNativeHosts();   // Kill all native host processes
+  stopNativeMessagingBridge(); // Stop bridge HTTP/WS server
   purgeSession('default');
   closeDatabase();
   app.quit();
