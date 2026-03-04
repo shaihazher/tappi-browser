@@ -38,6 +38,9 @@ IMPORTANT:
 - For automated and semi-automated scripts: generate clean, well-structured Python code with proper error handling (try/except), logging, and clear variable names
 - Use standard libraries where possible; note any pip dependencies in the description
 - The Python code will be written to a temp file and executed by the agent — ensure it is self-contained and runnable
+- For data-processing workflows (scraping, APIs, file operations): design Python scripts to accept a file_path input for bulk CSV/Excel data. The script should iterate over rows internally using pandas or csv module. This "script-native bulk" is far more efficient than the system repeating the script per row.
+- When a script naturally operates on a single item, still use single-value {{placeholders}} — the system can run it in bulk mode by repeating execution per row.
+- Include a file_path field (type: "file_path") in the inputSchema when the script is designed for native bulk processing.
 
 Also identify any domains that required authentication during the conversation.
 Include an "authRequirements" array in your JSON output:
@@ -213,6 +216,7 @@ IMPORTANT:
 - For automated and semi-automated scripts: scriptBody should contain executable Python code with proper error handling, logging, and clear variable names
 - Use standard libraries where possible; note any pip dependencies in the description
 - Keep authRequirements unchanged unless the user specifically mentions auth changes
+- If the user asks to add bulk/batch support, prefer making the script accept a file_path input and iterate over CSV rows internally (script-native bulk) rather than relying on the system to repeat execution per row
 
 Respond with ONLY a JSON object (no markdown fences, no explanation):
 {
@@ -396,20 +400,35 @@ export function buildExecutionPrompt(script: Script, inputs: Record<string, any>
 
   if (isBulk) {
     const rows = inputs as Record<string, any>[];
-    const header = `You are executing the script "${script.name}" in bulk mode for ${rows.length} inputs.\n\nProcess each row sequentially and report results for each.\n\n`;
+    const bulkHeader = `You are executing the script "${script.name}" in bulk mode for ${rows.length} inputs.\n\n` +
+      `Process each row sequentially. For each row, substitute the input values into the script template below, ` +
+      `write to a temp file, execute with python3, and report the result before moving to the next row.\n\n`;
 
-    const rowPrompts = rows.map((row, i) => {
-      const resolved = substituteInputs(script.scriptBody, row);
-      return `--- Row ${i + 1} of ${rows.length} ---\nInputs: ${JSON.stringify(row)}\n\n${resolved}`;
-    }).join('\n\n');
+    const scriptTemplate = `SCRIPT TEMPLATE:\n${script.scriptBody}\n`;
 
-    const bulkPrompt = header + authPreamble + getTypeInstructions(script.scriptType) + persistFixGuidance + '\n\n' + rowPrompts;
+    const inputRows = rows.map((row, i) =>
+      `Row ${i + 1}: ${JSON.stringify(row)}`
+    ).join('\n');
+    const inputSection = `\nINPUT ROWS (substitute into {{placeholders}} in the template for each row):\n${inputRows}`;
+
+    const bulkPrompt = bulkHeader + authPreamble + getTypeInstructions(script.scriptType) + persistFixGuidance +
+      '\n\n' + scriptTemplate + inputSection;
     return specialInstructions ? bulkPrompt + `\n\nADDITIONAL INSTRUCTIONS FOR THIS RUN:\n${specialInstructions}` : bulkPrompt;
   }
 
   // Single execution
-  const resolvedBody = substituteInputs(script.scriptBody, inputs as Record<string, any>);
-  const singlePrompt = `You are executing the script "${script.name}".\n\n${authPreamble}${getTypeInstructions(script.scriptType)}${persistFixGuidance}\n\n${resolvedBody}`;
+  const singleInputs = inputs as Record<string, any>;
+  const resolvedBody = substituteInputs(script.scriptBody, singleInputs);
+
+  // If any input value looks like a CSV/Excel file path, hint the agent to process all rows
+  const hasFilePathInput = Object.values(singleInputs).some(
+    val => typeof val === 'string' && /\.(csv|xlsx|xls)$/i.test(val)
+  );
+  const filePathHint = hasFilePathInput
+    ? '\n\nThis script receives a file path as input. The file may contain multiple rows of data. Process all rows in the file — do not stop after the first row.'
+    : '';
+
+  const singlePrompt = `You are executing the script "${script.name}".\n\n${authPreamble}${getTypeInstructions(script.scriptType)}${persistFixGuidance}${filePathHint}\n\n${resolvedBody}`;
   return specialInstructions ? singlePrompt + `\n\nADDITIONAL INSTRUCTIONS FOR THIS RUN:\n${specialInstructions}` : singlePrompt;
 }
 
