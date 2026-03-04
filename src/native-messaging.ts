@@ -319,6 +319,19 @@ export function disconnect(connectionId: string): void {
   activeConnections.delete(connectionId);
 }
 
+/** Return native host names whose allowed_origins include this extension. */
+export function getHostsForExtension(extensionId: string): string[] {
+  const hosts = discoverNativeHosts();
+  const origin = `chrome-extension://${extensionId}/`;
+  const result: string[] = [];
+  for (const [name, manifest] of hosts) {
+    if (manifest.allowed_origins.includes(origin)) {
+      result.push(name);
+    }
+  }
+  return result;
+}
+
 /**
  * Kill all active native host processes. Called on app quit.
  */

@@ -12,6 +12,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { execFileSync } from 'child_process';
+import { BrowserWindow } from 'electron';
 import { profileManager } from './profile-manager';
 import { sessionManager } from './session-manager';
 import { getBridgeInfo, buildServiceWorkerPolyfill } from './native-messaging-bridge';
@@ -311,6 +312,15 @@ function patchServiceWorkerPolyfill(extensionDir: string): void {
     // Always write fresh polyfill with current bridge port/token
     fs.writeFileSync(polyfillPath, buildServiceWorkerPolyfill(bridge.port, bridge.token));
 
+    // Write activator page for MV3 SW startup
+    const activatorFile = '_tappi_sw_activator.html';
+    const activatorPath = path.join(extensionDir, activatorFile);
+    fs.writeFileSync(activatorPath, `<!DOCTYPE html><script>
+try { chrome.runtime.sendMessage({_tappi:'activate'}, function(){
+  chrome.runtime.lastError;
+}); } catch(e) {}
+</script>`);
+
     // If already patched (entry file points to us), just update the polyfill
     if (manifest.background.service_worker === entryFile) {
       console.log(`[extensions] Updated polyfill for: ${extensionDir}`);
@@ -331,6 +341,52 @@ function patchServiceWorkerPolyfill(extensionDir: string): void {
   } catch (e) {
     console.warn('[extensions] Failed to patch service worker polyfill:', e);
   }
+}
+
+// ─── Service Worker Activation ───────────────────────────────────────────────
+
+/**
+ * Force-activate an MV3 service worker that Electron registered but never started.
+ * Navigates a hidden BrowserWindow to the extension's activator page, which sends
+ * a message to self — triggering Electron's SW runtime to start the worker.
+ */
+async function activateExtensionServiceWorker(
+  ses: Electron.Session,
+  extId: string,
+): Promise<void> {
+  // Check if SW is already running
+  const running = ses.serviceWorkers.getAllRunning();
+  const alreadyRunning = Object.values(running).some(
+    sw => sw.scope.startsWith(`chrome-extension://${extId}/`)
+  );
+  if (alreadyRunning) return;
+
+  // Navigate hidden window to extension page to trigger SW activation
+  const win = new BrowserWindow({
+    show: false,
+    width: 1,
+    height: 1,
+    webPreferences: { session: ses },
+  });
+
+  try {
+    await win.loadURL(`chrome-extension://${extId}/_tappi_sw_activator.html`);
+    // Poll for SW to start (up to 5s)
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await new Promise(r => setTimeout(r, 500));
+      const nowRunning = ses.serviceWorkers.getAllRunning();
+      if (Object.values(nowRunning).some(
+        sw => sw.scope.startsWith(`chrome-extension://${extId}/`)
+      )) {
+        console.log(`[extensions] Service worker activated for ${extId}`);
+        break;
+      }
+    }
+  } catch (e) {
+    console.warn(`[extensions] Service worker activation failed for ${extId}:`, e);
+  }
+
+  win.close();
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -390,6 +446,11 @@ export async function installExtension(
     const ext = await ses.loadExtension(finalPath, {
       allowFileAccess: options?.allowFileAccess ?? false,
     });
+
+    // Force-activate MV3 service worker (Electron 35 registers but doesn't start SWs)
+    activateExtensionServiceWorker(ses, ext.id).catch(e =>
+      console.warn('[extensions] SW activation error:', e)
+    );
 
     // Persist
     const data = readPersistence();
@@ -725,6 +786,11 @@ export async function enableExtension(idOrName: string): Promise<ExtensionInfo |
       allowFileAccess: targetEntry.allowFileAccess ?? false,
     });
 
+    // Force-activate MV3 service worker (Electron 35 registers but doesn't start SWs)
+    activateExtensionServiceWorker(ses, ext.id).catch(e =>
+      console.warn('[extensions] SW activation error:', e)
+    );
+
     // Update persistence: set enabled = true
     targetEntry.enabled = true;
     writePersistence(data);
@@ -780,10 +846,15 @@ export async function loadPersistedExtensionsForProfile(profileName?: string): P
       // Patch MV3 service worker with native messaging polyfill before loading
       patchServiceWorkerPolyfill(entry.path);
 
-      await ses.loadExtension(entry.path, {
+      const loaded = await ses.loadExtension(entry.path, {
         allowFileAccess: entry.allowFileAccess ?? false,
       });
       console.log(`[extensions] Loaded: ${entry.path}`);
+
+      // Force-activate MV3 service worker (Electron 35 registers but doesn't start SWs)
+      activateExtensionServiceWorker(ses, loaded.id).catch(e =>
+        console.warn('[extensions] SW activation error:', e)
+      );
     } catch (e) {
       console.error(`[extensions] Failed to load ${entry.path}:`, e);
       staleIndexes.push(i);

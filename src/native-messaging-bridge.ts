@@ -20,6 +20,7 @@ import {
   postMessage,
   disconnect,
   validateAccess,
+  getHostsForExtension,
 } from './native-messaging';
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -146,7 +147,7 @@ export function startNativeMessagingBridge(
     server = http.createServer(async (req, res) => {
       // CORS headers for extension contexts
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
 
       if (req.method === 'OPTIONS') {
@@ -197,6 +198,27 @@ export function startNativeMessagingBridge(
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: e.message || String(e) }));
         }
+        return;
+      }
+
+      // ── GET /native-messaging/hosts — List allowed native hosts for an extension ──
+      const url = new URL(req.url || '/', 'http://127.0.0.1');
+      if (req.method === 'GET' && url.pathname === '/native-messaging/hosts') {
+        const auth = req.headers.authorization;
+        if (!auth || auth !== `Bearer ${bridgeToken}`) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+        const extensionId = url.searchParams.get('extensionId');
+        if (!extensionId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing extensionId' }));
+          return;
+        }
+        const hosts = getHostsForExtension(extensionId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ hosts }));
         return;
       }
 
@@ -549,23 +571,54 @@ if (!self.__tappiNativeMessagingInjected) {
 
   // ── MV3 lifecycle event shims ──
   // Electron doesn't fire onInstalled/onStartup for MV3 service workers.
-  // Wrap addListener to capture handlers, then dispatch after module init.
+  // Ensure event objects exist, capture registered handlers, dispatch after module init.
   (function() {
-    function shimEvent(event, detail) {
-      var captured = [];
-      var origAdd = event.addListener.bind(event);
-      event.addListener = function(cb) {
-        origAdd(cb);
-        captured.push(cb);
+    function ensureEvent(obj, prop) {
+      try {
+        if (obj[prop] && typeof obj[prop].addListener === 'function') return;
+      } catch(e) {}
+      var listeners = [];
+      obj[prop] = {
+        addListener: function(cb) { listeners.push(cb); },
+        removeListener: function(cb) { var i = listeners.indexOf(cb); if (i >= 0) listeners.splice(i, 1); },
+        hasListener: function(cb) { return listeners.indexOf(cb) >= 0; },
+        hasListeners: function() { return listeners.length > 0; }
       };
-      setTimeout(function() {
-        for (var i = 0; i < captured.length; i++) {
-          try { captured[i](detail); } catch(e) { console.error('[tappi] lifecycle shim error:', e); }
-        }
-      }, 0);
     }
-    shimEvent(chrome.runtime.onInstalled, { reason: 'install' });
-    shimEvent(chrome.runtime.onStartup, {});
+    if (typeof chrome !== 'undefined' && chrome.runtime) {
+      ensureEvent(chrome.runtime, 'onInstalled');
+      ensureEvent(chrome.runtime, 'onStartup');
+    }
+
+    var dispatched = [];
+    function shimAndDispatch(event, detail, delays) {
+      if (!event || typeof event.addListener !== 'function') return;
+      var captured = [];
+      try {
+        var origAdd = event.addListener.bind(event);
+        event.addListener = function(cb) {
+          try { origAdd(cb); } catch(e) {}
+          if (captured.indexOf(cb) < 0) captured.push(cb);
+        };
+      } catch(e) { return; }
+      for (var d = 0; d < delays.length; d++) {
+        (function(delay) {
+          setTimeout(function() {
+            for (var i = 0; i < captured.length; i++) {
+              if (dispatched.indexOf(captured[i]) < 0) {
+                dispatched.push(captured[i]);
+                try { captured[i](detail); } catch(e) {
+                  console.error('[tappi] lifecycle shim error:', e);
+                }
+              }
+            }
+          }, delay);
+        })(delays[d]);
+      }
+    }
+
+    shimAndDispatch(chrome.runtime.onInstalled, { reason: 'install' }, [0, 250, 1000]);
+    shimAndDispatch(chrome.runtime.onStartup, {}, [0, 250, 1000]);
   })();
 
   const BRIDGE_PORT = ${port};
@@ -575,8 +628,20 @@ if (!self.__tappiNativeMessagingInjected) {
   // Auto-detect extension ID from the service worker runtime
   const EXTENSION_ID = chrome.runtime.id;
 
+  // Fetch allowed native hosts for fallback when host name is undefined
+  var __tappiAllowedHosts = [];
+  fetch(BRIDGE_BASE + '/native-messaging/hosts?extensionId=' + encodeURIComponent(EXTENSION_ID), {
+    headers: { 'Authorization': 'Bearer ' + BRIDGE_TOKEN }
+  }).then(function(r) { return r.json(); })
+    .then(function(d) { __tappiAllowedHosts = d.hosts || []; })
+    .catch(function() {});
+
   // ── chrome.runtime.sendNativeMessage ──
   chrome.runtime.sendNativeMessage = function(application, message, responseCallback) {
+    if (!application && __tappiAllowedHosts.length > 0) {
+      application = __tappiAllowedHosts[0];
+      console.warn('[tappi] sendNativeMessage: undefined host, using fallback:', application);
+    }
     const promise = fetch(BRIDGE_BASE + '/native-messaging/send', {
       method: 'POST',
       headers: {
@@ -610,6 +675,11 @@ if (!self.__tappiNativeMessagingInjected) {
 
   // ── chrome.runtime.connectNative ──
   chrome.runtime.connectNative = function(application) {
+    if (!application && __tappiAllowedHosts.length > 0) {
+      application = __tappiAllowedHosts[0];
+      console.warn('[tappi] connectNative: undefined host, using fallback:', application);
+    }
+
     const messageListeners = [];
     const disconnectListeners = [];
     let connected = false;
