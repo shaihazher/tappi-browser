@@ -547,6 +547,27 @@ export function buildServiceWorkerPolyfill(port: number, token: string): string 
 if (!self.__tappiNativeMessagingInjected) {
   self.__tappiNativeMessagingInjected = true;
 
+  // ── MV3 lifecycle event shims ──
+  // Electron doesn't fire onInstalled/onStartup for MV3 service workers.
+  // Wrap addListener to capture handlers, then dispatch after module init.
+  (function() {
+    function shimEvent(event, detail) {
+      var captured = [];
+      var origAdd = event.addListener.bind(event);
+      event.addListener = function(cb) {
+        origAdd(cb);
+        captured.push(cb);
+      };
+      setTimeout(function() {
+        for (var i = 0; i < captured.length; i++) {
+          try { captured[i](detail); } catch(e) { console.error('[tappi] lifecycle shim error:', e); }
+        }
+      }, 0);
+    }
+    shimEvent(chrome.runtime.onInstalled, { reason: 'install' });
+    shimEvent(chrome.runtime.onStartup, {});
+  })();
+
   const BRIDGE_PORT = ${port};
   const BRIDGE_TOKEN = ${JSON.stringify(token)};
   const BRIDGE_BASE = 'http://127.0.0.1:' + BRIDGE_PORT;
