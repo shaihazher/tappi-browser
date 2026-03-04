@@ -24,6 +24,32 @@ The result: a symbiotic integration where Claude Code handles the intelligence a
 
 ---
 
+### **Scriptify & Scripts — Turn Conversations Into Reusable Workflows**
+
+Had a great conversation with Aria? **Scriptify** it. One click analyzes your conversation and generates a reusable script — complete with input fields, auth requirements, and executable steps.
+
+**Three script types, matched to the task:**
+
+| Type | What it does |
+|------|-------------|
+| **Automated** | Deterministic Python scripts that run start-to-finish |
+| **Semi-automated** | Mix of code blocks + LLM reasoning for analysis steps |
+| **Playbook** | Creative/orchestration tasks requiring agent judgment |
+
+**How it works:**
+1. Chat with Aria to complete a task
+2. Click **📜 Scriptify** — the agent extracts the repeatable workflow
+3. Open **📂 Scripts**, fill in inputs (or upload a CSV for bulk), hit Execute
+
+**What makes it powerful:**
+- **Bulk execution** — Upload a CSV or Excel file. The script runs for every row automatically.
+- **Auth-aware** — Scripts detect which logins are needed and verify them before running.
+- **Natural language editing** — Describe what to change; the LLM updates the script definition.
+- **Self-healing** — Bugs found during execution get patched back into the saved script.
+- **Special instructions** — Add one-off tweaks per run without editing the stored script.
+
+---
+
 ## Screenshots
 
 | Aria Agent | Real Conversation |
@@ -94,6 +120,7 @@ Everything Comet and Atlas can do - plus what they can't:
 - Manage tabs, bookmarks, downloads
 - Schedule recurring tasks with cron
 - Take screenshots and record tabs
+- Turn any conversation into a reusable script with Scriptify
 
 **Developer Power:**
 - Code with multi-agent teams (parallel spawning)
