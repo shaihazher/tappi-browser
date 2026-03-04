@@ -3452,13 +3452,17 @@ body.coding-mode .team-redirect-send {
 
 #aria-scriptify-btn,
 #aria-scripts-btn {
-  width: 28px;
   height: 28px;
-  background: transparent;
-  border: none;
+  padding: 0 10px;
+  gap: 4px;
+  background: var(--lotus-soft);
+  border: 1px solid rgba(212, 98, 138, 0.35);
+  border-radius: 14px;
   cursor: pointer;
-  font-size: 15px;
-  opacity: 0.7;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--lotus);
+  opacity: 1;
   transition: all 0.15s ease;
   display: flex;
   align-items: center;
@@ -3467,22 +3471,49 @@ body.coding-mode .team-redirect-send {
   line-height: 1;
 }
 
+#aria-scriptify-btn .btn-icon,
+#aria-scripts-btn .btn-icon {
+  font-size: 13px;
+}
+
+#aria-scriptify-btn .btn-label,
+#aria-scripts-btn .btn-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
 #aria-scriptify-btn:hover,
 #aria-scripts-btn:hover {
   opacity: 1;
-  color: var(--lotus);
+  background: var(--lotus);
+  color: white;
+  border-color: var(--lotus);
+  box-shadow: 0 2px 8px rgba(212, 98, 138, 0.3);
+  transform: translateY(-1px);
 }
 
-#aria-scriptify-btn:disabled,
-#aria-scripts-btn:disabled {
-  opacity: 0.3;
+#aria-scriptify-btn:active,
+#aria-scripts-btn:active {
+  transform: scale(0.96);
+}
+
+#aria-scriptify-btn:disabled {
+  opacity: 0.35;
   cursor: default;
+  background: var(--bg-dim);
+  border-color: var(--border);
+  color: var(--text-dim);
+  box-shadow: none;
 }
 
-#aria-scriptify-btn:disabled:hover,
-#aria-scripts-btn:disabled:hover {
-  opacity: 0.3;
-  color: inherit;
+#aria-scriptify-btn:disabled:hover {
+  opacity: 0.35;
+  background: var(--bg-dim);
+  color: var(--text-dim);
+  border-color: var(--border);
+  box-shadow: none;
+  transform: none;
 }
 
 /* ── Scripts modal overlay ── */
