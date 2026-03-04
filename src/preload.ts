@@ -117,6 +117,16 @@ contextBridge.exposeInMainWorld('tappi', {
     ipcRenderer.on('api-services:updated', (_e, services) => callback(services));
   },
 
+  // Extensions
+  getExtensions: () => ipcRenderer.invoke('extensions:list'),
+  installExtension: (data: { path: string; allowFileAccess?: boolean }) => ipcRenderer.invoke('extensions:install', data),
+  getExtensionDetails: (id: string) => ipcRenderer.invoke('extensions:get', id),
+  removeExtension: (id: string) => ipcRenderer.invoke('extensions:remove', id),
+  selectFile: (options: { title?: string; filters?: any[] }) => ipcRenderer.invoke('dialog:select-file', options),
+  onExtensionsUpdated: (callback: () => void) => {
+    ipcRenderer.on('extensions:updated', () => callback());
+  },
+
   // Credential detection & testing (Phase 6.5)
   checkCredentials: (provider: string, options?: any) => ipcRenderer.invoke('credentials:check', provider, options),
   testConnection: (provider: string, config: any) => ipcRenderer.invoke('credentials:test', provider, config),

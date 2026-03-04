@@ -833,6 +833,37 @@ async function handleRequest(
     }
   }
 
+  // ── Extensions ───────────────────────────────────────────────────────────────
+  if (method === 'GET' && urlPath === '/api/extensions') {
+    const { listExtensions } = require('./extension-manager');
+    return json(res, 200, listExtensions());
+  }
+  if (method === 'POST' && urlPath === '/api/extensions') {
+    const { installExtension } = require('./extension-manager');
+    const body = await readBody(req);
+    if (!body.path) return err(res, 400, 'Missing required field: path');
+    const result = await installExtension(body.path, { allowFileAccess: body.allowFileAccess });
+    if ('error' in result) return err(res, 400, result.error);
+    return json(res, 201, result);
+  }
+  {
+    const m = matchRoute('/api/extensions/:id', urlPath);
+    if (m) {
+      if (method === 'GET') {
+        const { getExtension } = require('./extension-manager');
+        const result = getExtension(m.id);
+        if ('error' in result) return err(res, 404, result.error);
+        return json(res, 200, result);
+      }
+      if (method === 'DELETE') {
+        const { removeExtension } = require('./extension-manager');
+        const result = await removeExtension(m.id);
+        if (!result.success) return err(res, 404, result.error || 'Extension not found');
+        return json(res, 200, { success: true });
+      }
+    }
+  }
+
   // ── 404 ───────────────────────────────────────────────────────────────────────
   return err(res, 404, `Route not found: ${method} ${urlPath}`);
 }

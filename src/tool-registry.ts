@@ -1150,6 +1150,9 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         agentReadConversation(conversation_id, offset || 0, limit || 20, grep),
     }),
 
+    // ═══ EXTENSION TOOLS (always available) ═══
+    ...createExtensionTools(),
+
     // ═══ MEDIA TOOLS (Phase 8.5 — always available) ═══
     ...createMediaTools(browserCtx),
 
@@ -1933,6 +1936,60 @@ function createWorktreeTools(repoPath?: string) {
 }
 
 /**
+ * Extension tools — install, list, get, remove Chrome extensions.
+ * Always available.
+ */
+function createExtensionTools() {
+  const { installExtension, listExtensions, getExtension, removeExtension } = require('./extension-manager');
+
+  return {
+    extension_install: tool({
+      description: 'Install a Chrome extension from an unpacked directory path or a .crx file path. CRX files are auto-extracted.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to an unpacked extension directory or a .crx file'),
+        allowFileAccess: z.boolean().optional().describe('Allow the extension to access file:// URLs (default false)'),
+      }),
+      execute: async ({ path, allowFileAccess }: { path: string; allowFileAccess?: boolean }) => {
+        const result = await installExtension(path, { allowFileAccess });
+        return JSON.stringify(result, null, 2);
+      },
+    }),
+
+    extension_list: tool({
+      description: 'List all installed Chrome extensions with id, name, version, path, and source (unpacked or crx).',
+      inputSchema: z.object({}),
+      execute: async () => {
+        const exts = listExtensions();
+        if (exts.length === 0) return 'No extensions installed.';
+        return JSON.stringify(exts, null, 2);
+      },
+    }),
+
+    extension_get: tool({
+      description: 'Get details of a specific Chrome extension by its ID or name.',
+      inputSchema: z.object({
+        id: z.string().describe('Extension ID or name (case-insensitive name match)'),
+      }),
+      execute: async ({ id }: { id: string }) => {
+        const result = getExtension(id);
+        return JSON.stringify(result, null, 2);
+      },
+    }),
+
+    extension_remove: tool({
+      description: 'Remove (uninstall) a Chrome extension by ID or name. For CRX-sourced extensions, also deletes the extracted directory.',
+      inputSchema: z.object({
+        id: z.string().describe('Extension ID or name to remove'),
+      }),
+      execute: async ({ id }: { id: string }) => {
+        const result = await removeExtension(id);
+        return JSON.stringify(result, null, 2);
+      },
+    }),
+  };
+}
+
+/**
  * Media tools (Phase 8.5) — mpv overlay control.
  * Always available; gracefully degrades when mpv is not installed.
  */
@@ -2658,6 +2715,22 @@ DO NOT USE FOR: Simple navigation or one-click actions — just use navigate/cli
 This is more reliable than scripted automation because you can adapt to page changes, popups, and errors.
 
 **Available apps:** Google Sheets, Google Docs, Google Maps, Gmail, Instagram, YouTube, Twitter/X, LinkedIn, Reddit
+
+### CHROME EXTENSIONS
+USE WHEN: User wants to install, manage, or remove Chrome extensions.
+DO NOT USE FOR: Browser settings or preferences (use config tools instead).
+
+**Workflow:**
+1. \`extension_list()\` → see all installed extensions
+2. \`extension_install({ path: "/path/to/extension" })\` → install from unpacked directory
+3. \`extension_install({ path: "/path/to/file.crx" })\` → install from .crx file (auto-extracted)
+4. \`extension_get({ id: "ext-id-or-name" })\` → get details
+5. \`extension_remove({ id: "ext-id-or-name" })\` → uninstall
+
+**Notes:**
+- Extensions persist across restarts and are per-profile
+- .crx files downloaded in the browser are auto-installed
+- CRX-sourced extensions are fully cleaned up on removal (extracted directory deleted)
 
 ### ERROR RECOVERY
 - "Element not found" or wrong index → call \`elements()\` again (indexes shift after page changes)

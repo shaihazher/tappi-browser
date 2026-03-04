@@ -46,6 +46,7 @@ import { cleanupAllSubAgents } from './sub-agent';
 import { cleanupAllTeams, getActiveTeam, getTeamStatusUI, setTeamUpdateCallback, interruptTeammate, getActiveTeamId } from './team-manager';
 import { scheduleProfileUpdate, deleteProfile, loadUserProfileTxt, saveUserProfileTxt, loadProfile, generateProfile } from './user-profile';
 import { purgeSession } from './output-buffer';
+import { installExtension, installFromCrx, listExtensions, getExtension, removeExtension, loadPersistedExtensionsForProfile } from './extension-manager';
 import { initCronManager, updateCronContext, addJob as cronAddJob, listJobs as cronListJobs, updateJob as cronUpdateJob, deleteJob as cronDeleteJob, runJobNow as cronRunJobNow, getJobsList, getActiveJobCount, cleanupCron } from './cron-manager';
 import {
   createConversation,
@@ -753,6 +754,11 @@ function createWindow() {
       mainWindow?.webContents.send('adblock:count', getBlockedCount());
     });
   }
+
+  // Load persisted extensions for active profile
+  loadPersistedExtensionsForProfile().catch(e =>
+    console.error('[main] Extension auto-load error:', e)
+  );
 
   // Initialize cron manager
   {
@@ -2539,6 +2545,11 @@ Rules:
     attachDownloadHandlerToPartition(partition);
     applyAdBlockerToPartition(partition);
 
+    // Load persisted extensions for the new profile
+    loadPersistedExtensionsForProfile(name).catch(e =>
+      console.error('[main] Extension reload on profile switch error:', e)
+    );
+
     // Close all non-Aria tabs (they use the old profile's session partition)
     // and open a fresh tab with the new partition
     const allTabIds = tabManager.getAllTabIds();
@@ -2693,6 +2704,25 @@ Rules:
     if (!filePaths || filePaths.length === 0) return null;
     return { path: filePaths[0] };
   });
+
+  // ─── File Selection IPC ───
+  ipcMain.handle('dialog:select-file', async (_e, options: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }) => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: options?.title || 'Select File',
+      filters: options?.filters || [],
+      properties: ['openFile'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return { path: result.filePaths[0] };
+  });
+
+  // ─── Extensions IPC ───
+  ipcMain.handle('extensions:list', () => listExtensions());
+  ipcMain.handle('extensions:install', async (_e, data: { path: string; allowFileAccess?: boolean }) => {
+    return installExtension(data.path, { allowFileAccess: data.allowFileAccess });
+  });
+  ipcMain.handle('extensions:get', (_e, id: string) => getExtension(id));
+  ipcMain.handle('extensions:remove', (_e, id: string) => removeExtension(id));
 
   // ─── API Services IPC ───
   ipcMain.handle('api-services:list', () => {

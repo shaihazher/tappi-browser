@@ -2476,6 +2476,9 @@ body.dark-mode #autocomplete-dropdown {
   font-size: 11px;
 }
 
+/* Extension cards — reuse api-service-card */
+#extensions-list { display: flex; flex-direction: column; gap: 8px; }
+
 /* ─── Phase 8.38: Coding Mode + Team Status ─── */
 
 /* Coding mode toggle in agent header */

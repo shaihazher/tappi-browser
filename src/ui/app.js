@@ -1972,6 +1972,7 @@ function switchSettingsTab(tabName) {
   if (tabName === 'cron-jobs') loadCronJobs();
   if (tabName === 'profiles') { if (typeof loadProfilesTab === 'function') loadProfilesTab(); }
   if (tabName === 'my-profile') loadMyProfileTab();
+  if (tabName === 'extensions') loadExtensions();
 }
 
 // Tab switching
@@ -2806,6 +2807,86 @@ if (window.tappi.onCronJobCompleted) {
     toast.textContent = `⏰ ${data.name} ${data.status === 'success' ? '✓' : '✗'}`;
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 3000);
+  });
+}
+
+// ═══════════════════════════════════════════
+//  EXTENSIONS
+// ═══════════════════════════════════════════
+
+async function loadExtensions() {
+  const list = document.getElementById('extensions-list');
+  if (!list) return;
+  try {
+    const exts = await window.tappi.getExtensions();
+    renderExtensions(exts);
+  } catch (e) {
+    console.error('Failed to load extensions:', e);
+  }
+}
+
+function renderExtensions(exts) {
+  const list = document.getElementById('extensions-list');
+  if (!exts || exts.length === 0) {
+    list.innerHTML = `
+      <div class="api-empty-state">
+        <span class="api-empty-icon">🧩</span>
+        <p>No extensions installed yet.</p>
+        <p class="api-empty-hint">Load an unpacked extension directory, install a .crx file, or download one from a website.</p>
+      </div>`;
+    return;
+  }
+  list.innerHTML = '';
+  for (const ext of exts) {
+    const card = document.createElement('div');
+    card.className = 'api-service-card';
+    card.dataset.extId = ext.id;
+    card.innerHTML = `
+      <span class="api-service-status">🧩</span>
+      <div class="api-service-info">
+        <div class="api-service-name">${escHtml(ext.name)} <span style="opacity:0.5;font-size:11px">v${escHtml(ext.version)}</span></div>
+        <div class="api-service-url">${escHtml(ext.path)}</div>
+      </div>
+      <div class="api-service-actions">
+        <button class="api-action-btn ext-remove-btn" data-id="${escHtml(ext.id)}" title="Remove">🗑</button>
+      </div>`;
+    list.appendChild(card);
+  }
+  list.querySelectorAll('.ext-remove-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      const result = await window.tappi.removeExtension(id);
+      if (result && result.success !== false) loadExtensions();
+    });
+  });
+}
+
+document.getElementById('ext-install-btn')?.addEventListener('click', async () => {
+  const result = await window.tappi.selectDirectory({ title: 'Select Unpacked Extension Directory' });
+  if (!result || !result.path) return;
+  const installResult = await window.tappi.installExtension({ path: result.path });
+  if (installResult && installResult.error) {
+    alert(installResult.error);
+  }
+  loadExtensions();
+});
+
+document.getElementById('ext-install-crx-btn')?.addEventListener('click', async () => {
+  const result = await window.tappi.selectFile({
+    title: 'Select .crx Extension File',
+    filters: [{ name: 'Chrome Extension', extensions: ['crx'] }]
+  });
+  if (!result || !result.path) return;
+  const installResult = await window.tappi.installExtension({ path: result.path });
+  if (installResult && installResult.error) {
+    alert(installResult.error);
+  }
+  loadExtensions();
+});
+
+if (window.tappi.onExtensionsUpdated) {
+  window.tappi.onExtensionsUpdated(() => {
+    if (currentSettingsTab === 'extensions') loadExtensions();
   });
 }
 

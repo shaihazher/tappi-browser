@@ -10,6 +10,7 @@ import { session, BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { recordDownload } from './database';
+import { installFromCrx } from './extension-manager';
 
 export interface DownloadItem {
   id: string;
@@ -90,6 +91,18 @@ function attachDownloadHandler(ses: Electron.Session): void {
       } catch {}
 
       console.log(`[download] ${state}: ${filename} (${formatBytes(dl.receivedBytes)})`);
+
+      // Auto-install .crx extension files
+      if (state === 'completed' && filename.endsWith('.crx')) {
+        installFromCrx(savePath).then(result => {
+          if ('error' in result) {
+            console.error('[extensions] CRX install failed:', result.error);
+          } else {
+            console.log(`[extensions] Auto-installed from CRX: ${result.name}`);
+            mainWindow?.webContents.send('extensions:updated');
+          }
+        }).catch(e => console.error('[extensions] CRX install error:', e));
+      }
     });
 
     console.log(`[download] Started: ${filename} → ${savePath}`);

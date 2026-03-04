@@ -154,6 +154,10 @@
             <span class="settings-tab-icon">⏰</span>
             <span>Cron Jobs</span>
           </button>
+          <button class="settings-tab" data-tab="extensions">
+            <span class="settings-tab-icon">🧩</span>
+            <span>Extensions</span>
+          </button>
         </nav>
         <div id="settings-content">
         <!-- General tab -->
@@ -556,6 +560,24 @@
               <button id="cron-form-cancel" class="ghost-btn">Cancel</button>
               <button id="cron-form-save" class="primary-btn" style="width:auto;padding:8px 24px">Save</button>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Extensions tab -->
+      <div id="settings-extensions" class="settings-tab-content" data-tab="extensions">
+        <div class="api-services-header">
+          <p class="api-services-desc">Chrome extensions installed in the current browser profile. Supports unpacked directories and .crx files. CRX files downloaded in the browser are auto-installed.</p>
+          <div style="display:flex;gap:8px">
+            <button id="ext-install-btn" class="secondary-btn">+ Load Unpacked</button>
+            <button id="ext-install-crx-btn" class="secondary-btn">+ Install .crx</button>
+          </div>
+        </div>
+        <div id="extensions-list">
+          <div class="api-empty-state">
+            <span class="api-empty-icon">🧩</span>
+            <p>No extensions installed yet.</p>
+            <p class="api-empty-hint">Load an unpacked extension directory, install a .crx file, or download one from a website.</p>
           </div>
         </div>
       </div>
