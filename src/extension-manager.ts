@@ -12,7 +12,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { execFileSync } from 'child_process';
-import { BrowserWindow } from 'electron';
+
 import { profileManager } from './profile-manager';
 import { sessionManager } from './session-manager';
 import { getBridgeInfo, buildServiceWorkerPolyfill } from './native-messaging-bridge';
@@ -312,15 +312,6 @@ function patchServiceWorkerPolyfill(extensionDir: string): void {
     // Always write fresh polyfill with current bridge port/token
     fs.writeFileSync(polyfillPath, buildServiceWorkerPolyfill(bridge.port, bridge.token));
 
-    // Write activator page for MV3 SW startup
-    const activatorFile = '_tappi_sw_activator.html';
-    const activatorPath = path.join(extensionDir, activatorFile);
-    fs.writeFileSync(activatorPath, `<!DOCTYPE html><script>
-try { chrome.runtime.sendMessage({_tappi:'activate'}, function(){
-  chrome.runtime.lastError;
-}); } catch(e) {}
-</script>`);
-
     // If already patched (entry file points to us), just update the polyfill
     if (manifest.background.service_worker === entryFile) {
       console.log(`[extensions] Updated polyfill for: ${extensionDir}`);
@@ -347,46 +338,27 @@ try { chrome.runtime.sendMessage({_tappi:'activate'}, function(){
 
 /**
  * Force-activate an MV3 service worker that Electron registered but never started.
- * Navigates a hidden BrowserWindow to the extension's activator page, which sends
- * a message to self — triggering Electron's SW runtime to start the worker.
+ * Uses Electron 35's ses.serviceWorkers.startWorkerForScope() API.
  */
 async function activateExtensionServiceWorker(
   ses: Electron.Session,
   extId: string,
 ): Promise<void> {
-  // Check if SW is already running
+  const scope = `chrome-extension://${extId}/`;
+
+  // Skip if already running
   const running = ses.serviceWorkers.getAllRunning();
   const alreadyRunning = Object.values(running).some(
-    sw => sw.scope.startsWith(`chrome-extension://${extId}/`)
+    sw => sw.scope.startsWith(scope)
   );
   if (alreadyRunning) return;
 
-  // Navigate hidden window to extension page to trigger SW activation
-  const win = new BrowserWindow({
-    show: false,
-    width: 1,
-    height: 1,
-    webPreferences: { session: ses },
-  });
-
   try {
-    await win.loadURL(`chrome-extension://${extId}/_tappi_sw_activator.html`);
-    // Poll for SW to start (up to 5s)
-    for (let attempt = 0; attempt < 10; attempt++) {
-      await new Promise(r => setTimeout(r, 500));
-      const nowRunning = ses.serviceWorkers.getAllRunning();
-      if (Object.values(nowRunning).some(
-        sw => sw.scope.startsWith(`chrome-extension://${extId}/`)
-      )) {
-        console.log(`[extensions] Service worker activated for ${extId}`);
-        break;
-      }
-    }
+    await ses.serviceWorkers.startWorkerForScope(scope);
+    console.log(`[extensions] Service worker started for ${extId}`);
   } catch (e) {
-    console.warn(`[extensions] Service worker activation failed for ${extId}:`, e);
+    console.warn(`[extensions] startWorkerForScope failed for ${extId}:`, e);
   }
-
-  win.close();
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
