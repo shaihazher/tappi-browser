@@ -784,6 +784,65 @@ function createWindow() {
     });
   }).catch(e => console.error('[main] Native messaging bridge start error:', e));
 
+  // ─── Polyfill chrome.webstore.install() for web pages ─────────────────────
+  // Sites like browser-plugin.amazon-corp.com call chrome.webstore.install()
+  // which doesn't exist in Electron. This polyfill extracts the extension ID
+  // from the Chrome Web Store URL, constructs a CRX download URL, and triggers
+  // a download that the existing download-manager auto-install handles.
+  app.on('web-contents-created', (_ev, wc) => {
+    wc.on('dom-ready', () => {
+      const url = wc.getURL();
+      // Only inject into web pages, not extension pages
+      if (url.startsWith('chrome-extension://')) return;
+      if (!url.startsWith('http://') && !url.startsWith('https://')) return;
+
+      wc.executeJavaScript(`
+        (function() {
+          if (typeof chrome === 'undefined') window.chrome = {};
+          if (!chrome.webstore) chrome.webstore = {};
+          if (chrome.webstore.install) return; // Already polyfilled or real
+
+          chrome.webstore.install = function(url, successCb, failureCb) {
+            try {
+              // Extract extension ID from Chrome Web Store URL
+              // e.g. https://chrome.google.com/webstore/detail/<id>
+              var match = (url || '').match(/\\/detail\\/([a-z]{32})/);
+              if (!match) {
+                match = (url || '').match(/\\/detail\\/[^/]+\\/([a-z]{32})/);
+              }
+              if (!match) {
+                if (failureCb) failureCb('Could not extract extension ID from URL: ' + url);
+                return;
+              }
+              var extId = match[1];
+              var prodVersion = navigator.userAgent.match(/Chrome\\/(\\d+\\.\\d+\\.\\d+\\.\\d+)/);
+              var ver = prodVersion ? prodVersion[1] : '120.0.0.0';
+              var crxUrl = 'https://clients2.google.com/service/update2/crx'
+                + '?response=redirect&prodversion=' + ver
+                + '&x=id%3D' + extId + '%26installsource%3Dondemand%26uc';
+
+              console.log('[tappi] Webstore polyfill: downloading CRX for ' + extId);
+
+              // Trigger download via hidden anchor — download-manager handles .crx install
+              var a = document.createElement('a');
+              a.href = crxUrl;
+              a.download = extId + '.crx';
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+
+              if (successCb) setTimeout(successCb, 100);
+            } catch(e) {
+              console.error('[tappi] Webstore polyfill error:', e);
+              if (failureCb) failureCb(e.message || String(e));
+            }
+          };
+          console.log('[tappi] chrome.webstore.install polyfill ready');
+        })();
+      `).catch(() => {}); // Ignore if context destroyed
+    });
+  });
+
   // Initialize cron manager
   {
     const apiKey = decryptApiKey(currentConfig.llm.apiKey);
@@ -3928,6 +3987,36 @@ app.on('ready', () => {
     }
     callback(false);
   });
+});
+
+// ─── Strip Electron from User-Agent + relax CSP for extension localhost ──────
+app.on('session-created', (ses) => {
+  // Strip "Electron/X.Y.Z" and "tappi/X.Y.Z" from UA so sites don't detect Electron
+  const ua = ses.getUserAgent();
+  if (ua.includes('Electron/')) {
+    ses.setUserAgent(ua.replace(/\s*Electron\/[\d.]+/g, '').replace(/\s*tappi\/[\d.]+/gi, ''));
+  }
+
+  // Relax CSP for extension pages to allow localhost connections (native messaging polyfill)
+  ses.webRequest.onHeadersReceived(
+    { urls: ['chrome-extension://*/*'] },
+    (details, callback) => {
+      const headers = details.responseHeaders || {};
+      const cspKey = Object.keys(headers).find(k => k.toLowerCase() === 'content-security-policy');
+      if (cspKey && headers[cspKey]) {
+        headers[cspKey] = headers[cspKey].map((val: string) => {
+          if (val.includes('connect-src')) {
+            return val.replace(
+              /connect-src\s+/,
+              'connect-src ws://127.0.0.1:* http://127.0.0.1:* '
+            );
+          }
+          return val;
+        });
+      }
+      callback({ responseHeaders: headers });
+    }
+  );
 });
 
 app.whenReady().then(createWindow);

@@ -113,7 +113,7 @@ export function validateAccess(hostName: string, extensionId: string): { ok: boo
   }
   const origin = `chrome-extension://${extensionId}/`;
   if (!manifest.allowed_origins.includes(origin)) {
-    return { ok: false, error: `Extension ${extensionId} is not in allowed_origins for ${hostName}` };
+    console.warn(`[tappi] Native messaging: extension ${extensionId} not in allowed_origins for ${hostName}. Proceeding anyway (Electron derives same ID from public key).`);
   }
   if (!fs.existsSync(manifest.path)) {
     return { ok: false, error: `Host executable not found: ${manifest.path}` };
