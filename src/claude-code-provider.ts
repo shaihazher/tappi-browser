@@ -750,7 +750,6 @@ export async function scriptifyViaCli(
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
-    '--max-tokens', '8192',
     '--input-file', tmpFile,
   ];
 
@@ -864,7 +863,6 @@ export async function generateProfileViaCli(
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
-    '--max-tokens', '1024',
     '--input-file', tmpFile,
   ];
   if (model) {
