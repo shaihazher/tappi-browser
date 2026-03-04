@@ -560,8 +560,8 @@ export function buildPolyfillScript(extensionId: string, port: number, token: st
 /**
  * Build the JavaScript polyfill for MV3 service worker contexts.
  * Uses globalThis/self instead of window; uses chrome.runtime.id for auto-detection.
- * Designed to be written as a standalone ES module file and imported before the
- * extension's original service worker.
+ * Designed to be loaded via importScripts() before the extension's original
+ * service worker.
  */
 export function buildServiceWorkerPolyfill(port: number, token: string): string {
   return `
@@ -619,6 +619,51 @@ if (!self.__tappiNativeMessagingInjected) {
 
     shimAndDispatch(chrome.runtime.onInstalled, { reason: 'install' }, [0, 250, 1000]);
     shimAndDispatch(chrome.runtime.onStartup, {}, [0, 250, 1000]);
+  })();
+
+  // ── API stubs for unsupported chrome.* namespaces ──
+  // Electron does not expose cookies, contextMenus, or downloads in service
+  // workers. Provide no-op stubs so extensions don't crash on access.
+  (function() {
+    function noopEvent() {
+      return { addListener: function(){}, removeListener: function(){}, hasListener: function(){ return false; }, hasListeners: function(){ return false; } };
+    }
+    function noopCb(cb) { if (typeof cb === 'function') setTimeout(function(){ cb(); }, 0); }
+
+    if (!chrome.cookies) {
+      chrome.cookies = {
+        get: function(_d, cb) { noopCb(cb); },
+        getAll: function(_d, cb) { if (typeof cb === 'function') setTimeout(function(){ cb([]); }, 0); },
+        set: function(_d, cb) { noopCb(cb); },
+        remove: function(_d, cb) { noopCb(cb); },
+        getAllCookieStores: function(cb) { if (typeof cb === 'function') setTimeout(function(){ cb([]); }, 0); },
+        onChanged: noopEvent()
+      };
+    }
+
+    if (!chrome.contextMenus) {
+      chrome.contextMenus = {
+        create: function() { return 0; },
+        update: function(_id, _props, cb) { noopCb(cb); },
+        remove: function(_id, cb) { noopCb(cb); },
+        removeAll: function(cb) { noopCb(cb); },
+        onClicked: noopEvent()
+      };
+    }
+
+    if (!chrome.downloads) {
+      chrome.downloads = {
+        download: function(_opts, cb) { noopCb(cb); },
+        search: function(_q, cb) { if (typeof cb === 'function') setTimeout(function(){ cb([]); }, 0); },
+        pause: function(_id, cb) { noopCb(cb); },
+        resume: function(_id, cb) { noopCb(cb); },
+        cancel: function(_id, cb) { noopCb(cb); },
+        erase: function(_q, cb) { if (typeof cb === 'function') setTimeout(function(){ cb([]); }, 0); },
+        onCreated: noopEvent(),
+        onChanged: noopEvent(),
+        onDeterminingFilename: noopEvent()
+      };
+    }
   })();
 
   const BRIDGE_PORT = ${port};

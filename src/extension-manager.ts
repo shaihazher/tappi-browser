@@ -324,20 +324,21 @@ function patchServiceWorkerPolyfill(extensionDir: string): void {
     // Always write/refresh wrapper entry (ensures broken imports are repaired)
     fs.writeFileSync(
       entryPath,
-      `import './${polyfillFile}';\nimport './${originalSW}';\n`,
+      `importScripts('./${polyfillFile}');\nimportScripts('./${originalSW}');\n`,
     );
 
+    // Remove module type if previously set (classic scripts use importScripts)
+    const hadModuleType = manifest.background.type === 'module';
+    if (hadModuleType) {
+      delete manifest.background.type;
+    }
+
     // Update manifest if needed
-    if (currentSW !== entryFile) {
+    if (currentSW !== entryFile || hadModuleType) {
       manifest.background.service_worker = entryFile;
-      manifest.background.type = 'module';
       fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
       console.log(`[extensions] Patched service worker for native messaging: ${extensionDir}`);
     } else {
-      if (manifest.background.type !== 'module') {
-        manifest.background.type = 'module';
-        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-      }
       console.log(`[extensions] Updated polyfill for: ${extensionDir}`);
     }
   } catch (e) {
@@ -362,7 +363,7 @@ function findOriginalServiceWorker(extensionDir: string, currentSW: string): str
   for (const entry of ['tappi-sw-entry.js', '_tappi_sw_entry.js']) {
     try {
       const content = fs.readFileSync(path.join(extensionDir, entry), 'utf-8');
-      const matches = [...content.matchAll(/import '\.\/([^']+)'/g)];
+      const matches = [...content.matchAll(/(?:import|importScripts\() *'\.\/([^']+)'/g)];
       const match = matches.at(-1);
       if (match?.[1] && !ownFiles.includes(match[1]) &&
           fs.existsSync(path.join(extensionDir, match[1]))) {
