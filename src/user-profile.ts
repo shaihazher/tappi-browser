@@ -252,6 +252,38 @@ ${browsingData}`;
   const strictPrompt = basePrompt + '\n\nCRITICAL: Output must be under 200 tokens. Use very short values. No explanations.';
 
   try {
+    // Route to CLI for claude-code provider (all auth methods)
+    if (llmConfig.provider === 'claude-code') {
+      const { generateProfileViaCli } = await import('./claude-code-provider');
+      const runViaCli = async (p: string) => generateProfileViaCli(p, llmConfig.apiKey, llmConfig.model);
+      let text = await runViaCli(basePrompt);
+      if (!text) return null;
+      text = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+      let parsed: any;
+      try { parsed = JSON.parse(text); } catch {
+        // Retry with strict prompt
+        text = await runViaCli(strictPrompt);
+        if (!text) return null;
+        text = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+        parsed = JSON.parse(text);
+      }
+      const profile: UserProfile = {
+        interests: parsed.interests || [],
+        frequent_sites: parsed.frequent_sites || [],
+        work_context: parsed.work_context || '',
+        preferred_sources: parsed.preferred_sources || [],
+        shopping_patterns: parsed.shopping_patterns || [],
+        locale_hints: parsed.locale_hints || [],
+        updated_at: new Date().toISOString(),
+      };
+      const savePath = getUserProfilePath();
+      const saveDir = path.dirname(savePath);
+      if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
+      fs.writeFileSync(savePath, JSON.stringify(profile, null, 2));
+      console.log('[user-profile] Profile saved via CLI to', savePath);
+      return profile;
+    }
+
     const model = createModel(llmConfig);
     const providerOptions = buildProviderOptions(llmConfig);
     const callProviderOptions: Record<string, any> = withCodexProviderOptions(

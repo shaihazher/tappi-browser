@@ -724,6 +724,327 @@ export async function generateTitleViaCli(
   });
 }
 
+// ── Scriptify via CLI ────────────────────────────────────────────────────────
+
+/**
+ * Generate a script definition from a conversation transcript using the Claude Code CLI.
+ * Used when provider is claude-code with OAuth/Bedrock auth (no direct API key).
+ * Returns the parsed JSON object or null on failure.
+ */
+export async function scriptifyViaCli(
+  transcript: string,
+  systemPrompt: string,
+  apiKey?: string,
+): Promise<any | null> {
+  if (!(await isCliInstalled())) {
+    return null;
+  }
+
+  // Write the prompt to a temp file to avoid OS arg length limits
+  const tmpFile = path.join(os.tmpdir(), `tappi-scriptify-${Date.now()}.txt`);
+  const fullPrompt = `${systemPrompt}\n\n---\n\nHere is the conversation transcript to analyze:\n\n${transcript}`;
+  fs.writeFileSync(tmpFile, fullPrompt, 'utf-8');
+
+  const args: string[] = [
+    '--print',
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--model', 'claude-sonnet-4-6',
+    '--max-tokens', '8192',
+    '--input-file', tmpFile,
+  ];
+
+  const env: Record<string, string> = { ...process.env as any };
+  if (apiKey) {
+    env.ANTHROPIC_API_KEY = apiKey;
+  }
+
+  return new Promise((resolve) => {
+    const proc = spawn(TAPPI_CLAUDE_BIN, args, {
+      cwd: os.tmpdir(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env,
+    });
+
+    let textResult = '';
+    let stderr = '';
+    let lineBuffer = '';
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      lineBuffer += data.toString();
+      const lines = lineBuffer.split('\n');
+      lineBuffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+            textResult += msg.delta.text;
+          }
+          if (msg.type === 'assistant' && msg.message?.content) {
+            for (const block of msg.message.content) {
+              if (block.type === 'text' && block.text) {
+                textResult += block.text;
+              }
+            }
+          }
+          if (msg.type === 'result' && msg.result) {
+            textResult += msg.result;
+          }
+        } catch {
+          if (line.trim()) textResult += line.trim();
+        }
+      }
+    });
+
+    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+    const timeout = setTimeout(() => {
+      try { proc.kill('SIGTERM'); } catch {}
+      try { fs.unlinkSync(tmpFile); } catch {}
+      resolve(null);
+    }, 60_000);
+
+    proc.on('exit', (code) => {
+      clearTimeout(timeout);
+      try { fs.unlinkSync(tmpFile); } catch {}
+      if (code !== 0) {
+        console.error('[claude-code] scriptify CLI failed:', stderr.slice(0, 300));
+        resolve(null);
+        return;
+      }
+      // Strip markdown fences and parse JSON
+      let text = textResult.trim();
+      if (text.startsWith('```')) {
+        text = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+      }
+      try {
+        resolve(JSON.parse(text));
+      } catch {
+        console.error('[claude-code] scriptify parse failed, raw:', text.slice(0, 300));
+        resolve(null);
+      }
+    });
+
+    proc.on('error', () => {
+      clearTimeout(timeout);
+      try { fs.unlinkSync(tmpFile); } catch {}
+      resolve(null);
+    });
+  });
+}
+
+// ── Profile Generation via CLI ────────────────────────────────────────────
+
+/**
+ * Generate a user profile using the Claude Code CLI.
+ * Lightweight one-shot call — no tools needed, uses --print mode.
+ * Works for all auth methods (OAuth, Bedrock, API Key).
+ * Returns the raw text output, or null on failure.
+ */
+export async function generateProfileViaCli(
+  prompt: string,
+  apiKey?: string,
+  model?: string,
+): Promise<string | null> {
+  if (!(await isCliInstalled())) {
+    return null;
+  }
+
+  // Write prompt to temp file (browsing data can be long)
+  const tmpFile = path.join(os.tmpdir(), `tappi-profile-${Date.now()}.txt`);
+  fs.writeFileSync(tmpFile, prompt, 'utf-8');
+
+  const args: string[] = [
+    '--print',
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--max-tokens', '1024',
+    '--input-file', tmpFile,
+  ];
+  if (model) {
+    args.push('--model', model);
+  }
+
+  const env: Record<string, string> = { ...process.env as any };
+  if (apiKey) {
+    env.ANTHROPIC_API_KEY = apiKey;
+  }
+
+  return new Promise((resolve) => {
+    const proc = spawn(TAPPI_CLAUDE_BIN, args, {
+      cwd: os.tmpdir(), // No CLAUDE.md — no tools needed
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env,
+    });
+
+    let textResult = '';
+    let stderr = '';
+    let lineBuffer = '';
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      lineBuffer += data.toString();
+      const lines = lineBuffer.split('\n');
+      lineBuffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+            textResult += msg.delta.text;
+          }
+          if (msg.type === 'assistant' && msg.message?.content) {
+            for (const block of msg.message.content) {
+              if (block.type === 'text' && block.text) {
+                textResult += block.text;
+              }
+            }
+          }
+          if (msg.type === 'result' && msg.result) {
+            textResult += msg.result;
+          }
+        } catch {
+          if (line.trim()) textResult += line.trim();
+        }
+      }
+    });
+
+    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+    const timeout = setTimeout(() => {
+      try { proc.kill('SIGTERM'); } catch {}
+      try { fs.unlinkSync(tmpFile); } catch {}
+      resolve(null);
+    }, 30_000);
+
+    proc.on('exit', (code) => {
+      clearTimeout(timeout);
+      try { fs.unlinkSync(tmpFile); } catch {}
+      if (code !== 0) {
+        console.error('[claude-code] profile gen CLI failed:', stderr.slice(0, 200));
+        resolve(null);
+        return;
+      }
+      resolve(textResult.trim() || null);
+    });
+
+    proc.on('error', () => {
+      clearTimeout(timeout);
+      try { fs.unlinkSync(tmpFile); } catch {}
+      resolve(null);
+    });
+  });
+}
+
+// ── Cron Job Execution via CLI ───────────────────────────────────────────
+
+/**
+ * Execute a cron job using the Claude Code CLI with full tool access.
+ * Uses --print mode with CLAUDE.md for browser tool access via HTTP API.
+ * Works for all auth methods (OAuth, Bedrock, API Key).
+ */
+export async function executeCronViaCli(
+  taskPrompt: string,
+  systemPrefix: string,
+  apiKey?: string,
+  model?: string,
+): Promise<{ text: string; success: boolean }> {
+  if (!(await isCliInstalled())) {
+    return { text: 'Claude Code CLI not installed', success: false };
+  }
+
+  const { ensureApiToken } = await import('./api-server');
+  const tappiToken = ensureApiToken();
+  const claudeMdDir = writeTappiClaudeMd(tappiToken);
+
+  // Write full prompt to temp file
+  const tmpFile = path.join(os.tmpdir(), `tappi-cron-${Date.now()}.txt`);
+  const fullPrompt = `${systemPrefix}\n\n${taskPrompt}`;
+  fs.writeFileSync(tmpFile, fullPrompt, 'utf-8');
+
+  const args: string[] = [
+    '--print',
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--dangerously-skip-permissions',
+    '--input-file', tmpFile,
+  ];
+  if (model) {
+    args.push('--model', model);
+  }
+
+  const env: Record<string, string> = { ...process.env as any };
+  if (apiKey) {
+    env.ANTHROPIC_API_KEY = apiKey;
+  }
+  env.TAPPI_API_TOKEN = tappiToken;
+
+  return new Promise((resolve) => {
+    const proc = spawn(TAPPI_CLAUDE_BIN, args, {
+      cwd: claudeMdDir, // CLAUDE.md with HTTP API docs for tool access
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env,
+    });
+
+    let textResult = '';
+    let stderr = '';
+    let lineBuffer = '';
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      lineBuffer += data.toString();
+      const lines = lineBuffer.split('\n');
+      lineBuffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+            textResult += msg.delta.text;
+          }
+          if (msg.type === 'assistant' && msg.message?.content) {
+            for (const block of msg.message.content) {
+              if (block.type === 'text' && block.text) {
+                textResult += block.text;
+              }
+            }
+          }
+          if (msg.type === 'result' && msg.result) {
+            textResult += msg.result;
+          }
+        } catch {
+          if (line.trim()) textResult += line.trim();
+        }
+      }
+    });
+
+    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+    const timeout = setTimeout(() => {
+      try { proc.kill('SIGTERM'); } catch {}
+      try { fs.unlinkSync(tmpFile); } catch {}
+      resolve({ text: 'Cron job timed out after 5 minutes', success: false });
+    }, 300_000); // 5 min timeout for multi-step browser automation
+
+    proc.on('exit', (code) => {
+      clearTimeout(timeout);
+      try { fs.unlinkSync(tmpFile); } catch {}
+      if (code !== 0) {
+        console.error('[claude-code] cron CLI failed:', stderr.slice(0, 300));
+      }
+      resolve({ text: textResult.trim() || stderr.slice(0, 200), success: code === 0 });
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timeout);
+      try { fs.unlinkSync(tmpFile); } catch {}
+      resolve({ text: `CLI spawn error: ${err.message}`, success: false });
+    });
+  });
+}
+
 // ── Provider Class ───────────────────────────────────────────────────────────
 
 export class ClaudeCodeProvider extends EventEmitter {

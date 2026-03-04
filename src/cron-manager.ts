@@ -250,6 +250,39 @@ async function executeJob(job: CronJob): Promise<void> {
   mainWindow.webContents.send('cron:job-running', { id: job.id, name: job.name });
 
   try {
+    // Route to CLI for claude-code provider (all auth methods)
+    if (llmConfig.provider === 'claude-code') {
+      const { executeCronViaCli } = await import('./claude-code-provider');
+
+      const now = new Date();
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const timeStr = now.toLocaleString('en-US', {
+        weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+      });
+      const browserState = (() => {
+        try { return browserTools.getBrowserState(browserCtx!); } catch { return '(unavailable)'; }
+      })();
+      const fullTask = `[Current time: ${timeStr} (${tz})]\n[Browser: ${browserState}]\n\n${job.task}`;
+
+      const cliResult = await executeCronViaCli(fullTask, CRON_AGENT_PROMPT, llmConfig.apiKey, llmConfig.model);
+      const durationMs = Date.now() - startTime;
+      const truncatedResult = cliResult.text.length > 200 ? cliResult.text.slice(0, 200) + '...' : cliResult.text;
+
+      job.lastRun = new Date(startTime).toISOString();
+      job.lastStatus = cliResult.success ? 'success' : 'error';
+      job.lastResult = truncatedResult;
+      job.runs.push({ at: job.lastRun, status: job.lastStatus, result: truncatedResult, durationMs });
+      if (job.runs.length > MAX_RUNS) job.runs.shift();
+
+      console.log(`[cron] ${cliResult.success ? '✓' : '✗'} "${job.name}" completed via CLI in ${(durationMs / 1000).toFixed(1)}s`);
+
+      mainWindow!.webContents.send('cron:job-completed', {
+        id: job.id, name: job.name, status: job.lastStatus, result: truncatedResult, durationMs,
+      });
+      return; // handled — skip Vercel AI SDK path below
+    }
+
     const model = createModel(llmConfig);
     const tools = createTools(browserCtx, sessionId, { developerMode: devMode, llmConfig });
 

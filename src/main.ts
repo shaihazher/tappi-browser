@@ -60,6 +60,8 @@ import {
   saveClaudeCodeSessionId,
   getClaudeCodeSessionId,
 } from './conversation-store';
+import { listScripts, getScript, deleteScript, incrementRunCount } from './script-store';
+import { scriptifyConversation, scriptifyConversationViaCli, buildExecutionPrompt, parseBulkFile, validateAuthRequirements } from './scriptify-engine';
 import {
   createProject,
   getProject,
@@ -755,12 +757,13 @@ function createWindow() {
   // Initialize cron manager
   {
     const apiKey = decryptApiKey(currentConfig.llm.apiKey);
-    if (apiKey) {
+    const isCC = currentConfig.llm.provider === 'claude-code';
+    if (apiKey || isCC) {
       const cronBrowserCtx: BrowserContext = { window: mainWindow, tabManager, config: currentConfig };
       initCronManager(mainWindow, cronBrowserCtx, {
         provider: currentConfig.llm.provider,
         model: currentConfig.llm.model,
-        apiKey,
+        apiKey: apiKey || '',
         thinking: currentConfig.llm.thinking,
         thinkingEffort: currentConfig.llm.thinkingEffort,
         region: currentConfig.llm.region,
@@ -776,12 +779,13 @@ function createWindow() {
   // Only runs if agentBrowsingDataAccess is enabled and profile is stale
   if (currentConfig.privacy?.agentBrowsingDataAccess) {
     const profileApiKey = decryptApiKey(currentConfig.llm.apiKey);
-    if (profileApiKey) {
+    const isCC = currentConfig.llm.provider === 'claude-code';
+    if (profileApiKey || isCC) {
       const profileDb = getDb();
       scheduleProfileUpdate(profileDb, {
         provider: currentConfig.llm.provider,
         model: currentConfig.llm.model,
-        apiKey: profileApiKey,
+        apiKey: profileApiKey || '',
         thinking: false, // No thinking needed for profile generation
         region: currentConfig.llm.region,
         projectId: currentConfig.llm.projectId,
@@ -970,6 +974,16 @@ function createWindow() {
 
   ipcMain.on('agent:send', async (_e, message: string) => {
     console.log('[agent] Message:', message);
+
+    // Claude Code conversations should use the Aria tab instead
+    if (currentConfig.llm.provider === 'claude-code') {
+      mainWindow.webContents.send('agent:response', {
+        role: 'assistant',
+        content: 'Claude Code conversations are available in the Aria tab. Please use the Aria panel instead.',
+        timestamp: Date.now(),
+      });
+      return;
+    }
 
     // Check if agent has an API key configured
     const apiKey = decryptApiKey(currentConfig.llm.apiKey);
@@ -1436,6 +1450,82 @@ function createWindow() {
       activeClaudeCodeProvider.resetSession(); // Don't resume old plan-mode session
     }
     return { success: true };
+  });
+
+  // ─── Scripts (Scriptify) ───────────────────────────────────────────────
+
+  ipcMain.handle('scripts:list', () => listScripts());
+  ipcMain.handle('scripts:get', (_e, id: string) => getScript(id));
+  ipcMain.handle('scripts:delete', (_e, id: string) => deleteScript(id));
+
+  ipcMain.handle('scripts:scriptify', async (_e, conversationId: string) => {
+    const apiKey = decryptApiKey(currentConfig.llm.apiKey);
+    const ccAuth = (currentConfig.llm as any).claudeCodeAuth;
+    const isClaudeCodeNoKey = currentConfig.llm.provider === 'claude-code' && (ccAuth === 'oauth' || ccAuth === 'bedrock');
+    if (!apiKey && !isClaudeCodeNoKey) {
+      return { success: false, error: 'No API key configured.' };
+    }
+
+    // Route to CLI path for Claude Code provider (OAuth/Bedrock — no direct API key)
+    if (currentConfig.llm.provider === 'claude-code') {
+      return scriptifyConversationViaCli(conversationId, apiKey || undefined);
+    }
+
+    // All other providers: use Vercel AI SDK
+    const llmConfig = {
+      provider: currentConfig.llm.provider,
+      model: currentConfig.llm.model,
+      apiKey,
+      thinking: currentConfig.llm.thinking,
+    };
+    return scriptifyConversation(conversationId, llmConfig);
+  });
+
+  ipcMain.on('scripts:execute', async (_e, scriptId: string, inputs: any, conversationId?: string, skipAuthCheck?: boolean) => {
+    const ariaWC = tabManager?.ariaWebContents;
+
+    const script = getScript(scriptId);
+    if (!script) {
+      if (ariaWC && !ariaWC.isDestroyed()) {
+        ariaWC.send('scripts:execute-error', { error: 'Script not found. It may have been deleted.' });
+      }
+      return;
+    }
+
+    if (!ariaWC || ariaWC.isDestroyed()) {
+      console.error('[scripts] Aria webContents unavailable for script execution.');
+      return;
+    }
+
+    // Auth validation (skip if user chose "Run Anyway")
+    if (!skipAuthCheck && script.authRequirements && script.authRequirements.length > 0) {
+      const authResult = validateAuthRequirements(script.authRequirements);
+      if (!authResult.satisfied) {
+        ariaWC.send('scripts:auth-required', {
+          scriptId,
+          inputs,
+          conversationId,
+          missing: authResult.missing,
+        });
+        return;
+      }
+    }
+
+    const executionMessage = buildExecutionPrompt(script, inputs);
+    incrementRunCount(scriptId);
+
+    ariaWC.send('scripts:execute-ready', { message: executionMessage, conversationId });
+  });
+
+  ipcMain.handle('scripts:check-auth', (_e, domains: string[]) => {
+    return domains.map(domain => ({
+      domain,
+      hasCredentials: getPasswordsForDomain(domain).length > 0,
+    }));
+  });
+
+  ipcMain.handle('scripts:parse-bulk', async (_e, scriptId: string, fileData: ArrayBuffer, filename: string) => {
+    return parseBulkFile(scriptId, Buffer.from(fileData), filename);
   });
 
   ipcMain.handle('aria:new-chat', () => {
@@ -2304,11 +2394,12 @@ Rules:
       // If access was just turned ON, schedule a profile generation
       if (!prevAccess && newAccess) {
         const profileApiKey = decryptApiKey(currentConfig.llm.apiKey);
-        if (profileApiKey) {
+        const isCC = currentConfig.llm.provider === 'claude-code';
+        if (profileApiKey || isCC) {
           scheduleProfileUpdate(getDb(), {
             provider: currentConfig.llm.provider,
             model: currentConfig.llm.model,
-            apiKey: profileApiKey,
+            apiKey: profileApiKey || '',
             thinking: false,
             region: currentConfig.llm.region,
             projectId: currentConfig.llm.projectId,
@@ -2331,12 +2422,13 @@ Rules:
 
     // Update cron manager with new config
     const cronApiKey = decryptApiKey(currentConfig.llm.apiKey);
-    if (cronApiKey) {
+    const isCC = currentConfig.llm.provider === 'claude-code';
+    if (cronApiKey || isCC) {
       const cronBrowserCtx: BrowserContext = { window: mainWindow, tabManager, config: currentConfig };
       updateCronContext(cronBrowserCtx, {
         provider: currentConfig.llm.provider,
         model: currentConfig.llm.model,
-        apiKey: cronApiKey,
+        apiKey: cronApiKey || '',
         thinking: currentConfig.llm.thinking,
         region: currentConfig.llm.region,
         projectId: currentConfig.llm.projectId,
@@ -3074,12 +3166,13 @@ Rules:
       return { error: 'Browsing data access is disabled.' };
     }
     const apiKey = decryptApiKey(currentConfig.llm.apiKey);
-    if (!apiKey) return { error: 'No API key configured.' };
+    const isCC = currentConfig.llm.provider === 'claude-code';
+    if (!apiKey && !isCC) return { error: 'No API key configured.' };
     try {
       const result = await generateProfile(getDb(), {
         provider: currentConfig.llm.provider,
         model: currentConfig.llm.model,
-        apiKey,
+        apiKey: apiKey || '',
         thinking: false,
         region: currentConfig.llm.region,
         projectId: currentConfig.llm.projectId,
