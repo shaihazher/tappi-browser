@@ -348,13 +348,9 @@ export function validateAuthRequirements(authRequirements?: AuthRequirement[]): 
     if (req.authType === 'credentials' && !hasCreds) {
       // Credentials required but not stored — block
       missing.push({ domain: req.domain, description: req.description, authType: req.authType, hasStoredCredentials: false });
-    } else if (req.authType === 'session') {
-      // Session-based auth — can't verify from main process, flag as warning
-      missing.push({ domain: req.domain, description: req.description, authType: req.authType, hasStoredCredentials: hasCreds });
-    } else if (req.authType === 'either' && !hasCreds) {
-      // Either works — flag as warning if no stored credentials
-      missing.push({ domain: req.domain, description: req.description, authType: req.authType, hasStoredCredentials: false });
     }
+    // session: skip — can't verify browser session from main process, let it fail at runtime
+    // either without creds: skip — session might be active, can't verify from here
   }
 
   return {
