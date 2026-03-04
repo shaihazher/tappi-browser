@@ -14,6 +14,7 @@ import * as fs from 'fs';
 import { execFileSync } from 'child_process';
 import { profileManager } from './profile-manager';
 import { sessionManager } from './session-manager';
+import { getBridgeInfo, buildServiceWorkerPolyfill } from './native-messaging-bridge';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -72,12 +73,112 @@ function writePersistence(data: ExtensionsFile, profileName?: string): void {
 // ─── CRX Extraction ─────────────────────────────────────────────────────────
 
 /**
+ * Extract the public key from a CRX buffer (CRX2 or CRX3 format).
+ * Returns the DER-encoded public key, or null if extraction fails.
+ *
+ * CRX2: Public key is at bytes 16..16+pubkeyLen
+ * CRX3: Header is a protobuf (CrxFileHeader). We parse:
+ *   field 2 (sha256_with_rsa, tag 0x12) → submessage field 1 (public_key, tag 0x0a)
+ */
+function extractCrxPublicKey(buf: Buffer): Buffer | null {
+  try {
+    if (buf.length < 16 || buf.toString('ascii', 0, 4) !== 'Cr24') return null;
+
+    const version = buf.readUInt32LE(4);
+
+    if (version === 2) {
+      const pubkeyLen = buf.readUInt32LE(8);
+      if (pubkeyLen === 0 || 16 + pubkeyLen > buf.length) return null;
+      return buf.subarray(16, 16 + pubkeyLen);
+    }
+
+    if (version === 3) {
+      const headerSize = buf.readUInt32LE(8);
+      if (headerSize === 0 || 12 + headerSize > buf.length) return null;
+      const header = buf.subarray(12, 12 + headerSize);
+
+      // Simple protobuf parser — find field 2 (wire type 2 = length-delimited)
+      // then within that submessage, find field 1 (wire type 2)
+      let offset = 0;
+      while (offset < header.length) {
+        const tag = header[offset];
+        offset++;
+        const fieldNumber = tag >> 3;
+        const wireType = tag & 0x07;
+
+        if (wireType !== 2) {
+          // Skip varint (wire type 0)
+          if (wireType === 0) {
+            while (offset < header.length && (header[offset] & 0x80) !== 0) offset++;
+            offset++; // final byte
+          }
+          continue;
+        }
+
+        // Read varint length
+        let len = 0;
+        let shift = 0;
+        while (offset < header.length) {
+          const b = header[offset++];
+          len |= (b & 0x7f) << shift;
+          if ((b & 0x80) === 0) break;
+          shift += 7;
+        }
+
+        if (fieldNumber === 2) {
+          // This is sha256_with_rsa (AsymmetricKeyProof). Parse submessage for field 1.
+          const submsg = header.subarray(offset, offset + len);
+          let subOff = 0;
+          while (subOff < submsg.length) {
+            const subTag = submsg[subOff];
+            subOff++;
+            const subField = subTag >> 3;
+            const subWire = subTag & 0x07;
+
+            if (subWire !== 2) {
+              if (subWire === 0) {
+                while (subOff < submsg.length && (submsg[subOff] & 0x80) !== 0) subOff++;
+                subOff++;
+              }
+              continue;
+            }
+
+            let subLen = 0;
+            let subShift = 0;
+            while (subOff < submsg.length) {
+              const b = submsg[subOff++];
+              subLen |= (b & 0x7f) << subShift;
+              if ((b & 0x80) === 0) break;
+              subShift += 7;
+            }
+
+            if (subField === 1) {
+              // This is the public_key (DER-encoded)
+              return submsg.subarray(subOff, subOff + subLen);
+            }
+
+            subOff += subLen;
+          }
+        }
+
+        offset += len;
+      }
+    }
+  } catch {
+    // Fall through
+  }
+  return null;
+}
+
+/**
  * Extract a packed .crx file to a destination directory.
  *
  * CRX3: [Cr24(4)] [version(4)] [header_size(4)] [header(header_size)] [ZIP]
  * CRX2: [Cr24(4)] [version(4)] [pubkey_len(4)] [sig_len(4)] [pubkey] [sig] [ZIP]
  *
  * We find the ZIP offset, write the ZIP to a temp file, and extract with `unzip`.
+ * Also extracts the public key from the CRX header and injects it into manifest.json
+ * as the `key` field so Electron derives the correct extension ID.
  */
 function unpackCrx(crxPath: string, destDir: string): string {
   const buf = fs.readFileSync(crxPath);
@@ -107,8 +208,15 @@ function unpackCrx(crxPath: string, destDir: string): string {
     throw new Error('CRX file appears truncated — ZIP data offset beyond file size');
   }
 
+  // Extract public key before we lose the CRX header
+  const publicKey = extractCrxPublicKey(buf);
+
+  // Ensure parent directory exists before writing temp ZIP
+  const parentDir = path.dirname(destDir);
+  if (!fs.existsSync(parentDir)) fs.mkdirSync(parentDir, { recursive: true });
+
   // Write ZIP portion to temp file
-  const tmpZip = path.join(path.dirname(destDir), `_crx_tmp_${Date.now()}.zip`);
+  const tmpZip = path.join(parentDir, `_crx_tmp_${Date.now()}.zip`);
   try {
     fs.writeFileSync(tmpZip, buf.subarray(zipOffset));
 
@@ -120,8 +228,23 @@ function unpackCrx(crxPath: string, destDir: string): string {
   }
 
   // Validate that manifest.json exists
-  if (!fs.existsSync(path.join(destDir, 'manifest.json'))) {
+  const manifestPath = path.join(destDir, 'manifest.json');
+  if (!fs.existsSync(manifestPath)) {
     throw new Error('Extracted CRX does not contain manifest.json');
+  }
+
+  // Inject public key into manifest.json so Electron derives the correct extension ID
+  if (publicKey) {
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      if (!manifest.key) {
+        manifest.key = publicKey.toString('base64');
+        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+        console.log('[extensions] Injected CRX public key into manifest.json');
+      }
+    } catch (e) {
+      console.warn('[extensions] Failed to inject CRX public key:', e);
+    }
   }
 
   return destDir;
@@ -147,6 +270,66 @@ export function extensionHasPermission(extensionId: string, permission: string):
     return permissions.includes(permission);
   } catch {
     return false;
+  }
+}
+
+// ─── Service Worker Polyfill Patching ────────────────────────────────────────
+
+/**
+ * Patch an MV3 extension's service worker to load the native messaging polyfill.
+ *
+ * For MV3 extensions with a service_worker background and nativeMessaging permission,
+ * we create a wrapper entry module that imports the polyfill before the original
+ * service worker. This guarantees the chrome.runtime.connectNative override is in
+ * place before the extension's code (including webextension-polyfill) captures it.
+ */
+function patchServiceWorkerPolyfill(extensionDir: string): void {
+  const bridge = getBridgeInfo();
+  if (!bridge) return;
+
+  try {
+    const manifestPath = path.join(extensionDir, 'manifest.json');
+    if (!fs.existsSync(manifestPath)) return;
+
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+
+    // Only patch MV3 extensions with service_worker background and nativeMessaging
+    if (
+      (manifest.manifest_version ?? 0) < 3 ||
+      !manifest.background?.service_worker ||
+      !(manifest.permissions || []).includes('nativeMessaging')
+    ) {
+      return;
+    }
+
+    const originalSW = manifest.background.service_worker;
+    const polyfillFile = '_tappi_nm_polyfill.js';
+    const entryFile = '_tappi_sw_entry.js';
+    const polyfillPath = path.join(extensionDir, polyfillFile);
+    const entryPath = path.join(extensionDir, entryFile);
+
+    // Always write fresh polyfill with current bridge port/token
+    fs.writeFileSync(polyfillPath, buildServiceWorkerPolyfill(bridge.port, bridge.token));
+
+    // If already patched (entry file points to us), just update the polyfill
+    if (manifest.background.service_worker === entryFile) {
+      console.log(`[extensions] Updated polyfill for: ${extensionDir}`);
+      return;
+    }
+
+    // Write wrapper entry module that imports polyfill first, then original SW
+    fs.writeFileSync(
+      entryPath,
+      `import './${polyfillFile}';\nimport './${originalSW}';\n`,
+    );
+
+    // Update manifest to use our wrapper entry
+    manifest.background.service_worker = entryFile;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    console.log(`[extensions] Patched service worker for native messaging: ${extensionDir}`);
+  } catch (e) {
+    console.warn('[extensions] Failed to patch service worker polyfill:', e);
   }
 }
 
@@ -199,6 +382,9 @@ export async function installExtension(
         return { error: `Extension already loaded from: ${finalPath}` };
       }
     }
+
+    // Patch MV3 service worker with native messaging polyfill before loading
+    patchServiceWorkerPolyfill(finalPath);
 
     // Load into Electron
     const ext = await ses.loadExtension(finalPath, {
@@ -531,6 +717,9 @@ export async function enableExtension(idOrName: string): Promise<ExtensionInfo |
       return { error: `Extension directory missing: ${targetEntry.path}` };
     }
 
+    // Patch MV3 service worker with native messaging polyfill before loading
+    patchServiceWorkerPolyfill(targetEntry.path);
+
     // Load into session
     const ext = await ses.loadExtension(targetEntry.path, {
       allowFileAccess: targetEntry.allowFileAccess ?? false,
@@ -587,6 +776,9 @@ export async function loadPersistedExtensionsForProfile(profileName?: string): P
       // Check not already loaded
       const existing = ses.getAllExtensions();
       if (existing.some(e => e.path === entry.path)) continue;
+
+      // Patch MV3 service worker with native messaging polyfill before loading
+      patchServiceWorkerPolyfill(entry.path);
 
       await ses.loadExtension(entry.path, {
         allowFileAccess: entry.allowFileAccess ?? false,

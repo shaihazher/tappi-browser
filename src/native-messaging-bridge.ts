@@ -381,6 +381,15 @@ export function stopNativeMessagingBridge(): void {
 // ─── Polyfill Builder ────────────────────────────────────────────────────────
 
 /**
+ * Get current bridge connection info (port + token).
+ * Returns null if the bridge is not running.
+ */
+export function getBridgeInfo(): { port: number; token: string } | null {
+  if (!server || !bridgePort || !bridgeToken) return null;
+  return { port: bridgePort, token: bridgeToken };
+}
+
+/**
  * Build the JavaScript polyfill to inject into extension background pages.
  * Overrides chrome.runtime.sendNativeMessage and chrome.runtime.connectNative.
  */
@@ -523,5 +532,151 @@ export function buildPolyfillScript(extensionId: string, port: number, token: st
 
   console.log('[tappi] Native messaging polyfill injected for extension:', EXTENSION_ID);
 })();
+`;
+}
+
+/**
+ * Build the JavaScript polyfill for MV3 service worker contexts.
+ * Uses globalThis/self instead of window; uses chrome.runtime.id for auto-detection.
+ * Designed to be written as a standalone ES module file and imported before the
+ * extension's original service worker.
+ */
+export function buildServiceWorkerPolyfill(port: number, token: string): string {
+  return `
+// Tappi native messaging polyfill for MV3 service workers
+if (!self.__tappiNativeMessagingInjected) {
+  self.__tappiNativeMessagingInjected = true;
+
+  const BRIDGE_PORT = ${port};
+  const BRIDGE_TOKEN = ${JSON.stringify(token)};
+  const BRIDGE_BASE = 'http://127.0.0.1:' + BRIDGE_PORT;
+
+  // Auto-detect extension ID from the service worker runtime
+  const EXTENSION_ID = chrome.runtime.id;
+
+  // ── chrome.runtime.sendNativeMessage ──
+  chrome.runtime.sendNativeMessage = function(application, message, responseCallback) {
+    const promise = fetch(BRIDGE_BASE + '/native-messaging/send', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + BRIDGE_TOKEN,
+      },
+      body: JSON.stringify({
+        hostName: application,
+        extensionId: EXTENSION_ID,
+        message: message,
+      }),
+    })
+    .then(function(res) { return res.json(); })
+    .then(function(data) {
+      if (data.error) {
+        chrome.runtime.lastError = { message: data.error };
+        if (responseCallback) responseCallback(undefined);
+        throw new Error(data.error);
+      }
+      chrome.runtime.lastError = undefined;
+      if (responseCallback) responseCallback(data.response);
+      return data.response;
+    })
+    .catch(function(err) {
+      chrome.runtime.lastError = { message: err.message };
+      if (responseCallback) responseCallback(undefined);
+    });
+
+    if (!responseCallback) return promise;
+  };
+
+  // ── chrome.runtime.connectNative ──
+  chrome.runtime.connectNative = function(application) {
+    const messageListeners = [];
+    const disconnectListeners = [];
+    let connected = false;
+    let ws = null;
+    const messageQueue = [];
+
+    const port = {
+      name: application,
+      sender: undefined,
+      onMessage: {
+        addListener: function(cb) { messageListeners.push(cb); },
+        removeListener: function(cb) {
+          const idx = messageListeners.indexOf(cb);
+          if (idx >= 0) messageListeners.splice(idx, 1);
+        },
+        hasListener: function(cb) { return messageListeners.includes(cb); },
+        hasListeners: function() { return messageListeners.length > 0; },
+      },
+      onDisconnect: {
+        addListener: function(cb) { disconnectListeners.push(cb); },
+        removeListener: function(cb) {
+          const idx = disconnectListeners.indexOf(cb);
+          if (idx >= 0) disconnectListeners.splice(idx, 1);
+        },
+        hasListener: function(cb) { return disconnectListeners.includes(cb); },
+        hasListeners: function() { return disconnectListeners.length > 0; },
+      },
+      postMessage: function(msg) {
+        if (connected && ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(msg));
+        } else {
+          messageQueue.push(msg);
+        }
+      },
+      disconnect: function() {
+        if (ws) {
+          ws.close();
+          ws = null;
+        }
+        connected = false;
+      },
+    };
+
+    // Establish WebSocket connection
+    var wsUrl = 'ws://127.0.0.1:' + BRIDGE_PORT + '/native-messaging/connect'
+      + '?token=' + encodeURIComponent(BRIDGE_TOKEN)
+      + '&hostName=' + encodeURIComponent(application)
+      + '&extensionId=' + encodeURIComponent(EXTENSION_ID);
+
+    ws = new WebSocket(wsUrl);
+
+    ws.onopen = function() {
+      connected = true;
+      while (messageQueue.length > 0) {
+        ws.send(JSON.stringify(messageQueue.shift()));
+      }
+    };
+
+    ws.onmessage = function(event) {
+      try {
+        var msg = JSON.parse(event.data);
+        for (var i = 0; i < messageListeners.length; i++) {
+          messageListeners[i](msg);
+        }
+      } catch (e) {
+        console.error('[tappi-polyfill] Failed to parse message:', e);
+      }
+    };
+
+    ws.onclose = function(event) {
+      connected = false;
+      ws = null;
+      if (event.reason) {
+        chrome.runtime.lastError = { message: event.reason };
+      }
+      for (var i = 0; i < disconnectListeners.length; i++) {
+        disconnectListeners[i](port);
+      }
+    };
+
+    ws.onerror = function(err) {
+      console.error('[tappi-polyfill] WebSocket error for', application, err);
+    };
+
+    return port;
+  };
+
+  console.log('[tappi] Native messaging polyfill injected for extension:', EXTENSION_ID);
+}
 `;
 }
