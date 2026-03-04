@@ -330,9 +330,14 @@ function patchServiceWorkerPolyfill(extensionDir: string): void {
     // Update manifest if needed
     if (currentSW !== entryFile) {
       manifest.background.service_worker = entryFile;
+      manifest.background.type = 'module';
       fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
       console.log(`[extensions] Patched service worker for native messaging: ${extensionDir}`);
     } else {
+      if (manifest.background.type !== 'module') {
+        manifest.background.type = 'module';
+        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+      }
       console.log(`[extensions] Updated polyfill for: ${extensionDir}`);
     }
   } catch (e) {
