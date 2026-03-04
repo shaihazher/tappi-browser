@@ -741,16 +741,12 @@ export async function scriptifyViaCli(
     return null;
   }
 
-  // Write the prompt to a temp file to avoid OS arg length limits
-  const tmpFile = path.join(os.tmpdir(), `tappi-scriptify-${Date.now()}.txt`);
   const fullPrompt = `${systemPrompt}\n\n---\n\nHere is the conversation transcript to analyze:\n\n${transcript}`;
-  fs.writeFileSync(tmpFile, fullPrompt, 'utf-8');
 
   const args: string[] = [
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
-    '--input-file', tmpFile,
   ];
 
   if (model) {
@@ -765,9 +761,12 @@ export async function scriptifyViaCli(
   return new Promise((resolve) => {
     const proc = spawn(TAPPI_CLAUDE_BIN, args, {
       cwd: os.tmpdir(),
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       env,
     });
+
+    proc.stdin?.write(fullPrompt);
+    proc.stdin?.end();
 
     let textResult = '';
     let stderr = '';
@@ -805,13 +804,11 @@ export async function scriptifyViaCli(
 
     const timeout = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch {}
-      try { fs.unlinkSync(tmpFile); } catch {}
       resolve(null);
     }, 60_000);
 
     proc.on('exit', (code) => {
       clearTimeout(timeout);
-      try { fs.unlinkSync(tmpFile); } catch {}
       if (code !== 0) {
         console.error('[claude-code] scriptify CLI failed:', stderr.slice(0, 300));
         resolve(null);
@@ -832,7 +829,6 @@ export async function scriptifyViaCli(
 
     proc.on('error', () => {
       clearTimeout(timeout);
-      try { fs.unlinkSync(tmpFile); } catch {}
       resolve(null);
     });
   });
@@ -855,15 +851,10 @@ export async function generateProfileViaCli(
     return null;
   }
 
-  // Write prompt to temp file (browsing data can be long)
-  const tmpFile = path.join(os.tmpdir(), `tappi-profile-${Date.now()}.txt`);
-  fs.writeFileSync(tmpFile, prompt, 'utf-8');
-
   const args: string[] = [
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
-    '--input-file', tmpFile,
   ];
   if (model) {
     args.push('--model', model);
@@ -877,9 +868,12 @@ export async function generateProfileViaCli(
   return new Promise((resolve) => {
     const proc = spawn(TAPPI_CLAUDE_BIN, args, {
       cwd: os.tmpdir(), // No CLAUDE.md — no tools needed
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       env,
     });
+
+    proc.stdin?.write(prompt);
+    proc.stdin?.end();
 
     let textResult = '';
     let stderr = '';
@@ -917,13 +911,11 @@ export async function generateProfileViaCli(
 
     const timeout = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch {}
-      try { fs.unlinkSync(tmpFile); } catch {}
       resolve(null);
     }, 30_000);
 
     proc.on('exit', (code) => {
       clearTimeout(timeout);
-      try { fs.unlinkSync(tmpFile); } catch {}
       if (code !== 0) {
         console.error('[claude-code] profile gen CLI failed:', stderr.slice(0, 200));
         resolve(null);
@@ -934,7 +926,6 @@ export async function generateProfileViaCli(
 
     proc.on('error', () => {
       clearTimeout(timeout);
-      try { fs.unlinkSync(tmpFile); } catch {}
       resolve(null);
     });
   });
@@ -961,17 +952,13 @@ export async function executeCronViaCli(
   const tappiToken = ensureApiToken();
   const claudeMdDir = writeTappiClaudeMd(tappiToken);
 
-  // Write full prompt to temp file
-  const tmpFile = path.join(os.tmpdir(), `tappi-cron-${Date.now()}.txt`);
   const fullPrompt = `${systemPrefix}\n\n${taskPrompt}`;
-  fs.writeFileSync(tmpFile, fullPrompt, 'utf-8');
 
   const args: string[] = [
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
     '--dangerously-skip-permissions',
-    '--input-file', tmpFile,
   ];
   if (model) {
     args.push('--model', model);
@@ -986,9 +973,12 @@ export async function executeCronViaCli(
   return new Promise((resolve) => {
     const proc = spawn(TAPPI_CLAUDE_BIN, args, {
       cwd: claudeMdDir, // CLAUDE.md with HTTP API docs for tool access
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       env,
     });
+
+    proc.stdin?.write(fullPrompt);
+    proc.stdin?.end();
 
     let textResult = '';
     let stderr = '';
@@ -1026,13 +1016,11 @@ export async function executeCronViaCli(
 
     const timeout = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch {}
-      try { fs.unlinkSync(tmpFile); } catch {}
       resolve({ text: 'Cron job timed out after 5 minutes', success: false });
     }, 300_000); // 5 min timeout for multi-step browser automation
 
     proc.on('exit', (code) => {
       clearTimeout(timeout);
-      try { fs.unlinkSync(tmpFile); } catch {}
       if (code !== 0) {
         console.error('[claude-code] cron CLI failed:', stderr.slice(0, 300));
       }
@@ -1041,7 +1029,6 @@ export async function executeCronViaCli(
 
     proc.on('error', (err) => {
       clearTimeout(timeout);
-      try { fs.unlinkSync(tmpFile); } catch {}
       resolve({ text: `CLI spawn error: ${err.message}`, success: false });
     });
   });
