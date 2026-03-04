@@ -12,7 +12,7 @@
 import { generateText } from 'ai';
 import { createModel, buildProviderOptions, type LLMConfig } from './llm-client';
 import { getDb } from './database';
-import { createScript, getScript, type Script, type AuthRequirement } from './script-store';
+import { createScript, getScript, updateScript, type Script, type AuthRequirement } from './script-store';
 import { scriptifyViaCli } from './claude-code-provider';
 import { getPasswordsForDomain } from './password-vault';
 
@@ -193,6 +193,134 @@ export async function scriptifyConversationViaCli(
   }
 }
 
+// ─── Script Update Prompt ───
+
+const SCRIPT_UPDATE_PROMPT = `You are a script updater. You will receive an existing script definition as JSON and user instructions describing changes to make.
+
+Your task:
+1. Apply the user's requested changes to the script
+2. Preserve all parts of the script that the user did NOT ask to change
+3. Return the full updated script in the same JSON schema
+
+IMPORTANT:
+- Keep the same scriptType unless the user explicitly asks to change it
+- Preserve existing input fields unless the user asks to modify them
+- If adding new inputs, follow the existing inputSchema format
+- Maintain the same level of detail and quality in the scriptBody
+- Keep authRequirements unchanged unless the user specifically mentions auth changes
+
+Respond with ONLY a JSON object (no markdown fences, no explanation):
+{
+  "name": "Short descriptive name for the script",
+  "description": "1-2 sentence description of what this script does",
+  "scriptType": "automated" | "semi-automated" | "playbook",
+  "inputSchema": {
+    "fields": [
+      {
+        "name": "field_name",
+        "type": "string" | "number" | "boolean" | "file_path" | "url" | "select",
+        "required": true/false,
+        "description": "What this field is for",
+        "placeholder": "Example value",
+        "options": ["only", "for", "select", "type"],
+        "default": "optional default value"
+      }
+    ]
+  },
+  "authRequirements": [],
+  "scriptBody": "The full updated script content"
+}`;
+
+// ─── Update Script Definition ───
+
+export async function updateScriptDefinition(
+  scriptId: string,
+  instructions: string,
+  llmConfig: LLMConfig,
+): Promise<{ success: boolean; script?: { id: string; name: string; description: string }; error?: string }> {
+  try {
+    const existing = getScript(scriptId);
+    if (!existing) {
+      return { success: false, error: 'Script not found.' };
+    }
+
+    // Serialize current script as JSON context
+    const scriptContext = JSON.stringify({
+      name: existing.name,
+      description: existing.description,
+      scriptType: existing.scriptType,
+      inputSchema: existing.inputSchema,
+      scriptBody: existing.scriptBody,
+      authRequirements: existing.authRequirements || [],
+    }, null, 2);
+
+    const userContent = `Existing script:\n${scriptContext}\n\nUser instructions:\n${instructions}`;
+
+    let parsed: any;
+
+    if (llmConfig.provider === 'claude-code') {
+      // CLI path for OAuth/Bedrock
+      parsed = await scriptifyViaCli(userContent, SCRIPT_UPDATE_PROMPT, llmConfig.apiKey, llmConfig.model);
+      if (!parsed) {
+        return { success: false, error: 'Script update via CLI failed. Check that Claude Code is installed and authenticated.' };
+      }
+    } else {
+      // SDK path for all other providers
+      const model = createModel(llmConfig);
+      const providerOptions = buildProviderOptions(llmConfig);
+
+      const result = await generateText({
+        model,
+        providerOptions,
+        messages: [
+          { role: 'system', content: SCRIPT_UPDATE_PROMPT },
+          { role: 'user', content: userContent },
+        ],
+        maxOutputTokens: 4096,
+      });
+
+      let text = result.text.trim();
+      if (text.startsWith('```')) {
+        text = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+      }
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return { success: false, error: 'Failed to parse script update response. Please try again.' };
+      }
+    }
+
+    // Validate required fields
+    if (!parsed.name || !parsed.scriptBody || !parsed.scriptType) {
+      return { success: false, error: 'Updated script is missing required fields.' };
+    }
+
+    // Save updates
+    const updated = updateScript(scriptId, {
+      name: parsed.name,
+      description: parsed.description || '',
+      scriptType: parsed.scriptType,
+      inputSchema: parsed.inputSchema || { fields: [] },
+      scriptBody: parsed.scriptBody,
+      authRequirements: Array.isArray(parsed.authRequirements) && parsed.authRequirements.length > 0
+        ? parsed.authRequirements
+        : undefined,
+    });
+
+    if (!updated) {
+      return { success: false, error: 'Failed to save updated script.' };
+    }
+
+    return {
+      success: true,
+      script: { id: updated.id, name: updated.name, description: updated.description },
+    };
+  } catch (err: any) {
+    console.error('[scriptify] update error:', err);
+    return { success: false, error: err.message || 'Script update failed.' };
+  }
+}
+
 // ─── Auth Requirement Validation ───
 
 export function validateAuthRequirements(authRequirements?: AuthRequirement[]): {
@@ -228,7 +356,7 @@ export function validateAuthRequirements(authRequirements?: AuthRequirement[]): 
 
 // ─── Build Execution Prompt ───
 
-export function buildExecutionPrompt(script: Script, inputs: Record<string, any> | Record<string, any>[]): string {
+export function buildExecutionPrompt(script: Script, inputs: Record<string, any> | Record<string, any>[], specialInstructions?: string): string {
   const isBulk = Array.isArray(inputs);
 
   // Substitute placeholders in script body
@@ -265,12 +393,14 @@ export function buildExecutionPrompt(script: Script, inputs: Record<string, any>
       return `--- Row ${i + 1} of ${rows.length} ---\nInputs: ${JSON.stringify(row)}\n\n${resolved}`;
     }).join('\n\n');
 
-    return header + authPreamble + getTypeInstructions(script.scriptType) + '\n\n' + rowPrompts;
+    const bulkPrompt = header + authPreamble + getTypeInstructions(script.scriptType) + '\n\n' + rowPrompts;
+    return specialInstructions ? bulkPrompt + `\n\nADDITIONAL INSTRUCTIONS FOR THIS RUN:\n${specialInstructions}` : bulkPrompt;
   }
 
   // Single execution
   const resolvedBody = substituteInputs(script.scriptBody, inputs as Record<string, any>);
-  return `You are executing the script "${script.name}".\n\n${authPreamble}${getTypeInstructions(script.scriptType)}\n\n${resolvedBody}`;
+  const singlePrompt = `You are executing the script "${script.name}".\n\n${authPreamble}${getTypeInstructions(script.scriptType)}\n\n${resolvedBody}`;
+  return specialInstructions ? singlePrompt + `\n\nADDITIONAL INSTRUCTIONS FOR THIS RUN:\n${specialInstructions}` : singlePrompt;
 }
 
 function getTypeInstructions(scriptType: string): string {

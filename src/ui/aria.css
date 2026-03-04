@@ -3909,3 +3909,94 @@ body.coding-mode .team-redirect-send {
   opacity: 0.5;
   cursor: default;
 }
+
+/* ── Update Script section ── */
+
+.scripts-update-section {
+  margin: 16px 0;
+  padding: 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.scripts-update-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.scripts-update-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 60px;
+  padding: 8px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-primary);
+}
+
+.scripts-update-textarea:focus {
+  border-color: var(--lotus);
+  outline: none;
+}
+
+.scripts-update-btn {
+  margin-top: 8px;
+  padding: 8px 16px;
+  background: var(--lotus);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+
+.scripts-update-btn:hover {
+  filter: brightness(1.1);
+}
+
+.scripts-update-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── Special Instructions section ── */
+
+.scripts-special-section {
+  margin-top: 12px;
+}
+
+.scripts-special-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.scripts-special-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 44px;
+  padding: 7px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-primary);
+}
+
+.scripts-special-textarea:focus {
+  border-color: var(--lotus);
+  outline: none;
+}

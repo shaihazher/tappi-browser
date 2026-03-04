@@ -3822,6 +3822,9 @@ const scriptsBulkStatus = document.getElementById('scripts-bulk-status');
 const scriptsExecuteBtn = document.getElementById('scripts-execute-btn');
 const scriptsAuthSection = document.getElementById('scripts-auth-section');
 const scriptsAuthList = document.getElementById('scripts-auth-list');
+const scriptsUpdateInstructions = document.getElementById('scripts-update-instructions');
+const scriptsUpdateBtn = document.getElementById('scripts-update-btn');
+const scriptsSpecialInstructions = document.getElementById('scripts-special-instructions');
 
 /** Enable/disable Scriptify button based on current state */
 function updateScriptifyBtnState() {
@@ -4153,8 +4156,14 @@ if (scriptsExecuteBtn) {
     const rowInfo = Array.isArray(inputs) ? ` (${inputs.length} rows)` : '';
     appendMessage('user', `▶ Execute script: ${name}${rowInfo}`);
 
+    // Gather special instructions
+    const specialInstructions = scriptsSpecialInstructions ? scriptsSpecialInstructions.value.trim() : '';
+
     // Trigger execution via IPC (skipAuthCheck = false for normal flow)
-    window.aria.executeScript(selectedScriptId, inputs, currentConversationId, false);
+    window.aria.executeScript(selectedScriptId, inputs, currentConversationId, false, specialInstructions || undefined);
+
+    // Clear special instructions after execution
+    if (scriptsSpecialInstructions) scriptsSpecialInstructions.value = '';
   });
 }
 
@@ -4178,6 +4187,47 @@ if (scriptsDeleteBtn) {
     } catch (err) {
       console.error('[aria.js] delete script error:', err);
     }
+  });
+}
+
+// ─── Update script ───
+if (scriptsUpdateBtn) {
+  scriptsUpdateBtn.addEventListener('click', async () => {
+    if (!selectedScriptId) return;
+    const instructions = scriptsUpdateInstructions ? scriptsUpdateInstructions.value.trim() : '';
+    if (!instructions) return;
+
+    // Set loading state
+    scriptsUpdateBtn.disabled = true;
+    scriptsUpdateBtn.textContent = 'Updating…';
+
+    try {
+      const result = await window.aria.updateScript(selectedScriptId, instructions);
+      if (result && result.success) {
+        // Clear textarea
+        if (scriptsUpdateInstructions) scriptsUpdateInstructions.value = '';
+        // Refresh script list and re-select
+        const updated = await window.aria.listScripts();
+        if (updated) {
+          scriptsData = updated;
+          renderScriptsList(scriptsSearch ? scriptsSearch.value : '');
+          selectScript(selectedScriptId);
+        }
+      } else {
+        const errMsg = (result && result.error) || 'Update failed';
+        if (scriptsUpdateInstructions) {
+          scriptsUpdateInstructions.style.borderColor = 'var(--accent)';
+          setTimeout(() => { scriptsUpdateInstructions.style.borderColor = ''; }, 3000);
+        }
+        console.error('[aria.js] script update error:', errMsg);
+      }
+    } catch (err) {
+      console.error('[aria.js] script update error:', err);
+    }
+
+    // Restore button state
+    scriptsUpdateBtn.disabled = false;
+    scriptsUpdateBtn.textContent = 'Update Script';
   });
 }
 
@@ -4225,7 +4275,8 @@ if (window.aria && window.aria.onScriptAuthRequired) {
           let inp;
           try { inp = JSON.parse(link.getAttribute('data-inputs') || '{}'); } catch { inp = {}; }
           const cid = link.getAttribute('data-conversation-id') || currentConversationId;
-          window.aria.executeScript(sid, inp, cid, true);
+          const si = scriptsSpecialInstructions ? scriptsSpecialInstructions.value.trim() : '';
+          window.aria.executeScript(sid, inp, cid, true, si || undefined);
           link.textContent = 'Running...';
           link.style.pointerEvents = 'none';
           link.style.opacity = '0.5';

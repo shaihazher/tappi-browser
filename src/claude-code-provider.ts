@@ -735,6 +735,7 @@ export async function scriptifyViaCli(
   transcript: string,
   systemPrompt: string,
   apiKey?: string,
+  model?: string,
 ): Promise<any | null> {
   if (!(await isCliInstalled())) {
     return null;
@@ -749,10 +750,13 @@ export async function scriptifyViaCli(
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
-    '--model', 'claude-sonnet-4-6',
     '--max-tokens', '8192',
     '--input-file', tmpFile,
   ];
+
+  if (model) {
+    args.push('--model', model);
+  }
 
   const env: Record<string, string> = { ...process.env as any };
   if (apiKey) {

@@ -61,7 +61,7 @@ import {
   getClaudeCodeSessionId,
 } from './conversation-store';
 import { listScripts, getScript, deleteScript, incrementRunCount } from './script-store';
-import { scriptifyConversation, scriptifyConversationViaCli, buildExecutionPrompt, parseBulkFile, validateAuthRequirements } from './scriptify-engine';
+import { scriptifyConversation, scriptifyConversationViaCli, updateScriptDefinition, buildExecutionPrompt, parseBulkFile, validateAuthRequirements } from './scriptify-engine';
 import {
   createProject,
   getProject,
@@ -1481,7 +1481,24 @@ function createWindow() {
     return scriptifyConversation(conversationId, llmConfig);
   });
 
-  ipcMain.on('scripts:execute', async (_e, scriptId: string, inputs: any, conversationId?: string, skipAuthCheck?: boolean) => {
+  ipcMain.handle('scripts:update', async (_e, scriptId: string, instructions: string) => {
+    const apiKey = decryptApiKey(currentConfig.llm.apiKey);
+    const ccAuth = (currentConfig.llm as any).claudeCodeAuth;
+    const isClaudeCodeNoKey = currentConfig.llm.provider === 'claude-code' && (ccAuth === 'oauth' || ccAuth === 'bedrock');
+    if (!apiKey && !isClaudeCodeNoKey) {
+      return { success: false, error: 'No API key configured.' };
+    }
+
+    const llmConfig: any = {
+      provider: currentConfig.llm.provider,
+      model: currentConfig.llm.model,
+      apiKey: apiKey || undefined,
+      thinking: currentConfig.llm.thinking,
+    };
+    return updateScriptDefinition(scriptId, instructions, llmConfig);
+  });
+
+  ipcMain.on('scripts:execute', async (_e, scriptId: string, inputs: any, conversationId?: string, skipAuthCheck?: boolean, specialInstructions?: string) => {
     const ariaWC = tabManager?.ariaWebContents;
 
     const script = getScript(scriptId);
@@ -1511,7 +1528,7 @@ function createWindow() {
       }
     }
 
-    const executionMessage = buildExecutionPrompt(script, inputs);
+    const executionMessage = buildExecutionPrompt(script, inputs, specialInstructions || undefined);
     incrementRunCount(scriptId);
 
     ariaWC.send('scripts:execute-ready', { message: executionMessage, conversationId });

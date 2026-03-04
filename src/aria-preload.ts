@@ -253,8 +253,10 @@ contextBridge.exposeInMainWorld('aria', {
     ipcRenderer.invoke('scripts:get', scriptId),
   deleteScript: (scriptId: string) =>
     ipcRenderer.invoke('scripts:delete', scriptId),
-  executeScript: (scriptId: string, inputs: any, conversationId?: string, skipAuthCheck?: boolean) =>
-    ipcRenderer.send('scripts:execute', scriptId, inputs, conversationId, skipAuthCheck),
+  updateScript: (scriptId: string, instructions: string) =>
+    ipcRenderer.invoke('scripts:update', scriptId, instructions),
+  executeScript: (scriptId: string, inputs: any, conversationId?: string, skipAuthCheck?: boolean, specialInstructions?: string) =>
+    ipcRenderer.send('scripts:execute', scriptId, inputs, conversationId, skipAuthCheck, specialInstructions),
   parseBulkInput: (scriptId: string, fileData: ArrayBuffer, filename: string) =>
     ipcRenderer.invoke('scripts:parse-bulk', scriptId, fileData, filename),
   onScriptExecuteReady: (cb: (data: { message: string; conversationId?: string }) => void) => {

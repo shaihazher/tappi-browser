@@ -224,6 +224,13 @@
               <button id="scripts-delete-btn" class="scripts-delete-btn" title="Delete script">🗑</button>
             </div>
             <p id="scripts-detail-desc" class="scripts-detail-desc"></p>
+            <div class="scripts-update-section">
+              <label class="scripts-update-label">Modify Script</label>
+              <textarea id="scripts-update-instructions" class="scripts-update-textarea"
+                placeholder="Describe changes… e.g. 'Add a retry step' or 'Include email notification at the end'"
+                rows="3"></textarea>
+              <button id="scripts-update-btn" class="scripts-update-btn">Update Script</button>
+            </div>
             <div id="scripts-auth-section" class="scripts-auth-section hidden">
               <div class="scripts-auth-header">🔐 Authentication Required</div>
               <div id="scripts-auth-list" class="scripts-auth-list"></div>
@@ -239,6 +246,12 @@
                 <input id="scripts-bulk-file" type="file" accept=".csv,.xlsx,.xls">
                 <div id="scripts-bulk-status" class="scripts-bulk-status hidden"></div>
               </div>
+            </div>
+            <div class="scripts-special-section">
+              <label class="scripts-special-label">Special Instructions (this run only)</label>
+              <textarea id="scripts-special-instructions" class="scripts-special-textarea"
+                placeholder="Optional: e.g. 'Only process the first 5 results' or 'Save output as PDF instead'"
+                rows="2"></textarea>
             </div>
             <button id="scripts-execute-btn" class="scripts-execute-btn">Execute Script</button>
           </div>
