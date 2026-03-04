@@ -703,11 +703,55 @@ export async function generateTitleViaCli(
     // Timeout: title generation should be fast
     const timeout = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch {}
+      // Flush remaining lineBuffer before resolving
+      if (lineBuffer.trim()) {
+        try {
+          const msg = JSON.parse(lineBuffer);
+          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+            textResult += msg.delta.text;
+          }
+          if (msg.type === 'assistant' && msg.message?.content) {
+            for (const block of msg.message.content) {
+              if (block.type === 'text' && block.text) {
+                textResult += block.text;
+              }
+            }
+          }
+          if (msg.type === 'result' && msg.result) {
+            textResult += msg.result;
+          }
+        } catch {
+          if (lineBuffer.trim()) textResult += lineBuffer.trim();
+        }
+        lineBuffer = '';
+      }
       resolve(null);
     }, 15_000);
 
     proc.on('exit', (code) => {
       clearTimeout(timeout);
+      // Flush remaining lineBuffer
+      if (lineBuffer.trim()) {
+        try {
+          const msg = JSON.parse(lineBuffer);
+          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+            textResult += msg.delta.text;
+          }
+          if (msg.type === 'assistant' && msg.message?.content) {
+            for (const block of msg.message.content) {
+              if (block.type === 'text' && block.text) {
+                textResult += block.text;
+              }
+            }
+          }
+          if (msg.type === 'result' && msg.result) {
+            textResult += msg.result;
+          }
+        } catch {
+          if (lineBuffer.trim()) textResult += lineBuffer.trim();
+        }
+        lineBuffer = '';
+      }
       if (code !== 0) {
         console.error('[claude-code] title gen failed:', stderr.slice(0, 200));
         resolve(null);
@@ -804,11 +848,55 @@ export async function scriptifyViaCli(
 
     const timeout = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch {}
+      // Flush remaining lineBuffer before resolving
+      if (lineBuffer.trim()) {
+        try {
+          const msg = JSON.parse(lineBuffer);
+          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+            textResult += msg.delta.text;
+          }
+          if (msg.type === 'assistant' && msg.message?.content) {
+            for (const block of msg.message.content) {
+              if (block.type === 'text' && block.text) {
+                textResult += block.text;
+              }
+            }
+          }
+          if (msg.type === 'result' && msg.result) {
+            textResult += msg.result;
+          }
+        } catch {
+          if (lineBuffer.trim()) textResult += lineBuffer.trim();
+        }
+        lineBuffer = '';
+      }
       resolve(null);
     }, 60_000);
 
     proc.on('exit', (code) => {
       clearTimeout(timeout);
+      // Flush remaining lineBuffer
+      if (lineBuffer.trim()) {
+        try {
+          const msg = JSON.parse(lineBuffer);
+          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+            textResult += msg.delta.text;
+          }
+          if (msg.type === 'assistant' && msg.message?.content) {
+            for (const block of msg.message.content) {
+              if (block.type === 'text' && block.text) {
+                textResult += block.text;
+              }
+            }
+          }
+          if (msg.type === 'result' && msg.result) {
+            textResult += msg.result;
+          }
+        } catch {
+          if (lineBuffer.trim()) textResult += lineBuffer.trim();
+        }
+        lineBuffer = '';
+      }
       if (code !== 0) {
         console.error('[claude-code] scriptify CLI failed:', stderr.slice(0, 300));
         resolve(null);
@@ -911,11 +999,55 @@ export async function generateProfileViaCli(
 
     const timeout = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch {}
+      // Flush remaining lineBuffer before resolving
+      if (lineBuffer.trim()) {
+        try {
+          const msg = JSON.parse(lineBuffer);
+          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+            textResult += msg.delta.text;
+          }
+          if (msg.type === 'assistant' && msg.message?.content) {
+            for (const block of msg.message.content) {
+              if (block.type === 'text' && block.text) {
+                textResult += block.text;
+              }
+            }
+          }
+          if (msg.type === 'result' && msg.result) {
+            textResult += msg.result;
+          }
+        } catch {
+          if (lineBuffer.trim()) textResult += lineBuffer.trim();
+        }
+        lineBuffer = '';
+      }
       resolve(null);
     }, 30_000);
 
     proc.on('exit', (code) => {
       clearTimeout(timeout);
+      // Flush remaining lineBuffer
+      if (lineBuffer.trim()) {
+        try {
+          const msg = JSON.parse(lineBuffer);
+          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+            textResult += msg.delta.text;
+          }
+          if (msg.type === 'assistant' && msg.message?.content) {
+            for (const block of msg.message.content) {
+              if (block.type === 'text' && block.text) {
+                textResult += block.text;
+              }
+            }
+          }
+          if (msg.type === 'result' && msg.result) {
+            textResult += msg.result;
+          }
+        } catch {
+          if (lineBuffer.trim()) textResult += lineBuffer.trim();
+        }
+        lineBuffer = '';
+      }
       if (code !== 0) {
         console.error('[claude-code] profile gen CLI failed:', stderr.slice(0, 200));
         resolve(null);
@@ -1016,11 +1148,55 @@ export async function executeCronViaCli(
 
     const timeout = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch {}
+      // Flush remaining lineBuffer before resolving
+      if (lineBuffer.trim()) {
+        try {
+          const msg = JSON.parse(lineBuffer);
+          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+            textResult += msg.delta.text;
+          }
+          if (msg.type === 'assistant' && msg.message?.content) {
+            for (const block of msg.message.content) {
+              if (block.type === 'text' && block.text) {
+                textResult += block.text;
+              }
+            }
+          }
+          if (msg.type === 'result' && msg.result) {
+            textResult += msg.result;
+          }
+        } catch {
+          if (lineBuffer.trim()) textResult += lineBuffer.trim();
+        }
+        lineBuffer = '';
+      }
       resolve({ text: 'Cron job timed out after 5 minutes', success: false });
     }, 300_000); // 5 min timeout for multi-step browser automation
 
     proc.on('exit', (code) => {
       clearTimeout(timeout);
+      // Flush remaining lineBuffer
+      if (lineBuffer.trim()) {
+        try {
+          const msg = JSON.parse(lineBuffer);
+          if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
+            textResult += msg.delta.text;
+          }
+          if (msg.type === 'assistant' && msg.message?.content) {
+            for (const block of msg.message.content) {
+              if (block.type === 'text' && block.text) {
+                textResult += block.text;
+              }
+            }
+          }
+          if (msg.type === 'result' && msg.result) {
+            textResult += msg.result;
+          }
+        } catch {
+          if (lineBuffer.trim()) textResult += lineBuffer.trim();
+        }
+        lineBuffer = '';
+      }
       if (code !== 0) {
         console.error('[claude-code] cron CLI failed:', stderr.slice(0, 300));
       }
