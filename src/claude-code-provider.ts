@@ -84,6 +84,22 @@ function getCliModeArgs(mode: CCMode): string[] {
   }
 }
 
+/**
+ * Build the base environment for spawning the Claude Code CLI.
+ * Disables all non-essential network traffic (telemetry, error reporting,
+ * surveys, auto-updates) since Tappi manages its own CLI installation.
+ */
+function buildCliEnv(): Record<string, string> {
+  return {
+    ...process.env as any,
+    DISABLE_TELEMETRY: '1',
+    DISABLE_ERROR_REPORTING: '1',
+    DISABLE_BUG_COMMAND: '1',
+    CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1',
+    DISABLE_AUTOUPDATER: '1',
+  };
+}
+
 // ── Installation ─────────────────────────────────────────────────────────────
 
 /**
@@ -246,7 +262,7 @@ export async function checkClaudeAuthStatus(
   return new Promise((resolve) => {
     const proc = spawn(TAPPI_CLAUDE_BIN, ['auth', 'status', '--text'], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: buildCliEnv(),
     });
 
     let stdout = '';
@@ -315,7 +331,7 @@ export async function loginClaudeCode(
   fs.writeFileSync(helperScript, `#!/bin/bash\necho "$1" > "${urlTempFile}"\n`, { mode: 0o755 });
 
   return new Promise((resolve) => {
-    const env: Record<string, string> = { ...process.env as any };
+    const env = buildCliEnv();
     env.BROWSER = helperScript;
 
     const proc = spawn(TAPPI_CLAUDE_BIN, ['auth', 'login'], {
@@ -650,7 +666,7 @@ export async function generateTitleViaCli(
     titlePrompt,
   ];
 
-  const env: Record<string, string> = { ...process.env as any };
+  const env = buildCliEnv();
   if (apiKey) {
     env.ANTHROPIC_API_KEY = apiKey;
   }
@@ -758,7 +774,7 @@ export async function scriptifyViaCli(
     args.push('--model', model);
   }
 
-  const env: Record<string, string> = { ...process.env as any };
+  const env = buildCliEnv();
   if (apiKey) {
     env.ANTHROPIC_API_KEY = apiKey;
   }
@@ -872,7 +888,7 @@ export async function generateProfileViaCli(
     args.push('--model', model);
   }
 
-  const env: Record<string, string> = { ...process.env as any };
+  const env = buildCliEnv();
   if (apiKey) {
     env.ANTHROPIC_API_KEY = apiKey;
   }
@@ -983,7 +999,7 @@ export async function executeCronViaCli(
     args.push('--model', model);
   }
 
-  const env: Record<string, string> = { ...process.env as any };
+  const env = buildCliEnv();
   if (apiKey) {
     env.ANTHROPIC_API_KEY = apiKey;
   }
@@ -1164,7 +1180,7 @@ export class ClaudeCodeProvider extends EventEmitter {
       args.unshift('--resume', this.sessionId);
     }
 
-    const env: Record<string, string> = { ...process.env as any };
+    const env = buildCliEnv();
     if (this.config.tappiApiToken) {
       env.TAPPI_API_TOKEN = this.config.tappiApiToken;
     }
