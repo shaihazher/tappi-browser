@@ -324,18 +324,14 @@ function patchServiceWorkerPolyfill(extensionDir: string): void {
     // Always write/refresh wrapper entry (ensures broken imports are repaired)
     fs.writeFileSync(
       entryPath,
-      `importScripts('./${polyfillFile}');\nimportScripts('./${originalSW}');\n`,
+      `import './${polyfillFile}';\nimport './${originalSW}';\n`,
     );
 
-    // Remove module type if previously set (classic scripts use importScripts)
-    const hadModuleType = manifest.background.type === 'module';
-    if (hadModuleType) {
-      delete manifest.background.type;
-    }
-
     // Update manifest if needed
-    if (currentSW !== entryFile || hadModuleType) {
-      manifest.background.service_worker = entryFile;
+    const needsWrite = currentSW !== entryFile || manifest.background.type !== 'module';
+    manifest.background.service_worker = entryFile;
+    manifest.background.type = 'module';
+    if (needsWrite) {
       fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
       console.log(`[extensions] Patched service worker for native messaging: ${extensionDir}`);
     } else {

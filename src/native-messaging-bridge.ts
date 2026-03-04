@@ -560,8 +560,8 @@ export function buildPolyfillScript(extensionId: string, port: number, token: st
 /**
  * Build the JavaScript polyfill for MV3 service worker contexts.
  * Uses globalThis/self instead of window; uses chrome.runtime.id for auto-detection.
- * Designed to be loaded via importScripts() before the extension's original
- * service worker.
+ * Designed to be written as a standalone file and imported before the
+ * extension's original service worker.
  */
 export function buildServiceWorkerPolyfill(port: number, token: string): string {
   return `
