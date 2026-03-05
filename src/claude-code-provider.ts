@@ -852,9 +852,20 @@ export async function scriptifyViaCli(
     applyCliAuth(env, args, auth);
   }
 
+  // --- Log CLI launch details ---
+  const cwd = os.tmpdir();
+  const maskKey = (v?: string) => v ? v.slice(0, 8) + '...' : '(unset)';
+  console.log(`[scriptify] launching CLI: ${TAPPI_CLAUDE_BIN}`);
+  console.log(`[scriptify]   args: ${args.join(' ')}`);
+  console.log(`[scriptify]   cwd: ${cwd}`);
+  console.log(`[scriptify]   auth: ${auth?.authMethod ?? 'default'} | region=${env.AWS_REGION ?? '(unset)'} | profile=${env.AWS_PROFILE ?? '(unset)'} | model=${env.ANTHROPIC_MODEL ?? '(unset)'}`);
+  if (env.ANTHROPIC_API_KEY) {
+    console.log(`[scriptify]   apiKey: ${maskKey(env.ANTHROPIC_API_KEY)}`);
+  }
+
   return new Promise((resolve) => {
     const proc = spawn(TAPPI_CLAUDE_BIN, args, {
-      cwd: os.tmpdir(),
+      cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
     });
@@ -865,18 +876,25 @@ export async function scriptifyViaCli(
     const fullPrompt = `${systemPrompt}\n\n---\n\nAnalyze this conversation transcript. Pay special attention to any errors, failures, or retries — the script you generate must incorporate the fixes and corrections discovered during the conversation, not reproduce the original bugs.${instructionsBlock}\n\nTranscript:\n\n${transcript}`;
     proc.stdin?.write(fullPrompt);
     proc.stdin?.end();
+    console.log(`[scriptify] prompt written to stdin (${fullPrompt.length} chars), stdin closed`);
 
     let textResult = '';
     let resultText = '';  // authoritative final text from 'result' message
     let stderr = '';
     let lineBuffer = '';
+    let stdoutBytes = 0;
 
     const processMessage = (msg: any) => {
       if (msg.type === 'content_block_delta' && msg.delta?.type === 'text_delta') {
         textResult += msg.delta.text;
+        console.log(`[scriptify] message: content_block_delta (textResult now ${textResult.length} chars)`);
       }
       if (msg.type === 'result' && msg.result) {
         resultText = msg.result;
+        console.log(`[scriptify] message: result (resultText set, ${resultText.length} chars)`);
+      }
+      if (msg.type && msg.type !== 'content_block_delta' && msg.type !== 'result') {
+        console.log(`[scriptify] message: ${msg.type}`);
       }
     };
 
@@ -888,6 +906,8 @@ export async function scriptifyViaCli(
     };
 
     proc.stdout?.on('data', (data: Buffer) => {
+      stdoutBytes += data.length;
+      console.log(`[scriptify] stdout chunk: ${data.length} bytes (total: ${stdoutBytes})`);
       lineBuffer += data.toString();
       const lines = lineBuffer.split('\n');
       lineBuffer = lines.pop() || '';
@@ -902,10 +922,18 @@ export async function scriptifyViaCli(
       }
     });
 
-    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+    proc.stderr?.on('data', (d: Buffer) => {
+      const chunk = d.toString();
+      stderr += chunk;
+      console.log(`[scriptify] stderr chunk: ${JSON.stringify(chunk.slice(0, 300))}`);
+    });
 
     proc.on('close', (code) => {
       flushLineBuffer();
+      console.log(`[scriptify] CLI exited: code=${code} | signal=${proc.signalCode ?? 'null'}`);
+      console.log(`[scriptify]   stderr (${stderr.length} chars): ${JSON.stringify(stderr.slice(0, 300))}`);
+      console.log(`[scriptify]   textResult (${textResult.length} chars): ${JSON.stringify(textResult.slice(0, 300))}`);
+      console.log(`[scriptify]   resultText (${resultText.length} chars): ${JSON.stringify(resultText.slice(0, 300))}`);
       if (code !== 0) {
         // CLI may print errors to stdout (e.g. "cannot launch inside another session")
         const detail = stderr.trim().slice(0, 300) || textResult.trim().slice(0, 300) || 'exited with no details';
@@ -918,12 +946,14 @@ export async function scriptifyViaCli(
       }
       // Use result message if available, fall back to streamed deltas
       let text = (resultText || textResult).trim();
+      console.log(`[scriptify] CLI succeeded, parsing response (${text.length} chars)`);
       // Strip markdown fences and parse JSON
       if (text.startsWith('```')) {
         text = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
       }
       try {
         resolve({ data: JSON.parse(text) });
+        console.log('[scriptify] parse OK — script generated');
       } catch {
         console.error('[claude-code] scriptify parse failed, raw:', text.slice(0, 500));
         resolve({ error: 'Failed to parse script JSON. Model response was malformed.' });
@@ -931,7 +961,7 @@ export async function scriptifyViaCli(
     });
 
     proc.on('error', (err: Error) => {
-      console.error('[claude-code] scriptify spawn error:', err.message);
+      console.error(`[scriptify] spawn error for ${TAPPI_CLAUDE_BIN}: ${err.message}`);
       resolve({ error: `Failed to start CLI: ${err.message}` });
     });
   });
