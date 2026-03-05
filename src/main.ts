@@ -4036,26 +4036,34 @@ app.on('session-created', (ses) => {
 
 // ─── Delegate custom URL schemes to the OS ───────────────────────────────────
 // Intercept navigation to non-standard schemes (enterprise device registration,
-// native app launchers, etc.) and hand them off to the OS via shell.openExternal.
+// native app launchers, etc.) and hand them off to the OS.
+// Uses macOS `open` command instead of shell.openExternal to avoid SIGSEGV
+// crashes with custom URL schemes in some Electron/macOS configurations.
+function openExternalUrl(url: string): void {
+  console.log('[main] Opening external URL:', url);
+  const { spawn } = require('child_process') as typeof import('child_process');
+  if (process.platform === 'darwin') {
+    spawn('open', [url], { stdio: 'ignore', detached: true }).unref();
+  } else if (process.platform === 'win32') {
+    spawn('cmd', ['/c', 'start', '', url], { stdio: 'ignore', detached: true }).unref();
+  } else {
+    spawn('xdg-open', [url], { stdio: 'ignore', detached: true }).unref();
+  }
+}
+
 app.on('web-contents-created', (_ev, wc) => {
   // will-navigate covers link clicks and JS-initiated navigation
   wc.on('will-navigate', (event, url) => {
     if (/^(https?|file|chrome-extension):\/\//i.test(url)) return;
     event.preventDefault();
-    console.log('[main] Delegating custom scheme to OS:', url);
-    shell.openExternal(url).catch(e =>
-      console.warn('[main] Failed to open external URL:', e)
-    );
+    openExternalUrl(url);
   });
 
   // did-start-navigation catches server redirects that will-navigate misses
   wc.on('did-start-navigation', (_e: any, url: string) => {
     if (/^(https?|file|chrome-extension|about|data):\/?\/?/i.test(url)) return;
-    console.log('[main] Intercepting custom scheme redirect:', url);
     wc.stop();
-    shell.openExternal(url).catch(e =>
-      console.warn('[main] Failed to open external URL:', e)
-    );
+    openExternalUrl(url);
   });
 });
 
