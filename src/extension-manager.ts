@@ -318,16 +318,17 @@ function patchServiceWorkerPolyfill(extensionDir: string): void {
       try { if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath); } catch {}
     }
 
-    // Always write fresh polyfill with current bridge port/token
-    fs.writeFileSync(polyfillPath, buildServiceWorkerPolyfill(bridge.port, bridge.token));
-
-    // Always write/refresh wrapper entry (ensures broken imports are repaired).
-    // Include bridge port so Chromium detects a byte change and re-fetches
-    // imported scripts instead of serving cached versions from a prior session.
+    // Inline the polyfill directly into the entry file so the port/token
+    // are part of the main SW script. Chromium caches imported module scripts
+    // independently, so a separate polyfill import would serve stale
+    // port/token from a prior session.
+    const polyfillCode = buildServiceWorkerPolyfill(bridge.port, bridge.token);
     fs.writeFileSync(
       entryPath,
-      `// bridge=${bridge.port}\nimport './${polyfillFile}';\nimport './${originalSW}';\n`,
+      `${polyfillCode}\nimport './${originalSW}';\n`,
     );
+    // Keep standalone polyfill for MV2 background pages (injected via executeScript)
+    fs.writeFileSync(polyfillPath, polyfillCode);
 
     // Update manifest if needed
     const needsWrite = currentSW !== entryFile || manifest.background.type !== 'module';
