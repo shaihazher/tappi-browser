@@ -3992,11 +3992,14 @@ app.on('ready', () => {
 
 // ─── Auto-select client certificate for enterprise mTLS ─────────────────────
 app.on('select-client-certificate', (event, _webContents, url, list, callback) => {
-  console.log(`[auth] Client certificate requested by ${url} — ${list.length} cert(s) available`);
-  if (list.length > 0) {
-    console.log(`[auth] Auto-selecting certificate: ${list[0].subjectName}`);
-    event.preventDefault();
-    callback(list[0]);
+  try {
+    console.log('[auth] Client certificate requested by', url, '—', list.length, 'cert(s)');
+    if (list.length > 0) {
+      event.preventDefault();
+      callback(list[0]);
+    }
+  } catch (e) {
+    console.warn('[auth] Certificate selection error:', e);
   }
 });
 
