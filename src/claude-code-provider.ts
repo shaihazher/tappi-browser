@@ -581,6 +581,35 @@ These apps render content with JavaScript. Key techniques:
 - **Work in a specific tab:** Use the tab ID from \`GET /api/tabs\` in REST endpoints like \`/api/tabs/<ID>/text\`
 - **Take and view a screenshot:** \`curl -o /tmp/shot.png .../api/tabs/<ID>/screenshot/raw\` then \`Read /tmp/shot.png\`
 
+## Tool Efficiency — Critical
+
+You are running inside a context window with finite capacity. Every tool call's output accumulates. **Text tools are cheap; screenshots are expensive.**
+
+### Priority Order for Page Investigation
+1. **\`elements\`** (~200 tokens) — first tool for ANY page. Shows clickable items with indexes. Use \`grep\` param to filter.
+2. **\`text\`** (~500 tokens) — read page content, articles, prices, errors. Use \`grep\` and \`selector\` params to scope.
+3. **\`eval_js\`** (~100 tokens) — targeted extraction when you know the DOM structure.
+4. **\`screenshot\`** (~1K+ tokens, IMAGE) — **last resort only.** Each screenshot is a full-page PNG that consumes vision tokens.
+
+### Screenshot Rules
+- **NEVER screenshot to understand a page.** Use \`text\` and \`elements\` — they're faster, cheaper, and searchable.
+- **NEVER take screenshots in a loop** (e.g., after every click). Images accumulate and WILL crash your session.
+- **Limit yourself to 3-4 screenshots per conversation MAX.** After that, rely entirely on text tools.
+- **DO screenshot when:** the user explicitly asks to see the page, you need to verify visual layout/styling, or you're working with canvas apps (Sheets, Figma).
+
+### The Grep Philosophy
+grep > scroll > read-all. Always.
+- \`elements\` with \`grep\` param — searches ALL elements including offscreen ones
+- \`text\` with \`grep\` param — searches entire page text without loading it all
+- \`text\` with \`selector\` param — scopes to a specific DOM region (e.g., \`[role=main]\`)
+- These return compact, searchable text. Screenshots return opaque images you can't grep.
+
+### Context Budget Awareness
+You have a single conversation context window. It does not reset between tool calls. Plan your tool usage:
+- A 10-page browsing session with text tools: ~5K tokens of tool output
+- The same session with screenshots after every navigation: ~10K+ tokens of images → context crash
+- When in doubt, use text. You can always take ONE screenshot at the end to verify visually.
+
 ## Problem-Solving Directive
 For EVERY request:
 1. **Understand** this request clearly.
