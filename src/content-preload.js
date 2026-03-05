@@ -11,8 +11,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 // ─── Intercept custom URL scheme links ───
-// Catches <a href="acme://..."> clicks at the DOM level (capture phase)
-// BEFORE Chromium tries to navigate — prevents SIGSEGV on unknown schemes.
+// Catches clicks on <a> tags with non-standard schemes at the DOM level
+// (capture phase) BEFORE Chromium tries to navigate — prevents SIGSEGV.
 const _standardSchemeRe = /^(https?|file|chrome-extension|about|data|blob|javascript|mailto|tel):\/?\/?/i;
 document.addEventListener('click', (e) => {
   const link = e.target && e.target.closest ? e.target.closest('a[href]') : null;

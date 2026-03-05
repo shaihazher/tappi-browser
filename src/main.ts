@@ -20,6 +20,24 @@ process.on('unhandledRejection', (e) => console.error('[REJECT]', e));
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+
+// ─── Kerberos / SPNEGO SSO for enterprise auth ──────────────────────────────
+// Must be set before app.ready(). Reads enterprise.authServerWhitelist and
+// enterprise.authDelegateWhitelist from the user's config.json.
+// These mirror the Chromium AuthServerAllowlist / AuthNegotiateDelegateAllowlist
+// policies used in managed browser configuration profiles.
+try {
+  const _cfgPath = path.join(os.homedir(), '.tappi-browser', 'profiles', 'default', 'config.json');
+  const _cfg = JSON.parse(fs.readFileSync(_cfgPath, 'utf-8'));
+  if (_cfg.enterprise?.authServerWhitelist) {
+    app.commandLine.appendSwitch('auth-server-whitelist', _cfg.enterprise.authServerWhitelist);
+  }
+  if (_cfg.enterprise?.authDelegateWhitelist) {
+    app.commandLine.appendSwitch('auth-negotiate-delegate-whitelist', _cfg.enterprise.authDelegateWhitelist);
+  }
+} catch {
+  // No config or no enterprise settings — Kerberos SSO disabled (default)
+}
 import * as http from 'http';
 import { URL } from 'url';
 import { createHash, randomBytes } from 'crypto';
@@ -179,6 +197,10 @@ interface TappiConfig {
     profileEnrichBookmarks?: boolean;
   };
   workspacePath?: string;  // User-defined workspace directory (default: ~/Documents/Tappi/)
+  enterprise?: {
+    authServerWhitelist?: string;    // Kerberos/SPNEGO auth servers (comma-separated domains)
+    authDelegateWhitelist?: string;  // Kerberos delegation targets (comma-separated domains)
+  };
 }
 
 const DEFAULT_CONFIG: TappiConfig = {
