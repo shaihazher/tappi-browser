@@ -858,7 +858,7 @@ export async function scriptifyViaCli(
       env,
     });
 
-    const fullPrompt = `${systemPrompt}\n\n---\n\nHere is the conversation transcript to analyze:\n\n${transcript}`;
+    const fullPrompt = `${systemPrompt}\n\n---\n\nAnalyze this conversation transcript. Pay special attention to any errors, failures, or retries — the script you generate must incorporate the fixes and corrections discovered during the conversation, not reproduce the original bugs.\n\nTranscript:\n\n${transcript}`;
     proc.stdin?.write(fullPrompt);
     proc.stdin?.end();
 

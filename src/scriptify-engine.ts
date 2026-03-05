@@ -30,17 +30,20 @@ Your task:
 4. Generate the script body appropriate to the type
 5. Define an input schema for the variable parts
 
-IMPORTANT:
-- Only include SUCCESSFUL tool-call sequences (skip failed attempts and retries)
-- For browser automation: use descriptive element finding (not hardcoded selectors)
-- Include error handling guidance
-- Make the script general-purpose, not tied to specific values from this conversation
-- For automated and semi-automated scripts: generate clean, well-structured Python code with proper error handling (try/except), logging, and clear variable names
-- Use standard libraries where possible; note any pip dependencies in the description
-- The Python code will be written to a temp file and executed by the agent — ensure it is self-contained and runnable
-- For data-processing workflows (scraping, APIs, file operations): design Python scripts to accept a file_path input for bulk CSV/Excel data. The script should iterate over rows internally using pandas or csv module. This "script-native bulk" is far more efficient than the system repeating the script per row.
-- When a script naturally operates on a single item, still use single-value {{placeholders}} — the system can run it in bulk mode by repeating execution per row.
-- Include a file_path field (type: "file_path") in the inputSchema when the script is designed for native bulk processing.
+IMPORTANT — DISTILL LEARNINGS:
+- Carefully trace the conversation for error→fix patterns. When something failed and was later corrected, use ONLY the corrected/working version in the script. Never reproduce code that was shown to fail.
+- Tool results prefixed with [ERROR] indicate failures. Read the error, then find the subsequent fix in the conversation. Incorporate the fix directly into the generated script.
+- For Python scripts: if an import failed and was replaced (e.g. \`playwright\` → \`subprocess\`), use the working import. If an API endpoint returned an error and was corrected, use the corrected endpoint. If data parsing failed and the format was adjusted, use the adjusted format.
+- Add try/except error handling for failure modes discovered during the conversation. For example, if the conversation hit a timeout, add timeout handling. If an element wasn't found, add a retry or fallback.
+- Skip failed attempts and retries entirely — only the final working approach belongs in the script.
+- For browser automation: use descriptive element finding (not hardcoded selectors). If the conversation tried multiple selectors before finding one that works, use only the working selector strategy.
+- Make the script general-purpose, not tied to specific values from this conversation.
+- For automated and semi-automated scripts: generate clean, well-structured Python code with proper error handling (try/except), logging, and clear variable names.
+- Use standard libraries where possible; note any pip dependencies in the description.
+- The Python code will be written to a temp file and executed by the agent — ensure it is self-contained and runnable.
+- For data-processing workflows (scraping, APIs, file operations): design Python scripts to accept a file_path input for bulk CSV/Excel data. The script should iterate over rows internally using pandas or csv module.
+- When a script naturally operates on a single item, still use single-value {{placeholders}}.
+- Include a file_path field (type: "file_path") in the inputSchema when designed for native bulk processing.
 
 Also identify any domains that required authentication during the conversation.
 Include an "authRequirements" array in your JSON output:
@@ -70,6 +73,35 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
   "scriptBody": "For automated: a complete, executable Python script with {{field_name}} placeholders for variable inputs. For semi-automated: a mix of executable Python code blocks (for deterministic steps) and natural language reasoning prompts (for analysis steps), clearly delineated. For playbook: structured step-by-step playbook with phases; include Python code blocks where they add value."
 }`;
 
+// ─── Transcript Builder ───
+
+/**
+ * Builds a filtered and annotated transcript for scriptify analysis.
+ * 1. Filters out 'thinking' role messages (internal reasoning adds noise)
+ * 2. Annotates tool results that contain error signals with [ERROR] prefix
+ */
+function buildScriptifyTranscript(
+  rows: Array<{ role: string; content: string; created_at: string }>
+): string {
+  // Filter out thinking messages — internal reasoning adds noise, not signal
+  const filtered = rows.filter(r => r.role !== 'thinking');
+
+  // Annotate tool results that contain error signals
+  const annotated = filtered.map(r => {
+    if (r.role === 'tool') {
+      const hasError = /error|traceback|exception|failed|ENOENT|EACCES|ModuleNotFoundError|ImportError|TypeError|KeyError|IndexError|SyntaxError|ConnectionError|timeout/i.test(r.content);
+      if (hasError) {
+        return { ...r, content: `[ERROR] ${r.content}` };
+      }
+    }
+    return r;
+  });
+
+  return annotated.map(r => `### ${r.role.toUpperCase()}\n${r.content}`).join('\n\n---\n\n');
+}
+
+const SCRIPTIFY_USER_PREAMBLE = 'Analyze this conversation transcript. Pay special attention to any errors, failures, or retries — the script you generate must incorporate the fixes and corrections discovered during the conversation, not reproduce the original bugs.\n\nTranscript:\n\n';
+
 // ─── Scriptify: Conversation → Script (Vercel AI SDK path) ───
 
 export async function scriptifyConversation(
@@ -87,8 +119,8 @@ export async function scriptifyConversation(
       return { success: false, error: 'No messages found in this conversation.' };
     }
 
-    // Build transcript
-    const transcript = rows.map(r => `### ${r.role.toUpperCase()}\n${r.content}`).join('\n\n---\n\n');
+    // Build transcript (filtered + annotated)
+    const transcript = buildScriptifyTranscript(rows);
 
     const model = createModel(llmConfig);
     const providerOptions = buildProviderOptions(llmConfig);
@@ -98,7 +130,7 @@ export async function scriptifyConversation(
       providerOptions,
       messages: [
         { role: 'system', content: SCRIPTIFY_SYSTEM_PROMPT },
-        { role: 'user', content: `Here is the conversation transcript to analyze:\n\n${transcript}` },
+        { role: 'user', content: `${SCRIPTIFY_USER_PREAMBLE}${transcript}` },
       ],
       maxOutputTokens: 4096,
     });
@@ -161,16 +193,21 @@ export async function scriptifyConversationViaCli(
       return { success: false, error: 'No messages found in this conversation.' };
     }
 
-    // Build transcript
-    let transcript = rows.map(r => `### ${r.role.toUpperCase()}\n${r.content}`).join('\n\n---\n\n');
+    // Build transcript (filtered + annotated)
+    const filteredRows = rows.filter(r => r.role !== 'thinking');
+    let transcript = buildScriptifyTranscript(rows);
 
     // Cap transcript length to avoid exceeding CLI input limits
     const MAX_TRANSCRIPT_CHARS = 50_000;
     if (transcript.length > MAX_TRANSCRIPT_CHARS) {
+      // Rebuild from filtered rows, taking the last N that fit
       const parts: string[] = [];
       let totalLen = 0;
-      for (let i = rows.length - 1; i >= 0; i--) {
-        const part = `### ${rows[i].role.toUpperCase()}\n${rows[i].content}`;
+      for (let i = filteredRows.length - 1; i >= 0; i--) {
+        const r = filteredRows[i];
+        const hasError = r.role === 'tool' && /error|traceback|exception|failed|ENOENT|EACCES|ModuleNotFoundError|ImportError|TypeError|KeyError|IndexError|SyntaxError|ConnectionError|timeout/i.test(r.content);
+        const content = hasError ? `[ERROR] ${r.content}` : r.content;
+        const part = `### ${r.role.toUpperCase()}\n${content}`;
         if (totalLen + part.length + 5 > MAX_TRANSCRIPT_CHARS && parts.length > 0) break;
         parts.unshift(part);
         totalLen += part.length + 5;
