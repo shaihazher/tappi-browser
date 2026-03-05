@@ -149,6 +149,7 @@ export async function scriptifyConversation(
 export async function scriptifyConversationViaCli(
   conversationId: string,
   apiKey?: string,
+  model?: string,
 ): Promise<{ success: boolean; script?: { id: string; name: string; description: string }; error?: string }> {
   try {
     // Load conversation messages
@@ -162,14 +163,29 @@ export async function scriptifyConversationViaCli(
     }
 
     // Build transcript
-    const transcript = rows.map(r => `### ${r.role.toUpperCase()}\n${r.content}`).join('\n\n---\n\n');
+    let transcript = rows.map(r => `### ${r.role.toUpperCase()}\n${r.content}`).join('\n\n---\n\n');
+
+    // Cap transcript length to avoid exceeding CLI input limits
+    const MAX_TRANSCRIPT_CHARS = 50_000;
+    if (transcript.length > MAX_TRANSCRIPT_CHARS) {
+      const parts: string[] = [];
+      let totalLen = 0;
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const part = `### ${rows[i].role.toUpperCase()}\n${rows[i].content}`;
+        if (totalLen + part.length + 5 > MAX_TRANSCRIPT_CHARS && parts.length > 0) break;
+        parts.unshift(part);
+        totalLen += part.length + 5;
+      }
+      transcript = parts.join('\n\n---\n\n');
+    }
 
     // Call CLI
-    const parsed = await scriptifyViaCli(transcript, SCRIPTIFY_SYSTEM_PROMPT, apiKey);
+    const result = await scriptifyViaCli(transcript, SCRIPTIFY_SYSTEM_PROMPT, apiKey, model);
 
-    if (!parsed) {
-      return { success: false, error: 'Script generation via CLI failed. Check that Claude Code is installed and authenticated.' };
+    if ('error' in result) {
+      return { success: false, error: result.error };
     }
+    const parsed = result.data;
 
     // Validate required fields
     if (!parsed.name || !parsed.scriptBody || !parsed.scriptType) {
@@ -269,10 +285,11 @@ export async function updateScriptDefinition(
 
     if (llmConfig.provider === 'claude-code') {
       // CLI path for OAuth/Bedrock
-      parsed = await scriptifyViaCli(userContent, SCRIPT_UPDATE_PROMPT, llmConfig.apiKey, llmConfig.model);
-      if (!parsed) {
-        return { success: false, error: 'Script update via CLI failed. Check that Claude Code is installed and authenticated.' };
+      const cliResult = await scriptifyViaCli(userContent, SCRIPT_UPDATE_PROMPT, llmConfig.apiKey, llmConfig.model);
+      if ('error' in cliResult) {
+        return { success: false, error: cliResult.error };
       }
+      parsed = cliResult.data;
     } else {
       // SDK path for all other providers
       const model = createModel(llmConfig);

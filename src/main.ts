@@ -1593,7 +1593,7 @@ function createWindow() {
 
     // Route to CLI path for Claude Code provider (OAuth/Bedrock — no direct API key)
     if (currentConfig.llm.provider === 'claude-code') {
-      return scriptifyConversationViaCli(conversationId, apiKey || undefined);
+      return scriptifyConversationViaCli(conversationId, apiKey || undefined, currentConfig.llm.model);
     }
 
     // All other providers: use Vercel AI SDK

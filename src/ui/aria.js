@@ -3818,6 +3818,8 @@ if (window.aria && window.aria.onPresentDownload) {
 // ═══════════════════════════════════════════
 
 const ariaScriptifyBtn = document.getElementById('aria-scriptify-btn');
+const ariaScriptifyBtnIcon = ariaScriptifyBtn?.querySelector('.btn-icon');
+const ariaScriptifyBtnLabel = ariaScriptifyBtn?.querySelector('.btn-label');
 const ariaScriptsBtn = document.getElementById('aria-scripts-btn');
 const scriptsModalOverlay = document.getElementById('scripts-modal-overlay');
 const scriptsModalClose = document.getElementById('scripts-modal-close');
@@ -4022,7 +4024,8 @@ if (ariaScriptifyBtn) {
 
     isScriptifying = true;
     ariaScriptifyBtn.disabled = true;
-    ariaScriptifyBtn.textContent = '⏳';
+    if (ariaScriptifyBtnIcon) ariaScriptifyBtnIcon.textContent = '⏳';
+    if (ariaScriptifyBtnLabel) ariaScriptifyBtnLabel.textContent = 'Generating...';
 
     try {
       const result = await window.aria.scriptifyConversation(currentConversationId);
@@ -4037,7 +4040,8 @@ if (ariaScriptifyBtn) {
       appendMessage('assistant', `❌ Script generation failed: ${escHtml(err.message || 'Unknown error')}`);
     } finally {
       isScriptifying = false;
-      ariaScriptifyBtn.textContent = '📜';
+      if (ariaScriptifyBtnIcon) ariaScriptifyBtnIcon.textContent = '📜';
+      if (ariaScriptifyBtnLabel) ariaScriptifyBtnLabel.textContent = 'Scriptify';
       updateScriptifyBtnState();
     }
   });

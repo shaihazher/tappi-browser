@@ -788,24 +788,23 @@ export async function generateTitleViaCli(
 /**
  * Generate a script definition from a conversation transcript using the Claude Code CLI.
  * Used when provider is claude-code with OAuth/Bedrock auth (no direct API key).
- * Returns the parsed JSON object or null on failure.
+ * Returns { data: parsedJSON } on success or { error: reason } on failure.
  */
 export async function scriptifyViaCli(
   transcript: string,
   systemPrompt: string,
   apiKey?: string,
   model?: string,
-): Promise<any | null> {
+): Promise<{ data: any } | { error: string }> {
   if (!(await isCliInstalled())) {
-    return null;
+    return { error: 'Claude Code CLI is not installed.' };
   }
-
-  const fullPrompt = `${systemPrompt}\n\n---\n\nHere is the conversation transcript to analyze:\n\n${transcript}`;
 
   const args: string[] = [
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
+    '--system-prompt', systemPrompt,
   ];
 
   if (model) {
@@ -824,7 +823,7 @@ export async function scriptifyViaCli(
       env,
     });
 
-    proc.stdin?.write(fullPrompt);
+    proc.stdin?.write(transcript);
     proc.stdin?.end();
 
     let textResult = '';
@@ -868,16 +867,21 @@ export async function scriptifyViaCli(
     const timeout = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch {}
       flushLineBuffer();
-      resolve(null);
-    }, 60_000);
+      console.error('[claude-code] scriptify timed out. stderr:', stderr.slice(0, 500));
+      resolve({ error: 'Scriptify timed out after 120s. Conversation may be too long — try a shorter one.' });
+    }, 120_000);
 
     proc.on('close', (code) => {
       clearTimeout(timeout);
       flushLineBuffer();
       if (code !== 0) {
-        console.error('[claude-code] scriptify CLI failed:', stderr.slice(0, 300));
-        resolve(null);
+        const detail = stderr.trim().slice(0, 300) || 'exited with no details';
+        console.error('[claude-code] scriptify CLI failed:', detail);
+        resolve({ error: `CLI error: ${detail}` });
         return;
+      }
+      if (stderr.trim()) {
+        console.warn('[claude-code] scriptify stderr:', stderr.slice(0, 500));
       }
       // Use result message if available, fall back to streamed deltas
       let text = (resultText || textResult).trim();
@@ -886,16 +890,17 @@ export async function scriptifyViaCli(
         text = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
       }
       try {
-        resolve(JSON.parse(text));
+        resolve({ data: JSON.parse(text) });
       } catch {
         console.error('[claude-code] scriptify parse failed, raw:', text.slice(0, 500));
-        resolve(null);
+        resolve({ error: 'Failed to parse script JSON. Model response was malformed.' });
       }
     });
 
-    proc.on('error', () => {
+    proc.on('error', (err: Error) => {
       clearTimeout(timeout);
-      resolve(null);
+      console.error('[claude-code] scriptify spawn error:', err.message);
+      resolve({ error: `Failed to start CLI: ${err.message}` });
     });
   });
 }
