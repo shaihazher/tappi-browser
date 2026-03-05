@@ -3990,6 +3990,14 @@ app.on('ready', () => {
   });
 });
 
+// ─── Auto-select client certificate for enterprise mTLS ─────────────────────
+app.on('select-client-certificate', (event, _webContents, _url, list, callback) => {
+  if (list.length > 0) {
+    event.preventDefault();
+    callback(list[0]);
+  }
+});
+
 // ─── Strip Electron from User-Agent + relax CSP for extension localhost ──────
 app.on('session-created', (ses) => {
   // Strip "Electron/X.Y.Z" and "tappi/X.Y.Z" from UA so sites don't detect Electron
@@ -3997,6 +4005,7 @@ app.on('session-created', (ses) => {
   if (ua.includes('Electron/')) {
     ses.setUserAgent(ua.replace(/\s*Electron\/[\d.]+/g, '').replace(/\s*tappi\/[\d.]+/gi, ''));
   }
+
 
   // Relax CSP for extension pages to allow localhost connections (native messaging polyfill)
   ses.webRequest.onHeadersReceived(
@@ -4018,6 +4027,21 @@ app.on('session-created', (ses) => {
       callback({ responseHeaders: headers });
     }
   );
+});
+
+// ─── Delegate custom URL schemes (acme://, etc.) to the OS ──────────────────
+app.on('web-contents-created', (_ev, wc) => {
+  wc.on('will-navigate', (event, url) => {
+    if (url.startsWith('http://') || url.startsWith('https://') ||
+        url.startsWith('file://') || url.startsWith('chrome-extension://')) {
+      return; // normal navigation
+    }
+    // Custom scheme (acme://, etc.) — hand off to the OS
+    event.preventDefault();
+    shell.openExternal(url).catch(e =>
+      console.warn(`[main] Failed to open external URL ${url}:`, e)
+    );
+  });
 });
 
 app.whenReady().then(createWindow);
