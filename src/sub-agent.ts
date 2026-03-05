@@ -36,6 +36,7 @@ import type { BrowserContext } from './browser-tools';
 import { addMessage, addMessages, getWindow, getFullHistory, clearHistory, sanitizeResponseMessages, type ChatMessage } from './conversation';
 import { purgeSession } from './output-buffer';
 import { cleanupSession } from './shell-tools';
+import { loadUserProfileTxt } from './user-profile';
 
 // ─── Types ───
 
@@ -696,9 +697,18 @@ Time: ${now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
 Timezone: ${tz}
 `;
 
+    // ─── User Profile Injection ──────────────────────────────────────────────
+    let userProfileBlock = '';
+    try {
+      const profileTxt = loadUserProfileTxt();
+      if (profileTxt) {
+        userProfileBlock = `\n\n[User Profile]\n${profileTxt}`;
+      }
+    } catch {}
+
     const systemPrompt = contract
-      ? `${dateContext}${SUB_AGENT_BASE_PROMPT}\n\n${budgetNote}\n\n${contract}`
-      : `${dateContext}${SUB_AGENT_BASE_PROMPT}\n\n${budgetNote}`;
+      ? `${dateContext}${SUB_AGENT_BASE_PROMPT}\n\n${budgetNote}${userProfileBlock}\n\n${contract}`
+      : `${dateContext}${SUB_AGENT_BASE_PROMPT}\n\n${budgetNote}${userProfileBlock}`;
 
     const providerOptions = buildProviderOptions(subLlmConfig);
     const callProviderOptions: Record<string, any> = withCodexProviderOptions(

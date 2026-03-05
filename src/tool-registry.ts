@@ -1211,13 +1211,25 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         if (action === 'update') {
           // Sequence guard: warn if profile wasn't read first this session
           const skipReadWarning = _profileReadThisSession;
+
+          // Backup existing profile before overwriting to prevent data loss
+          const existing = loadUserProfileTxt();
+          if (existing) {
+            try {
+              const txtPath = getUserProfileTxtPath();
+              const bakPath = txtPath + '.bak';
+              const fs = require('fs');
+              fs.writeFileSync(bakPath, existing);
+            } catch {}
+          }
+
           const result = saveUserProfileTxt(text);
           if (!result.success) return { error: result.error };
           try { browserCtx.window?.webContents.send('user-profile:updated', text); } catch {}
           if (!skipReadWarning) {
-            return { success: true, wordCount: result.wordCount, warning: '⚠️ Profile updated without reading first — call with action=read first to see the current profile and avoid accidentally overwriting content.' };
+            return { success: true, wordCount: result.wordCount, warning: '⚠️ Profile updated without reading first — call with action=read first to see the current profile and avoid accidentally overwriting content. A backup of the previous profile was saved.' };
           }
-          return { success: true, wordCount: result.wordCount };
+          return { success: true, wordCount: result.wordCount, note: 'Previous profile backed up to user-profile.txt.bak' };
         }
 
         return { error: 'Invalid action.' };

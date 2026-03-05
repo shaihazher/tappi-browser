@@ -630,11 +630,20 @@ function writeTappiClaudeMd(tappiApiToken: string): string {
   const dir = path.join(os.tmpdir(), 'tappi-claude-code');
   fs.mkdirSync(dir, { recursive: true });
 
-  const content = buildTappiSystemPrompt()
+  let content = buildTappiSystemPrompt()
     // Replace the env var reference with the actual token for the CLI path,
     // since we can't guarantee the CLI inherits the env var in all contexts.
     // The CLAUDE.md is in a temp dir with restricted access.
     .replace(/\$TAPPI_API_TOKEN/g, tappiApiToken);
+
+  // Inject user profile into CLAUDE.md so the CLI has it in context
+  try {
+    const { loadUserProfileTxt } = require('./user-profile');
+    const profileTxt = loadUserProfileTxt();
+    if (profileTxt) {
+      content += `\n\n## User Profile\nThe user has saved the following profile. Use it to personalize responses, remember preferences, and navigate to their known URLs/tools without asking.\n\n${profileTxt}\n`;
+    }
+  } catch {}
 
   fs.writeFileSync(path.join(dir, 'CLAUDE.md'), content, 'utf-8');
   return dir;
