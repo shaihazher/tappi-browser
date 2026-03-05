@@ -325,7 +325,7 @@ function patchServiceWorkerPolyfill(extensionDir: string): void {
     const polyfillCode = buildServiceWorkerPolyfill(bridge.port, bridge.token);
     fs.writeFileSync(
       entryPath,
-      `${polyfillCode}\nawait import('./${originalSW}');\n`,
+      `${polyfillCode}\nimport('./${originalSW}');\n`,
     );
     // Keep standalone polyfill for MV2 background pages (injected via executeScript)
     fs.writeFileSync(polyfillPath, polyfillCode);
