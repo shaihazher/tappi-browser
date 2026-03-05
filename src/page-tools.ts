@@ -20,29 +20,46 @@ import { waitForLoad, waitForContent } from './browser-tools';
 const SCREENSHOT_MAX_DIM = 2048;
 
 /**
- * Safely capture page with retry for "display surface not available" errors,
- * then validate dimensions and resize if needed for Claude API compatibility.
+ * Capture page screenshot. Retries with backoff until a valid image is obtained.
+ * Always returns a valid NativeImage — never throws.
  */
 export async function safeCapturePage(wc: WebContents): Promise<Electron.NativeImage> {
-  let image: Electron.NativeImage;
-  try {
-    image = await wc.capturePage();
-  } catch (e: any) {
-    if (e?.message?.includes('display surface')) {
-      // Page is mid-navigation — wait for load and retry once
-      await waitForLoad(wc, 3000);
-      image = await wc.capturePage();
-    } else {
-      throw e;
+  const MAX_ATTEMPTS = 6;
+  const BACKOFF = [100, 300, 600, 1000, 2000, 3000];
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    try {
+      // On first failure or if page is loading, wait for it to settle
+      if (attempt > 0) {
+        await waitForLoad(wc, BACKOFF[attempt]);
+      }
+
+      const image = await wc.capturePage();
+      const { width, height } = image.getSize();
+
+      // 0×0 means page isn't painted yet — retry
+      if (width === 0 || height === 0) {
+        await sleep(BACKOFF[attempt]);
+        continue;
+      }
+
+      // Downscale for Claude API compatibility on Retina/high-DPI displays
+      if (width > SCREENSHOT_MAX_DIM || height > SCREENSHOT_MAX_DIM) {
+        return width >= height
+          ? image.resize({ width: SCREENSHOT_MAX_DIM })
+          : image.resize({ height: SCREENSHOT_MAX_DIM });
+      }
+      return image;
+    } catch {
+      // capturePage failed (display surface not available, tab navigating, etc.) — retry
+      await sleep(BACKOFF[attempt]);
     }
   }
 
+  // Final attempt after full wait-for-load
+  await waitForLoad(wc, 5000);
+  const image = await wc.capturePage();
   const { width, height } = image.getSize();
-  if (width === 0 || height === 0) {
-    throw new Error('Cannot capture screenshot — a dialog may be blocking the page (captured 0×0 image)');
-  }
-
-  // Downscale for Claude API compatibility on Retina/high-DPI displays
   if (width > SCREENSHOT_MAX_DIM || height > SCREENSHOT_MAX_DIM) {
     return width >= height
       ? image.resize({ width: SCREENSHOT_MAX_DIM })

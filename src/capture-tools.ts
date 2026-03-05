@@ -86,21 +86,38 @@ export async function captureScreenshot(
     return captureFullPage(activeWebContents, savePath, format, quality);
   }
 
-  let image;
-  if (target === 'window') {
-    image = await mainWindow.capturePage();
-  } else {
-    // target === 'tab'
-    if (!activeWebContents) throw new Error('No active tab to capture.');
-    image = await activeWebContents.capturePage();
+  if (!activeWebContents && target === 'tab') throw new Error('No active tab to capture.');
+
+  const MAX_ATTEMPTS = 6;
+  const BACKOFF = [100, 300, 600, 1000, 2000, 3000];
+
+  let image: Electron.NativeImage | undefined;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    try {
+      if (target === 'window') {
+        image = await mainWindow.capturePage();
+      } else {
+        image = await activeWebContents!.capturePage();
+      }
+      const { width, height } = image.getSize();
+      if (width > 0 && height > 0) break;
+      // 0×0 — page not painted yet, retry
+      image = undefined;
+      await sleep(BACKOFF[attempt]);
+    } catch {
+      await sleep(BACKOFF[attempt]);
+    }
   }
 
-  // BUG-A06: Detect 0×0 captures (e.g. when a print/system dialog is blocking rendering)
+  // Final attempt if all retries yielded 0×0
+  if (!image || image.getSize().width === 0) {
+    await sleep(5000);
+    image = target === 'window'
+      ? await mainWindow.capturePage()
+      : await activeWebContents!.capturePage();
+  }
+
   const { width, height } = image.getSize();
-  if (width === 0 || height === 0) {
-    throw new Error('Cannot capture screenshot — a dialog may be blocking the page (captured 0×0 image)');
-  }
-
   const buf = format === 'jpeg' ? image.toJPEG(quality) : image.toPNG();
   fs.writeFileSync(savePath, buf);
 
