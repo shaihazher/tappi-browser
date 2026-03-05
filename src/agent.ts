@@ -391,6 +391,22 @@ function hydrateSessionFromConversationIfNeeded(sessionId: string, conversationI
 
 // Phase 9.12: Removed isReportDeliverableRequest and hasReportArtifacts — no forced retry loops.
 
+/**
+ * Format tool call arguments into a terse one-line summary for playbook generation.
+ * Truncates large values to avoid bloating the playbook LLM context.
+ */
+function formatToolCallArgs(toolName: string, args: Record<string, any>): string {
+  const MAX_VAL = 120, MAX_TOTAL = 300;
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(args)) {
+    const str = typeof value === 'string' ? value : JSON.stringify(value);
+    if (str.length > 500) { parts.push(`${key}: <${str.length} chars>`); }
+    else { parts.push(`${key}: ${str.length > MAX_VAL ? str.slice(0, MAX_VAL) + '...' : str}`); }
+  }
+  const full = `🔨 ${toolName} → ${parts.join(', ')}`;
+  return full.length > MAX_TOTAL ? full.slice(0, MAX_TOTAL) + '...' : full;
+}
+
 export async function runAgent(opts: AgentRunOptions): Promise<void> {
   const {
     userMessage,
@@ -650,6 +666,8 @@ Timezone: ${tz}
     let fullResponse = '';
     // Collect ordered conversation events for persistence (Phase 9.1: rich conversation history)
     const conversationEvents: Array<{ role: string; content: string }> = [];
+    // Capture user intent for playbook generation
+    conversationEvents.push({ role: 'user', content: userMessage });
     try {
       // Stream-start fires on first chunk from LLM (no early artificial indicators).
       console.log('[agent] Calling LLM:', llmConfig.provider, llmConfig.model, 'key:', llmConfig.apiKey.slice(0, 4) + '***');
@@ -694,6 +712,8 @@ Timezone: ${tz}
                 args: tc.args ?? {},
               });
             } catch {}
+            // Capture tool call arguments for playbook generation
+            conversationEvents.push({ role: 'tool-call', content: formatToolCallArgs(tc.toolName, tc.args ?? {}) });
           }
 
           for (const tr of toolResults) {

@@ -96,8 +96,11 @@ export function listPlaybooks(): DomainPlaybook[] {
 // ─── LLM Prompt ─────────────────────────────────────────────────────────────────
 
 const PLAYBOOK_UPDATE_PROMPT = `You are a domain knowledge curator. You receive:
-1. Domains visited during a browsing session, with existing playbooks (if any)
-2. The full session log (tool results + agent's final summary)
+1. The user's original intent (what they asked the agent to do)
+2. Domains visited during a browsing session, with existing playbooks (if any)
+3. Tool calls the agent made (actions + arguments)
+4. Tool results (what happened after each action)
+5. The agent's final summary
 
 Your job: extract STRUCTURAL DOMAIN KNOWLEDGE from the session — information that
 would help a browser automation agent work effectively on this domain in future sessions.
@@ -107,6 +110,11 @@ TRACE ERROR→CORRECTION PATTERNS:
 - When the agent clicked an element that didn't work, then found the right approach — record the RIGHT approach
 - When the agent hit a blocker (dialog, rate limit, auth wall), then found a workaround — record the WORKAROUND
 - Skip all failed attempts. Only capture what ACTUALLY WORKED.
+
+USE USER INTENT + TOOL ARGUMENTS for richer pattern extraction:
+- User intent reveals WHAT the user was trying to accomplish — use this to frame domain knowledge
+- Tool call arguments show exact URLs, selectors, text typed — use these for URL patterns and navigation sequences
+- Tool results confirm what worked vs. failed — combine with arguments for error→correction traces
 
 WHAT TO CAPTURE (these are the ONLY valid playbook entries):
 - URL patterns: correct paths, query params, API endpoints (use {placeholder} for variable parts)
@@ -183,18 +191,36 @@ export async function updatePlaybooksFromSession(
       : `Domain: ${d}\n(no existing playbook)`;
   }).join('\n\n');
 
-  const relevantEvents = conversationEvents
+  // Extract user intent (first user message only — the task description)
+  const userIntent = conversationEvents
+    .filter(e => e.role === 'user')
+    .map(e => e.content)
+    .slice(0, 1).join('').slice(0, 2_000);
+
+  // Extract tool call arguments (terse summaries of what the agent did)
+  const toolCalls = conversationEvents
+    .filter(e => e.role === 'tool-call')
+    .map(e => e.content)
+    .join('\n').slice(0, 10_000);
+
+  // Extract tool results (existing behavior)
+  const toolResults = conversationEvents
     .filter(e => e.role === 'tool')
     .map(e => e.content)
-    .join('\n\n')
-    .slice(0, 30_000);
+    .join('\n\n').slice(0, 20_000);
 
   const userContent = [
+    'USER INTENT:',
+    userIntent || '(no user message captured)',
+    '',
     'DOMAINS VISITED:',
     domainSection,
     '',
-    'SESSION LOG (tool results):',
-    relevantEvents,
+    'TOOL CALLS (what the agent did):',
+    toolCalls || '(no tool calls captured)',
+    '',
+    'TOOL RESULTS (what happened):',
+    toolResults || '(no tool results)',
     '',
     'AGENT SUMMARY:',
     agentResponse.slice(0, 5_000) || '(no summary)',

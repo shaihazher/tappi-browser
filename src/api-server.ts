@@ -122,6 +122,7 @@ interface ApiPlaybookSession {
   playbooksInjected: Set<string>;
   domainToolCounts: Map<string, number>;
   lastNavigatedDomain: string | null;
+  toolCallLog: Array<{ role: string; content: string }>;
 }
 
 let _activePlaybookSession: ApiPlaybookSession | null = null;
@@ -133,15 +134,17 @@ export function resetApiPlaybookSession(): void {
     playbooksInjected: new Set(),
     domainToolCounts: new Map(),
     lastNavigatedDomain: null,
+    toolCallLog: [],
   };
 }
 
 /** Get the current session's tracking data for updatePlaybooksFromSession. */
-export function getApiPlaybookSession(): { domainsVisited: Set<string>; domainToolCounts: Map<string, number> } | null {
+export function getApiPlaybookSession(): { domainsVisited: Set<string>; domainToolCounts: Map<string, number>; toolCallLog: Array<{ role: string; content: string }> } | null {
   if (!_activePlaybookSession) return null;
   return {
     domainsVisited: _activePlaybookSession.domainsVisited,
     domainToolCounts: _activePlaybookSession.domainToolCounts,
+    toolCallLog: _activePlaybookSession.toolCallLog,
   };
 }
 
@@ -172,14 +175,29 @@ function _apiTrackNavigation(url: string): void {
   }
 }
 
+/** Format tool call arguments into a terse one-line summary for playbook generation. */
+function _formatApiToolCallArgs(toolName: string, args: Record<string, any>): string {
+  const MAX_VAL = 120, MAX_TOTAL = 300;
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(args)) {
+    const str = typeof value === 'string' ? value : JSON.stringify(value);
+    if (str.length > 500) { parts.push(`${key}: <${str.length} chars>`); }
+    else { parts.push(`${key}: ${str.length > MAX_VAL ? str.slice(0, MAX_VAL) + '...' : str}`); }
+  }
+  const full = `🔨 ${toolName} → ${parts.join(', ')}`;
+  return full.length > MAX_TOTAL ? full.slice(0, MAX_TOTAL) + '...' : full;
+}
+
 /** Track a non-navigate tool call against the last navigated domain. */
-function _apiTrackToolCall(): void {
+function _apiTrackToolCall(toolName: string, args: Record<string, any> = {}): void {
   if (!_activePlaybookSession || !_activePlaybookSession.lastNavigatedDomain) return;
   const domain = _activePlaybookSession.lastNavigatedDomain;
   _activePlaybookSession.domainToolCounts.set(
     domain,
     (_activePlaybookSession.domainToolCounts.get(domain) || 0) + 1,
   );
+  // Log tool call for playbook generation
+  _activePlaybookSession.toolCallLog.push({ role: 'tool-call', content: _formatApiToolCallArgs(toolName, args) });
 }
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
@@ -344,6 +362,9 @@ async function handleRequest(
     // Domain playbook: track + inject if created with a URL
     if (body.url) {
       _apiTrackNavigation(body.url);
+      if (_activePlaybookSession) {
+        _activePlaybookSession.toolCallLog.push({ role: 'tool-call', content: `🔨 navigate → url: ${body.url}` });
+      }
       const pb = _apiInjectPlaybookIfNeeded(body.url);
       if (pb) { response.playbook = pb.playbook; response.playbookDomain = pb.domain; }
     }
@@ -382,6 +403,9 @@ async function handleRequest(
       tabManager.navigate(m.id, body.url);
       // Domain playbook: track navigation and inject playbook if available
       _apiTrackNavigation(body.url);
+      if (_activePlaybookSession) {
+        _activePlaybookSession.toolCallLog.push({ role: 'tool-call', content: `🔨 navigate → url: ${body.url}` });
+      }
       const pb = _apiInjectPlaybookIfNeeded(body.url);
       const response: any = { success: true };
       if (pb) { response.playbook = pb.playbook; response.playbookDomain = pb.domain; }
@@ -419,7 +443,7 @@ async function handleRequest(
       if (body.index === undefined) return err(res, 400, 'index required');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
-      _apiTrackToolCall();
+      _apiTrackToolCall('click', { index: body.index });
       const urlBefore = wc.getURL?.() || '';
       const result = await pageTools.pageClick(wc, body.index);
       // Check if click caused cross-domain navigation
@@ -446,7 +470,7 @@ async function handleRequest(
       if (body.index === undefined || body.text === undefined) return err(res, 400, 'index and text required');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
-      _apiTrackToolCall();
+      _apiTrackToolCall('type', { index: body.index, text: body.text });
       const result = await pageTools.pageType(wc, body.index, body.text);
       return json(res, 200, { result });
     }
@@ -460,7 +484,7 @@ async function handleRequest(
       if (body.index === undefined || body.text === undefined) return err(res, 400, 'index and text required');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
-      _apiTrackToolCall();
+      _apiTrackToolCall('paste', { index: body.index, text: body.text });
       const result = await pageTools.pagePaste(wc, body.index, body.text);
       return json(res, 200, { result });
     }
@@ -513,7 +537,7 @@ async function handleRequest(
       if (body.x === undefined || body.y === undefined) return err(res, 400, 'x and y required');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
-      _apiTrackToolCall();
+      _apiTrackToolCall('click-xy', { x: body.x, y: body.y });
       const result = await pageTools.pageClickXY(wc, body.x, body.y);
       return json(res, 200, { result });
     }
@@ -527,7 +551,7 @@ async function handleRequest(
       if (body.x === undefined || body.y === undefined) return err(res, 400, 'x and y required');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
-      _apiTrackToolCall();
+      _apiTrackToolCall('hover-xy', { x: body.x, y: body.y });
       const result = await pageTools.pageHoverXY(wc, body.x, body.y);
       return json(res, 200, { result });
     }
@@ -541,7 +565,7 @@ async function handleRequest(
       if (!body.direction) return err(res, 400, 'direction required (up|down|top|bottom)');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
-      _apiTrackToolCall();
+      _apiTrackToolCall('scroll', { direction: body.direction, amount: body.amount });
       const result = await pageTools.pageScroll(wc, body.direction, body.amount);
       return json(res, 200, { result });
     }
@@ -555,7 +579,7 @@ async function handleRequest(
       if (!body.keys) return err(res, 400, 'keys required');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
-      _apiTrackToolCall();
+      _apiTrackToolCall('keys', { keys: body.keys });
       const urlBefore = wc.getURL?.() || '';
       const result = await pageTools.pageKeys(wc, body.keys);
       // Check if keys (e.g. Enter) caused cross-domain navigation
@@ -582,7 +606,7 @@ async function handleRequest(
       if (!body.js) return err(res, 400, 'js required');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
-      _apiTrackToolCall();
+      _apiTrackToolCall('eval', { js: body.js });
       const result = await pageTools.pageEval(wc, body.js);
       return json(res, 200, { result });
     }

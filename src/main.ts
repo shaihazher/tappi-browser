@@ -1451,7 +1451,11 @@ function createWindow() {
           if (pbSession && pbSession.domainsVisited.size > 0) {
             const { updatePlaybooksFromSession } = await import('./domain-playbook');
             console.log(`[main] CC playbook update for: ${[...pbSession.domainsVisited].join(', ')}`);
-            const syntheticEvents = [{ role: 'tool' as const, content: ccResponseBuffer || '' }];
+            const syntheticEvents: Array<{ role: string; content: string }> = [
+              { role: 'user', content: message },
+              ...pbSession.toolCallLog,
+              { role: 'tool', content: ccResponseBuffer || '' },
+            ];
             const pbResult = await updatePlaybooksFromSession(
               pbSession.domainsVisited,
               pbSession.domainToolCounts,
