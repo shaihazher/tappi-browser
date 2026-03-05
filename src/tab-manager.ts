@@ -340,6 +340,23 @@ export class TabManager {
       return { action: 'deny' };
     });
 
+    // Intercept non-standard URL schemes before Chromium tries to load them
+    // (prevents SIGSEGV crashes from unknown scheme navigation)
+    wc.on('will-frame-navigate', (e: any) => {
+      const url: string = e.url;
+      if (/^(https?|file|chrome-extension|about|data|blob|javascript):\/?\/?/i.test(url)) return;
+      e.preventDefault();
+      console.log('[tab] Delegating custom scheme to OS:', url);
+      const { spawn } = require('child_process');
+      if (process.platform === 'darwin') {
+        spawn('open', [url], { stdio: 'ignore', detached: true }).unref();
+      } else if (process.platform === 'win32') {
+        spawn('cmd', ['/c', 'start', '', url], { stdio: 'ignore', detached: true }).unref();
+      } else {
+        spawn('xdg-open', [url], { stdio: 'ignore', detached: true }).unref();
+      }
+    });
+
     wc.on('did-start-navigation', (_e: any, url: string, isInPlace: boolean, isMainFrame: boolean) => {
       // Only log main frame navigations to reduce noise from SPA routing/redirects
       if (isMainFrame && !isInPlace) {
