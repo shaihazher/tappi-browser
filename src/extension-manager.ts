@@ -321,10 +321,12 @@ function patchServiceWorkerPolyfill(extensionDir: string): void {
     // Always write fresh polyfill with current bridge port/token
     fs.writeFileSync(polyfillPath, buildServiceWorkerPolyfill(bridge.port, bridge.token));
 
-    // Always write/refresh wrapper entry (ensures broken imports are repaired)
+    // Always write/refresh wrapper entry (ensures broken imports are repaired).
+    // Include bridge port so Chromium detects a byte change and re-fetches
+    // imported scripts instead of serving cached versions from a prior session.
     fs.writeFileSync(
       entryPath,
-      `import './${polyfillFile}';\nimport './${originalSW}';\n`,
+      `// bridge=${bridge.port}\nimport './${polyfillFile}';\nimport './${originalSW}';\n`,
     );
 
     // Update manifest if needed
