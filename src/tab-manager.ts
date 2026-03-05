@@ -5,6 +5,22 @@ import * as fs from 'fs';
 import { addHistory, addBookmark, removeBookmark as removeBookmarkFromDb } from './database';
 import { profileManager } from './profile-manager';
 
+// Regex matching schemes safe to load in-browser; anything else is delegated to OS
+const STANDARD_SCHEME_RE = /^(https?|file|chrome-extension|about|data|blob|javascript):\/?\/?/i;
+
+/** Hand a non-standard URL scheme to the OS (avoids Chromium SIGSEGV on unknown schemes). */
+function openUrlViaOS(url: string): void {
+  console.log('[tab] Delegating custom scheme to OS:', url);
+  const { spawn } = require('child_process');
+  if (process.platform === 'darwin') {
+    spawn('open', [url], { stdio: 'ignore', detached: true }).unref();
+  } else if (process.platform === 'win32') {
+    spawn('cmd', ['/c', 'start', '', url], { stdio: 'ignore', detached: true }).unref();
+  } else {
+    spawn('xdg-open', [url], { stdio: 'ignore', detached: true }).unref();
+  }
+}
+
 export interface Tab {
   id: string;
   view: WebContentsView;
@@ -253,7 +269,7 @@ export class TabManager {
 
   createTab(url?: string, partition?: string, opts?: { background?: boolean }): string {
     const id = randomUUID();
-    const finalUrl = url || `file://${this.newtabPath}`;
+    let finalUrl = url || `file://${this.newtabPath}`;
     const webPrefs: Electron.WebPreferences = {
       contextIsolation: true,
       sandbox: true,
@@ -316,6 +332,12 @@ export class TabManager {
     });
 
     wc.setWindowOpenHandler(({ url: openUrl }) => {
+      // Delegate custom scheme URLs to OS — loadURL crashes Chromium (SIGSEGV)
+      if (openUrl && !STANDARD_SCHEME_RE.test(openUrl)) {
+        openUrlViaOS(openUrl);
+        return { action: 'deny' };
+      }
+
       // F8: Rate-limit — max 3 new tabs per second per source webContents
       const wcId = wc.id;
       const now = Date.now();
@@ -341,20 +363,12 @@ export class TabManager {
     });
 
     // Intercept non-standard URL schemes before Chromium tries to load them
-    // (prevents SIGSEGV crashes from unknown scheme navigation)
+    // (safety net for user/page-initiated navigations — loadURL bypasses this)
     wc.on('will-frame-navigate', (e: any) => {
       const url: string = e.url;
-      if (/^(https?|file|chrome-extension|about|data|blob|javascript):\/?\/?/i.test(url)) return;
+      if (STANDARD_SCHEME_RE.test(url)) return;
       e.preventDefault();
-      console.log('[tab] Delegating custom scheme to OS:', url);
-      const { spawn } = require('child_process');
-      if (process.platform === 'darwin') {
-        spawn('open', [url], { stdio: 'ignore', detached: true }).unref();
-      } else if (process.platform === 'win32') {
-        spawn('cmd', ['/c', 'start', '', url], { stdio: 'ignore', detached: true }).unref();
-      } else {
-        spawn('xdg-open', [url], { stdio: 'ignore', detached: true }).unref();
-      }
+      openUrlViaOS(url);
     });
 
     wc.on('did-start-navigation', (_e: any, url: string, isInPlace: boolean, isMainFrame: boolean) => {
@@ -440,6 +454,12 @@ export class TabManager {
       this.onWebContentsReady(wc);
     }
 
+    // Guard: never pass a custom scheme to loadURL — it bypasses all navigation
+    // events and crashes Chromium with SIGSEGV on unknown schemes.
+    if (!STANDARD_SCHEME_RE.test(finalUrl)) {
+      openUrlViaOS(finalUrl);
+      finalUrl = `file://${this.newtabPath}`;
+    }
     wc.loadURL(finalUrl);
     this.window.contentView.addChildView(view);
     if (opts?.background) {

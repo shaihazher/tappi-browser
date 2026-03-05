@@ -4014,23 +4014,41 @@ app.on('session-created', (ses) => {
   }
 
 
-  // Relax CSP for extension pages to allow localhost connections (native messaging polyfill)
+  // Combined onHeadersReceived handler:
+  // 1) Intercept HTTP redirects (3xx) to custom URL schemes — prevents SIGSEGV
+  // 2) Relax CSP for extension pages to allow localhost connections (native messaging polyfill)
   ses.webRequest.onHeadersReceived(
-    { urls: ['chrome-extension://*/*'] },
     (details, callback) => {
       const headers = details.responseHeaders || {};
-      const cspKey = Object.keys(headers).find(k => k.toLowerCase() === 'content-security-policy');
-      if (cspKey && headers[cspKey]) {
-        headers[cspKey] = headers[cspKey].map((val: string) => {
-          if (val.includes('connect-src')) {
-            return val.replace(
-              /connect-src\s+/,
-              'connect-src ws://127.0.0.1:* http://127.0.0.1:* '
-            );
-          }
-          return val;
-        });
+
+      // (1) Catch HTTP redirects to non-standard schemes before Chromium follows them
+      if (details.statusCode >= 300 && details.statusCode < 400) {
+        const locKey = Object.keys(headers).find(k => k.toLowerCase() === 'location');
+        const location = locKey && headers[locKey]?.[0];
+        if (location && !/^(https?|file|chrome-extension|about|data|blob|javascript):\/?\/?/i.test(location)) {
+          console.log('[main] Intercepting redirect to custom scheme:', location);
+          openExternalUrl(location);
+          callback({ cancel: true });
+          return;
+        }
       }
+
+      // (2) Relax CSP for extension pages
+      if (details.url.startsWith('chrome-extension://')) {
+        const cspKey = Object.keys(headers).find(k => k.toLowerCase() === 'content-security-policy');
+        if (cspKey && headers[cspKey]) {
+          headers[cspKey] = headers[cspKey].map((val: string) => {
+            if (val.includes('connect-src')) {
+              return val.replace(
+                /connect-src\s+/,
+                'connect-src ws://127.0.0.1:* http://127.0.0.1:* '
+              );
+            }
+            return val;
+          });
+        }
+      }
+
       callback({ responseHeaders: headers });
     }
   );
@@ -4041,6 +4059,15 @@ app.on('session-created', (ses) => {
 // native app launchers, etc.) and hand them off to the OS.
 // Uses macOS `open` command instead of shell.openExternal to avoid SIGSEGV
 // crashes with custom URL schemes in some Electron/macOS configurations.
+const STANDARD_SCHEME_RE = /^(https?|file|chrome-extension|about|data|blob|javascript):\/?\/?/i;
+
+// IPC from content-preload: custom scheme link clicks intercepted at DOM level
+ipcMain.on('open-custom-scheme', (_event, url: unknown) => {
+  if (typeof url !== 'string' || url.length > 2048) return;
+  if (STANDARD_SCHEME_RE.test(url)) return;
+  openExternalUrl(url);
+});
+
 function openExternalUrl(url: string): void {
   console.log('[main] Opening external URL:', url);
   const { spawn } = require('child_process') as typeof import('child_process');
