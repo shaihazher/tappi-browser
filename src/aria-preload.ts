@@ -51,6 +51,9 @@ contextBridge.exposeInMainWorld('aria', {
   deleteConversation: (conversationId: string) =>
     ipcRenderer.invoke('aria:delete-conversation', conversationId),
 
+  exportConversationPdf: (conversationId: string) =>
+    ipcRenderer.invoke('aria:export-conversation-pdf', conversationId),
+
   renameConversation: (conversationId: string, title: string) =>
     ipcRenderer.invoke('aria:rename-conversation', conversationId, title),
 

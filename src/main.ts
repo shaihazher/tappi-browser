@@ -1765,6 +1765,168 @@ function createWindow() {
     return activeConversationId;
   });
 
+  // ─── Export Conversation as PDF ─────────────────────────────────────────────
+
+  /**
+   * Extract display-friendly text from a stored message content string.
+   * User messages may be JSON `{ text, attachments }` or plain strings.
+   * Assistant messages are returned as-is (markdown).
+   * Tool messages are included as tool output. Thinking/download roles are skipped.
+   */
+  function extractDisplayContent(role: string, content: string): string | null {
+    if (role === 'thinking' || role === 'download') return null;
+    if (role === 'user') {
+      try {
+        const parsed = JSON.parse(content);
+        if (parsed && typeof parsed === 'object' && typeof parsed.text === 'string') {
+          let result = parsed.text;
+          if (Array.isArray(parsed.attachments) && parsed.attachments.length > 0) {
+            const names = parsed.attachments.map((a: any) => a.name || 'file').join(', ');
+            result += `\n\n[Attachments: ${names}]`;
+          }
+          return result;
+        }
+      } catch { /* not JSON, treat as plain string */ }
+      return content;
+    }
+    if (role === 'tool') {
+      // Skip download cards, include other tool output
+      if (content.startsWith('{"type":"download"') || content.startsWith('{"card":"download"')) return null;
+      return content;
+    }
+    return content; // assistant
+  }
+
+  function buildConversationHtml(
+    title: string,
+    createdAt: string,
+    messages: Array<{ role: string; content: string; timestamp?: number }>
+  ): string {
+    const { marked } = require('marked') as typeof import('marked');
+
+    const escapeHtml = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+    const messageCards = messages.map(msg => {
+      const displayContent = extractDisplayContent(msg.role, msg.content);
+      if (displayContent === null) return '';
+
+      const roleLabel = msg.role === 'user' ? 'You' : msg.role === 'assistant' ? 'Aria' : 'Tool';
+      const borderColor = msg.role === 'user' ? '#3b82f6' : msg.role === 'assistant' ? '#e94560' : '#6b7280';
+      const ts = msg.timestamp ? new Date(msg.timestamp).toLocaleString() : '';
+
+      let bodyHtml: string;
+      if (msg.role === 'assistant') {
+        try {
+          bodyHtml = (marked as any).parse(displayContent);
+        } catch {
+          bodyHtml = `<pre>${escapeHtml(displayContent)}</pre>`;
+        }
+      } else if (msg.role === 'tool') {
+        bodyHtml = `<pre class="tool-output">${escapeHtml(displayContent)}</pre>`;
+      } else {
+        bodyHtml = `<p>${escapeHtml(displayContent).replace(/\n/g, '<br>')}</p>`;
+      }
+
+      return `
+        <div class="message-card" style="border-left: 4px solid ${borderColor};">
+          <div class="message-header">
+            <span class="role-label">${roleLabel}</span>
+            <span class="timestamp">${ts}</span>
+          </div>
+          <div class="message-body">${bodyHtml}</div>
+        </div>`;
+    }).filter(Boolean).join('\n');
+
+    const dateStr = createdAt ? new Date(createdAt).toLocaleString() : '';
+    const msgCount = messages.filter(m => extractDisplayContent(m.role, m.content) !== null).length;
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>${escapeHtml(title)}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 24px; line-height: 1.6; color: #1a1a2e; background: #fff; }
+  .header { margin-bottom: 32px; border-bottom: 2px solid #e94560; padding-bottom: 16px; }
+  .header h1 { margin: 0 0 8px 0; font-size: 1.6em; color: #0f3460; }
+  .header .meta { color: #666; font-size: 0.9em; }
+  .message-card { margin: 16px 0; padding: 12px 16px; background: #fafafa; border-radius: 6px; break-inside: avoid; }
+  .message-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .role-label { font-weight: 600; font-size: 0.85em; text-transform: uppercase; color: #444; }
+  .timestamp { font-size: 0.8em; color: #999; }
+  .message-body { font-size: 0.95em; }
+  .message-body p { margin: 0.4em 0; }
+  pre { background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 6px; padding: 12px; overflow-x: auto; font-size: 0.85em; white-space: pre-wrap; word-wrap: break-word; }
+  code { background: #f0f0f0; padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }
+  pre code { background: none; padding: 0; }
+  .tool-output { background: #f9f9f9; border-left: 3px solid #6b7280; color: #555; font-size: 0.8em; max-height: 300px; overflow-y: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+  th { background: #f0f0f0; }
+  blockquote { border-left: 4px solid #e94560; margin: 0; padding: 0 16px; color: #555; }
+  .footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #ddd; text-align: center; font-size: 0.8em; color: #999; }
+  @media print { .message-card { break-inside: avoid; } }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>${escapeHtml(title)}</h1>
+    <div class="meta">${dateStr} &middot; ${msgCount} messages</div>
+  </div>
+  ${messageCards}
+  <div class="footer">Exported from Tappi Browser</div>
+</body>
+</html>`;
+  }
+
+  ipcMain.handle('aria:export-conversation-pdf', async (_e, conversationId: string) => {
+    try {
+      const conv = getConversation(conversationId);
+      if (!conv) return { success: false, error: 'Conversation not found' };
+
+      const msgs = getConversationMessages(conversationId, 0, 10000);
+      if (!msgs || msgs.length === 0) return { success: false, error: 'No messages to export' };
+
+      const htmlContent = buildConversationHtml(conv.title || 'Untitled', conv.created_at, msgs);
+
+      // Create hidden BrowserWindow to render PDF
+      const pdfWin = new BrowserWindow({ show: false, webPreferences: { sandbox: false } });
+
+      // For large HTML, write to temp file; otherwise use data URL
+      if (htmlContent.length > 1_000_000) {
+        const tmpPath = path.join(os.tmpdir(), `tappi-conv-${Date.now()}.html`);
+        fs.writeFileSync(tmpPath, htmlContent, 'utf-8');
+        await pdfWin.loadFile(tmpPath);
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      } else {
+        await pdfWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlContent));
+      }
+
+      const pdfData = await pdfWin.webContents.printToPDF({
+        printBackground: true,
+        pageSize: 'A4',
+        marginsType: 1,
+      } as any);
+      pdfWin.destroy();
+
+      // Build filename: aria-{sanitized-title}-{timestamp}.pdf
+      const sanitizedTitle = (conv.title || 'untitled')
+        .replace(/[^a-zA-Z0-9]+/g, '_')
+        .replace(/^_|_$/g, '')
+        .slice(0, 50);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filename = `aria-${sanitizedTitle}-${timestamp}.pdf`;
+      const outPath = path.join(os.homedir(), 'Downloads', filename);
+
+      fs.writeFileSync(outPath, pdfData);
+      return { success: true, path: outPath };
+    } catch (e: any) {
+      console.error('[aria] export PDF error:', e);
+      return { success: false, error: e.message || 'PDF export failed' };
+    }
+  });
+
   // ─── Claude Code Provider IPC ────────────────────────────────────────────────
 
   ipcMain.handle('claude-code:check-installed', async (_e, authMethod?: 'api-key' | 'oauth' | 'bedrock') => {

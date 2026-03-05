@@ -1572,6 +1572,7 @@ function showConvContextMenu(x, y, conv) {
     <div class="conv-ctx-item" data-action="rename">✏️ Rename</div>
     ${attachRow}
     ${detachRow}
+    <div class="conv-ctx-item" data-action="export-pdf">📄 Export as PDF</div>
     <div class="conv-ctx-item danger" data-action="delete">🗑 Delete</div>
   `;
   menu.style.left = x + 'px';
@@ -1597,6 +1598,7 @@ function showConvContextMenu(x, y, conv) {
     if (action === 'rename') await renameConversation(conv);
     if (action === 'delete') await deleteConversation(conv);
     if (action === 'detach') await detachFromProject(conv);
+    if (action === 'export-pdf') await exportConversationPdf(conv);
   });
 
   setTimeout(() => document.addEventListener('click', closeContextMenu, { once: true }), 0);
@@ -1671,6 +1673,20 @@ async function detachFromProject(conv) {
     console.warn('[aria] detachFromProject: no unlink IPC implemented yet');
   } catch (e) {
     console.error('[aria] detachFromProject error:', e);
+  }
+}
+
+async function exportConversationPdf(conv) {
+  const statusEl = appendMessage('system', '📄 Exporting conversation as PDF...');
+  try {
+    const result = await window.aria.exportConversationPdf(conv.id);
+    if (result.success) {
+      statusEl.querySelector('.bubble').textContent = `✅ PDF saved to ${result.path}`;
+    } else {
+      statusEl.querySelector('.bubble').textContent = `❌ Export failed: ${result.error}`;
+    }
+  } catch (e) {
+    statusEl.querySelector('.bubble').textContent = `❌ Export failed: ${e.message || e}`;
   }
 }
 
