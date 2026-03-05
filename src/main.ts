@@ -4050,7 +4050,7 @@ app.on('session-created', (ses) => {
       if (details.statusCode >= 300 && details.statusCode < 400) {
         const locKey = Object.keys(headers).find(k => k.toLowerCase() === 'location');
         const location = locKey && headers[locKey]?.[0];
-        if (location && !/^(https?|file|chrome-extension|about|data|blob|javascript):\/?\/?/i.test(location)) {
+        if (location && location.includes('://') && !/^(https?|file|chrome-extension|about|data|blob|javascript):\/?\/?/i.test(location)) {
           console.log('[main] Intercepting redirect to custom scheme:', location);
           openExternalUrl(location);
           callback({ cancel: true });
