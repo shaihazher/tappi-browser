@@ -4030,16 +4030,26 @@ app.on('session-created', (ses) => {
 });
 
 // ─── Delegate custom URL schemes to the OS ───────────────────────────────────
+// Intercept navigation to non-standard schemes (enterprise device registration,
+// native app launchers, etc.) and hand them off to the OS via shell.openExternal.
 app.on('web-contents-created', (_ev, wc) => {
+  // will-navigate covers link clicks and JS-initiated navigation
   wc.on('will-navigate', (event, url) => {
-    if (url.startsWith('http://') || url.startsWith('https://') ||
-        url.startsWith('file://') || url.startsWith('chrome-extension://')) {
-      return; // normal navigation
-    }
-    // Custom scheme — hand off to the OS
+    if (/^(https?|file|chrome-extension):\/\//i.test(url)) return;
     event.preventDefault();
+    console.log('[main] Delegating custom scheme to OS:', url);
     shell.openExternal(url).catch(e =>
-      console.warn(`[main] Failed to open external URL ${url}:`, e)
+      console.warn('[main] Failed to open external URL:', e)
+    );
+  });
+
+  // did-start-navigation catches server redirects that will-navigate misses
+  wc.on('did-start-navigation', (_e: any, url: string) => {
+    if (/^(https?|file|chrome-extension|about|data):\/?\/?/i.test(url)) return;
+    console.log('[main] Intercepting custom scheme redirect:', url);
+    wc.stop();
+    shell.openExternal(url).catch(e =>
+      console.warn('[main] Failed to open external URL:', e)
     );
   });
 });
