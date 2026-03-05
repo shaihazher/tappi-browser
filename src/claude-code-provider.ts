@@ -835,6 +835,7 @@ export async function scriptifyViaCli(
   transcript: string,
   systemPrompt: string,
   auth?: CliAuthConfig,
+  additionalInstructions?: string,
 ): Promise<{ data: any } | { error: string }> {
   if (!(await isCliInstalled())) {
     return { error: 'Claude Code CLI is not installed.' };
@@ -858,7 +859,10 @@ export async function scriptifyViaCli(
       env,
     });
 
-    const fullPrompt = `${systemPrompt}\n\n---\n\nAnalyze this conversation transcript. Pay special attention to any errors, failures, or retries — the script you generate must incorporate the fixes and corrections discovered during the conversation, not reproduce the original bugs.\n\nTranscript:\n\n${transcript}`;
+    const instructionsBlock = additionalInstructions
+      ? `\nAdditional instructions from the user:\n${additionalInstructions}\n`
+      : '';
+    const fullPrompt = `${systemPrompt}\n\n---\n\nAnalyze this conversation transcript. Pay special attention to any errors, failures, or retries — the script you generate must incorporate the fixes and corrections discovered during the conversation, not reproduce the original bugs.${instructionsBlock}\n\nTranscript:\n\n${transcript}`;
     proc.stdin?.write(fullPrompt);
     proc.stdin?.end();
 

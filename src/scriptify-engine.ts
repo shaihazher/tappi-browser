@@ -100,13 +100,23 @@ function buildScriptifyTranscript(
   return annotated.map(r => `### ${r.role.toUpperCase()}\n${r.content}`).join('\n\n---\n\n');
 }
 
-const SCRIPTIFY_USER_PREAMBLE = 'Analyze this conversation transcript. Pay special attention to any errors, failures, or retries — the script you generate must incorporate the fixes and corrections discovered during the conversation, not reproduce the original bugs.\n\nTranscript:\n\n';
+const SCRIPTIFY_ANALYSIS_PREFIX = 'Analyze this conversation transcript. Pay special attention to any errors, failures, or retries — the script you generate must incorporate the fixes and corrections discovered during the conversation, not reproduce the original bugs.';
+
+function buildScriptifyUserMessage(transcript: string, additionalInstructions?: string): string {
+  const parts = [SCRIPTIFY_ANALYSIS_PREFIX];
+  if (additionalInstructions) {
+    parts.push(`\nAdditional instructions from the user:\n${additionalInstructions}`);
+  }
+  parts.push(`\n\nTranscript:\n\n${transcript}`);
+  return parts.join('');
+}
 
 // ─── Scriptify: Conversation → Script (Vercel AI SDK path) ───
 
 export async function scriptifyConversation(
   conversationId: string,
   llmConfig: LLMConfig,
+  additionalInstructions?: string,
 ): Promise<{ success: boolean; script?: { id: string; name: string; description: string }; error?: string }> {
   try {
     // Load conversation messages
@@ -130,7 +140,7 @@ export async function scriptifyConversation(
       providerOptions,
       messages: [
         { role: 'system', content: SCRIPTIFY_SYSTEM_PROMPT },
-        { role: 'user', content: `${SCRIPTIFY_USER_PREAMBLE}${transcript}` },
+        { role: 'user', content: buildScriptifyUserMessage(transcript, additionalInstructions) },
       ],
       maxOutputTokens: 4096,
     });
@@ -181,6 +191,7 @@ export async function scriptifyConversation(
 export async function scriptifyConversationViaCli(
   conversationId: string,
   auth?: CliAuthConfig,
+  additionalInstructions?: string,
 ): Promise<{ success: boolean; script?: { id: string; name: string; description: string }; error?: string }> {
   try {
     // Load conversation messages
@@ -216,7 +227,7 @@ export async function scriptifyConversationViaCli(
     }
 
     // Call CLI
-    const result = await scriptifyViaCli(transcript, SCRIPTIFY_SYSTEM_PROMPT, auth);
+    const result = await scriptifyViaCli(transcript, SCRIPTIFY_SYSTEM_PROMPT, auth, additionalInstructions);
 
     if ('error' in result) {
       return { success: false, error: result.error };

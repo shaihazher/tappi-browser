@@ -123,6 +123,7 @@ let selectedScriptId = null;
 let scriptInputMode = 'single';
 let scriptBulkRows = [];
 let isScriptifying = false;
+let _scriptifyModal = null;
 
 // Phase 9.13: Model picker state
 let currentModelConfig = {
@@ -1197,6 +1198,72 @@ function showProjectContextMenu(x, y, project) {
   setTimeout(() => document.addEventListener('click', () => {
     if (_projCtxMenu) { _projCtxMenu.remove(); _projCtxMenu = null; }
   }, { once: true }), 0);
+}
+
+// ─── Scriptify instructions modal ─────────────────────────────────────────────
+
+function showScriptifyModal() {
+  return new Promise((resolve) => {
+    if (_scriptifyModal) { _scriptifyModal.remove(); _scriptifyModal = null; }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'scriptify-modal-overlay';
+
+    const card = document.createElement('div');
+    card.className = 'scriptify-modal-card';
+
+    const title = document.createElement('div');
+    title.className = 'scriptify-modal-title';
+    title.textContent = 'Create Script';
+
+    const subtitle = document.createElement('div');
+    subtitle.className = 'scriptify-modal-subtitle';
+    subtitle.textContent = 'Optionally guide the script generation:';
+
+    const textarea = document.createElement('textarea');
+    textarea.className = 'scriptify-modal-textarea';
+    textarea.placeholder = 'e.g. "Focus only on the scraping part" or "Use Selenium instead of Playwright"';
+    textarea.rows = 3;
+
+    const actions = document.createElement('div');
+    actions.className = 'scriptify-modal-actions';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'scriptify-modal-btn-cancel';
+    cancelBtn.textContent = 'Cancel';
+
+    const createBtn = document.createElement('button');
+    createBtn.className = 'scriptify-modal-btn-create';
+    createBtn.textContent = 'Create Script';
+
+    actions.appendChild(cancelBtn);
+    actions.appendChild(createBtn);
+    card.appendChild(title);
+    card.appendChild(subtitle);
+    card.appendChild(textarea);
+    card.appendChild(actions);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    _scriptifyModal = overlay;
+
+    textarea.focus();
+
+    const closeModal = (result) => {
+      if (_scriptifyModal) { _scriptifyModal.remove(); _scriptifyModal = null; }
+      document.removeEventListener('keydown', onKey);
+      resolve(result);
+    };
+
+    const onKey = (e) => {
+      if (e.key === 'Escape') { closeModal(null); }
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { closeModal(textarea.value); }
+    };
+    document.addEventListener('keydown', onKey);
+
+    cancelBtn.addEventListener('click', () => closeModal(null));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(null); });
+    createBtn.addEventListener('click', () => closeModal(textarea.value));
+  });
 }
 
 // ─── Project deletion modal ───────────────────────────────────────────────────
@@ -4025,13 +4092,16 @@ if (ariaScriptifyBtn) {
     e.stopPropagation();
     if (!currentConversationId || isStreaming || isScriptifying) return;
 
+    const instructions = await showScriptifyModal();
+    if (instructions === null) return;
+
     isScriptifying = true;
     ariaScriptifyBtn.disabled = true;
     if (ariaScriptifyBtnIcon) ariaScriptifyBtnIcon.textContent = '⏳';
     if (ariaScriptifyBtnLabel) ariaScriptifyBtnLabel.textContent = 'Generating...';
 
     try {
-      const result = await window.aria.scriptifyConversation(currentConversationId);
+      const result = await window.aria.scriptifyConversation(currentConversationId, instructions || undefined);
       if (result && result.success) {
         // Show success notification in chat
         appendMessage('assistant', `📜 **Script created:** "${escHtml(result.script.name)}"\n\n${escHtml(result.script.description)}\n\nOpen the **Scripts** panel (📂) to view, configure, and run it.`);

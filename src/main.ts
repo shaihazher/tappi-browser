@@ -1597,7 +1597,7 @@ function createWindow() {
   ipcMain.handle('scripts:get', (_e, id: string) => getScript(id));
   ipcMain.handle('scripts:delete', (_e, id: string) => deleteScript(id));
 
-  ipcMain.handle('scripts:scriptify', async (_e, conversationId: string) => {
+  ipcMain.handle('scripts:scriptify', async (_e, conversationId: string, additionalInstructions?: string) => {
     const apiKey = decryptApiKey(currentConfig.llm.apiKey);
     const ccAuth = (currentConfig.llm as any).claudeCodeAuth;
     const isClaudeCodeNoKey = currentConfig.llm.provider === 'claude-code' && (ccAuth === 'oauth' || ccAuth === 'bedrock');
@@ -1607,7 +1607,7 @@ function createWindow() {
 
     // Route to CLI path for Claude Code provider (OAuth/Bedrock — no direct API key)
     if (currentConfig.llm.provider === 'claude-code') {
-      return scriptifyConversationViaCli(conversationId, buildCliAuthConfig());
+      return scriptifyConversationViaCli(conversationId, buildCliAuthConfig(), additionalInstructions);
     }
 
     // All other providers: use Vercel AI SDK
@@ -1617,7 +1617,7 @@ function createWindow() {
       apiKey,
       thinking: currentConfig.llm.thinking,
     };
-    return scriptifyConversation(conversationId, llmConfig);
+    return scriptifyConversation(conversationId, llmConfig, additionalInstructions);
   });
 
   ipcMain.handle('scripts:update', async (_e, scriptId: string, instructions: string) => {

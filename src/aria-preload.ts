@@ -248,8 +248,8 @@ contextBridge.exposeInMainWorld('aria', {
   },
 
   // ─── Scripts (Scriptify) ───
-  scriptifyConversation: (conversationId: string) =>
-    ipcRenderer.invoke('scripts:scriptify', conversationId),
+  scriptifyConversation: (conversationId: string, additionalInstructions?: string) =>
+    ipcRenderer.invoke('scripts:scriptify', conversationId, additionalInstructions),
   listScripts: () =>
     ipcRenderer.invoke('scripts:list'),
   getScript: (scriptId: string) =>
