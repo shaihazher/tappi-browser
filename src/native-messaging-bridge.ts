@@ -737,6 +737,10 @@ if (!self.__tappiNativeMessagingInjected) {
     shimAndDispatch(chrome.runtime.onStartup, {}, [0, 250, 1000]);
   })();
 
+  const BRIDGE_PORT = ${port};
+  const BRIDGE_TOKEN = ${JSON.stringify(token)};
+  const BRIDGE_BASE = 'http://127.0.0.1:' + BRIDGE_PORT;
+
   // ── API stubs / bridges for unsupported chrome.* namespaces ──
   (function() {
     function noopEvent() {
@@ -814,10 +818,6 @@ if (!self.__tappiNativeMessagingInjected) {
       };
     }
   })();
-
-  const BRIDGE_PORT = ${port};
-  const BRIDGE_TOKEN = ${JSON.stringify(token)};
-  const BRIDGE_BASE = 'http://127.0.0.1:' + BRIDGE_PORT;
 
   // Auto-detect extension ID from the service worker runtime
   const EXTENSION_ID = chrome.runtime.id;
