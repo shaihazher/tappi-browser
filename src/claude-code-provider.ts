@@ -90,7 +90,7 @@ function getCliModeArgs(mode: CCMode): string[] {
  * surveys, auto-updates) since Tappi manages its own CLI installation.
  */
 function buildCliEnv(): Record<string, string> {
-  return {
+  const env: Record<string, string> = {
     ...process.env as any,
     DISABLE_TELEMETRY: '1',
     DISABLE_ERROR_REPORTING: '1',
@@ -98,6 +98,10 @@ function buildCliEnv(): Record<string, string> {
     CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1',
     DISABLE_AUTOUPDATER: '1',
   };
+  // Remove CLAUDECODE to prevent "cannot launch inside another Claude Code session" error.
+  // Tappi's Electron process may inherit this from the parent environment.
+  delete env.CLAUDECODE;
+  return env;
 }
 
 // ── Installation ─────────────────────────────────────────────────────────────
@@ -875,7 +879,8 @@ export async function scriptifyViaCli(
       clearTimeout(timeout);
       flushLineBuffer();
       if (code !== 0) {
-        const detail = stderr.trim().slice(0, 300) || 'exited with no details';
+        // CLI may print errors to stdout (e.g. "cannot launch inside another session")
+        const detail = stderr.trim().slice(0, 300) || textResult.trim().slice(0, 300) || 'exited with no details';
         console.error('[claude-code] scriptify CLI failed:', detail);
         resolve({ error: `CLI error: ${detail}` });
         return;
