@@ -84,6 +84,7 @@ import {
 } from './conversation-store';
 import { listScripts, getScript, deleteScript, incrementRunCount } from './script-store';
 import { scriptifyConversation, scriptifyConversationViaCli, updateScriptDefinition, buildExecutionPrompt, parseBulkFile, validateAuthRequirements } from './scriptify-engine';
+import type { CliAuthConfig } from './claude-code-provider';
 import {
   createProject,
   getProject,
@@ -318,6 +319,19 @@ function decryptApiKey(stored: string): string {
     console.error('[config] legacy decrypt failed, key unusable');
   }
   return '';
+}
+
+/** Build a CliAuthConfig from the current config — used by standalone CLI calls. */
+function buildCliAuthConfig(): CliAuthConfig {
+  return {
+    authMethod: ((currentConfig.llm as any).claudeCodeAuth || 'oauth') as any,
+    apiKey: decryptApiKey(currentConfig.llm.apiKey) || undefined,
+    model: currentConfig.llm.model,
+    awsRegion: (currentConfig.llm as any).claudeCodeBedrockRegion,
+    awsProfile: (currentConfig.llm as any).claudeCodeBedrockProfile,
+    bedrockModelId: (currentConfig.llm as any).claudeCodeBedrockModelId,
+    bedrockSmallModelId: (currentConfig.llm as any).claudeCodeBedrockSmallModelId,
+  };
 }
 
 function generatePkcePair(): { verifier: string; challenge: string } {
@@ -887,7 +901,7 @@ function createWindow() {
         location: currentConfig.llm.location,
         endpoint: currentConfig.llm.endpoint,
         baseUrl: currentConfig.llm.baseUrl,
-      }, currentConfig.developerMode);
+      }, currentConfig.developerMode, isCC ? buildCliAuthConfig() : undefined);
     }
   }
 
@@ -911,7 +925,7 @@ function createWindow() {
       }, {
         history: currentConfig.privacy?.profileEnrichHistory !== false,
         bookmarks: currentConfig.privacy?.profileEnrichBookmarks !== false,
-      });
+      }, isCC ? buildCliAuthConfig() : undefined);
     }
   }
 
@@ -1244,7 +1258,7 @@ function createWindow() {
         // Use Claude Code CLI for title generation (works for both OAuth and API key)
         const { generateTitleViaCli } = await import('./claude-code-provider');
         const convIdForTitle = activeConversationId;
-        generateTitleViaCli(message, apiKey).then((title) => {
+        generateTitleViaCli(message, buildCliAuthConfig()).then((title) => {
           if (title) {
             updateConversationTitle(convIdForTitle, title);
             console.log('[main] CC CLI title set:', title);
@@ -1593,7 +1607,7 @@ function createWindow() {
 
     // Route to CLI path for Claude Code provider (OAuth/Bedrock — no direct API key)
     if (currentConfig.llm.provider === 'claude-code') {
-      return scriptifyConversationViaCli(conversationId, apiKey || undefined, currentConfig.llm.model);
+      return scriptifyConversationViaCli(conversationId, buildCliAuthConfig());
     }
 
     // All other providers: use Vercel AI SDK
@@ -1620,7 +1634,8 @@ function createWindow() {
       apiKey: apiKey || undefined,
       thinking: currentConfig.llm.thinking,
     };
-    return updateScriptDefinition(scriptId, instructions, llmConfig);
+    const isCC = currentConfig.llm.provider === 'claude-code';
+    return updateScriptDefinition(scriptId, instructions, llmConfig, isCC ? buildCliAuthConfig() : undefined);
   });
 
   ipcMain.on('scripts:execute', async (_e, scriptId: string, inputs: any, conversationId?: string, skipAuthCheck?: boolean, specialInstructions?: string) => {
@@ -2746,7 +2761,7 @@ Rules:
           }, {
             history: currentConfig.privacy?.profileEnrichHistory !== false,
             bookmarks: currentConfig.privacy?.profileEnrichBookmarks !== false,
-          });
+          }, isCC ? buildCliAuthConfig() : undefined);
         }
       }
     }
@@ -2779,7 +2794,7 @@ Rules:
         location: currentConfig.llm.location,
         endpoint: currentConfig.llm.endpoint,
         baseUrl: currentConfig.llm.baseUrl,
-      }, currentConfig.developerMode);
+      }, currentConfig.developerMode, isCC ? buildCliAuthConfig() : undefined);
     }
 
     return { success: true };

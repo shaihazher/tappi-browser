@@ -13,7 +13,7 @@ import { generateText } from 'ai';
 import { createModel, buildProviderOptions, type LLMConfig } from './llm-client';
 import { getDb } from './database';
 import { createScript, getScript, updateScript, type Script, type AuthRequirement } from './script-store';
-import { scriptifyViaCli } from './claude-code-provider';
+import { scriptifyViaCli, type CliAuthConfig } from './claude-code-provider';
 import { getPasswordsForDomain } from './password-vault';
 
 // ─── Shared System Prompt ───
@@ -148,8 +148,7 @@ export async function scriptifyConversation(
 
 export async function scriptifyConversationViaCli(
   conversationId: string,
-  apiKey?: string,
-  model?: string,
+  auth?: CliAuthConfig,
 ): Promise<{ success: boolean; script?: { id: string; name: string; description: string }; error?: string }> {
   try {
     // Load conversation messages
@@ -180,7 +179,7 @@ export async function scriptifyConversationViaCli(
     }
 
     // Call CLI
-    const result = await scriptifyViaCli(transcript, SCRIPTIFY_SYSTEM_PROMPT, apiKey, model);
+    const result = await scriptifyViaCli(transcript, SCRIPTIFY_SYSTEM_PROMPT, auth);
 
     if ('error' in result) {
       return { success: false, error: result.error };
@@ -262,6 +261,7 @@ export async function updateScriptDefinition(
   scriptId: string,
   instructions: string,
   llmConfig: LLMConfig,
+  cliAuth?: CliAuthConfig,
 ): Promise<{ success: boolean; script?: { id: string; name: string; description: string }; error?: string }> {
   try {
     const existing = getScript(scriptId);
@@ -285,7 +285,7 @@ export async function updateScriptDefinition(
 
     if (llmConfig.provider === 'claude-code') {
       // CLI path for OAuth/Bedrock
-      const cliResult = await scriptifyViaCli(userContent, SCRIPT_UPDATE_PROMPT, llmConfig.apiKey, llmConfig.model);
+      const cliResult = await scriptifyViaCli(userContent, SCRIPT_UPDATE_PROMPT, cliAuth);
       if ('error' in cliResult) {
         return { success: false, error: cliResult.error };
       }

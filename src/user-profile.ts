@@ -232,7 +232,7 @@ function getBrowsingDataSummary(db: Database.Database, options?: { history?: boo
  * Generate the user profile by sending browsing data to the LLM.
  * Saves the result to ~/.tappi-browser/user_profile.json.
  */
-export async function generateProfile(db: Database.Database, llmConfig: LLMConfig, enrichOptions?: { history?: boolean; bookmarks?: boolean }): Promise<UserProfile | null> {
+export async function generateProfile(db: Database.Database, llmConfig: LLMConfig, enrichOptions?: { history?: boolean; bookmarks?: boolean }, cliAuth?: import('./claude-code-provider').CliAuthConfig): Promise<UserProfile | null> {
   console.log('[user-profile] Starting profile generation...');
 
   const browsingData = getBrowsingDataSummary(db, enrichOptions);
@@ -255,7 +255,7 @@ ${browsingData}`;
     // Route to CLI for claude-code provider (all auth methods)
     if (llmConfig.provider === 'claude-code') {
       const { generateProfileViaCli } = await import('./claude-code-provider');
-      const runViaCli = async (p: string) => generateProfileViaCli(p, llmConfig.apiKey, llmConfig.model);
+      const runViaCli = async (p: string) => generateProfileViaCli(p, cliAuth);
       let text = await runViaCli(basePrompt);
       if (!text) return null;
       text = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
@@ -393,6 +393,7 @@ export function scheduleProfileUpdate(
   db: Database.Database,
   llmConfig: LLMConfig,
   enrichOptions?: { history?: boolean; bookmarks?: boolean },
+  cliAuth?: import('./claude-code-provider').CliAuthConfig,
 ): void {
   // Defer to not block browser startup
   setTimeout(async () => {
@@ -402,7 +403,7 @@ export function scheduleProfileUpdate(
         console.log('[user-profile] Profile is fresh, skipping update');
         return;
       }
-      await generateProfile(db, llmConfig, enrichOptions);
+      await generateProfile(db, llmConfig, enrichOptions, cliAuth);
     } catch (e: any) {
       console.error('[user-profile] Scheduled update failed (non-fatal):', e?.message || e);
     }

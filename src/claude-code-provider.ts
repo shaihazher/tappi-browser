@@ -48,6 +48,17 @@ export interface CCProviderConfig {
   agentTeams?: boolean;      // Enable experimental agent teams (CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS)
 }
 
+/** Auth config for standalone CLI calls (scriptify, title, profile, cron). */
+export interface CliAuthConfig {
+  authMethod: CCAuthMethod;
+  apiKey?: string;
+  model?: string;
+  awsRegion?: string;
+  awsProfile?: string;
+  bedrockModelId?: string;
+  bedrockSmallModelId?: string;
+}
+
 export interface CCChunkEvent {
   text: string;
   done: boolean;
@@ -102,6 +113,27 @@ function buildCliEnv(): Record<string, string> {
   // Tappi's Electron process may inherit this from the parent environment.
   delete env.CLAUDECODE;
   return env;
+}
+
+/**
+ * Apply auth config to env vars and CLI args for standalone CLI calls.
+ * Extracts the Bedrock/API-key env setup from _sendViaCli into a reusable helper.
+ */
+function applyCliAuth(env: Record<string, string>, args: string[], auth: CliAuthConfig): void {
+  if (auth.authMethod === 'api-key' && auth.apiKey) {
+    env.ANTHROPIC_API_KEY = auth.apiKey;
+  }
+  if (auth.authMethod === 'bedrock') {
+    env.CLAUDE_CODE_USE_BEDROCK = '1';
+    env.AWS_REGION = auth.awsRegion || process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1';
+    if (auth.awsProfile) env.AWS_PROFILE = auth.awsProfile;
+    if (auth.bedrockModelId) env.ANTHROPIC_MODEL = auth.bedrockModelId;
+    if (auth.bedrockSmallModelId) env.ANTHROPIC_SMALL_FAST_MODEL = auth.bedrockSmallModelId;
+  }
+  // --model: skip when bedrock+bedrockModelId (ANTHROPIC_MODEL env var takes precedence)
+  if (auth.model && !(auth.authMethod === 'bedrock' && auth.bedrockModelId)) {
+    args.push('--model', auth.model);
+  }
 }
 
 // ── Installation ─────────────────────────────────────────────────────────────
@@ -692,7 +724,7 @@ function writeTappiClaudeMd(tappiApiToken: string): string {
  */
 export async function generateTitleViaCli(
   userMessage: string,
-  apiKey?: string,
+  auth?: CliAuthConfig,
 ): Promise<string | null> {
   if (!(await isCliInstalled())) {
     return null;
@@ -704,13 +736,18 @@ export async function generateTitleViaCli(
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
-    '--model', 'claude-haiku-4-5',
     titlePrompt,
   ];
 
   const env = buildCliEnv();
-  if (apiKey) {
-    env.ANTHROPIC_API_KEY = apiKey;
+  if (auth) {
+    // For title generation, prefer cheap model: bedrockSmallModelId on Bedrock, claude-haiku-4-5 otherwise
+    const titleAuth: CliAuthConfig = auth.authMethod === 'bedrock'
+      ? { ...auth, bedrockModelId: auth.bedrockSmallModelId || auth.bedrockModelId }
+      : { ...auth, model: 'claude-haiku-4-5' };
+    applyCliAuth(env, args, titleAuth);
+  } else {
+    args.push('--model', 'claude-haiku-4-5');
   }
 
   return new Promise((resolve) => {
@@ -797,8 +834,7 @@ export async function generateTitleViaCli(
 export async function scriptifyViaCli(
   transcript: string,
   systemPrompt: string,
-  apiKey?: string,
-  model?: string,
+  auth?: CliAuthConfig,
 ): Promise<{ data: any } | { error: string }> {
   if (!(await isCliInstalled())) {
     return { error: 'Claude Code CLI is not installed.' };
@@ -810,13 +846,9 @@ export async function scriptifyViaCli(
     '--verbose',
   ];
 
-  if (model) {
-    args.push('--model', model);
-  }
-
   const env = buildCliEnv();
-  if (apiKey) {
-    env.ANTHROPIC_API_KEY = apiKey;
+  if (auth) {
+    applyCliAuth(env, args, auth);
   }
 
   return new Promise((resolve) => {
@@ -920,8 +952,7 @@ export async function scriptifyViaCli(
  */
 export async function generateProfileViaCli(
   prompt: string,
-  apiKey?: string,
-  model?: string,
+  auth?: CliAuthConfig,
 ): Promise<string | null> {
   if (!(await isCliInstalled())) {
     return null;
@@ -932,13 +963,10 @@ export async function generateProfileViaCli(
     '--output-format', 'stream-json',
     '--verbose',
   ];
-  if (model) {
-    args.push('--model', model);
-  }
 
   const env = buildCliEnv();
-  if (apiKey) {
-    env.ANTHROPIC_API_KEY = apiKey;
+  if (auth) {
+    applyCliAuth(env, args, auth);
   }
 
   return new Promise((resolve) => {
@@ -1024,8 +1052,7 @@ export async function generateProfileViaCli(
 export async function executeCronViaCli(
   taskPrompt: string,
   systemPrefix: string,
-  apiKey?: string,
-  model?: string,
+  auth?: CliAuthConfig,
 ): Promise<{ text: string; success: boolean }> {
   if (!(await isCliInstalled())) {
     return { text: 'Claude Code CLI not installed', success: false };
@@ -1043,13 +1070,10 @@ export async function executeCronViaCli(
     '--verbose',
     '--dangerously-skip-permissions',
   ];
-  if (model) {
-    args.push('--model', model);
-  }
 
   const env = buildCliEnv();
-  if (apiKey) {
-    env.ANTHROPIC_API_KEY = apiKey;
+  if (auth) {
+    applyCliAuth(env, args, auth);
   }
   env.TAPPI_API_TOKEN = tappiToken;
 

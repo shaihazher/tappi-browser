@@ -81,6 +81,7 @@ const timers = new Map<string, ReturnType<typeof setTimeout>>();
 let mainWindow: BrowserWindow | null = null;
 let browserCtx: BrowserContext | null = null;
 let llmConfig: LLMConfig | null = null;
+let cliAuth: import('./claude-code-provider').CliAuthConfig | undefined;
 let devMode = false;
 
 // ─── Persistence ───
@@ -292,7 +293,7 @@ async function executeJob(job: CronJob): Promise<void> {
       })();
       const fullTask = `[Current time: ${timeStr} (${tz})]\n[Browser: ${browserState}]\n\n${taskPrompt}`;
 
-      const cliResult = await executeCronViaCli(fullTask, CRON_AGENT_PROMPT, llmConfig.apiKey, llmConfig.model);
+      const cliResult = await executeCronViaCli(fullTask, CRON_AGENT_PROMPT, cliAuth);
       const durationMs = Date.now() - startTime;
       const truncatedResult = cliResult.text.length > 200 ? cliResult.text.slice(0, 200) + '...' : cliResult.text;
 
@@ -427,10 +428,12 @@ export function initCronManager(
   ctx: BrowserContext,
   config: LLMConfig,
   developerMode: boolean,
+  authConfig?: import('./claude-code-provider').CliAuthConfig,
 ): void {
   mainWindow = win;
   browserCtx = ctx;
   llmConfig = config;
+  cliAuth = authConfig;
   devMode = developerMode;
 
   loadJobs();
@@ -443,9 +446,10 @@ export function initCronManager(
   console.log(`[cron] Initialized with ${jobs.size} jobs (${Array.from(jobs.values()).filter(j => j.enabled).length} enabled)`);
 }
 
-export function updateCronContext(ctx: BrowserContext, config: LLMConfig, developerMode: boolean): void {
+export function updateCronContext(ctx: BrowserContext, config: LLMConfig, developerMode: boolean, authConfig?: import('./claude-code-provider').CliAuthConfig): void {
   browserCtx = ctx;
   llmConfig = config;
+  cliAuth = authConfig;
   devMode = developerMode;
 }
 
