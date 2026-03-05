@@ -786,7 +786,7 @@ function createWindow() {
   }).catch(e => console.error('[main] Native messaging bridge start error:', e));
 
   // ─── Polyfill chrome.webstore.install() for web pages ─────────────────────
-  // Sites like browser-plugin.amazon-corp.com call chrome.webstore.install()
+  // Some enterprise sites call chrome.webstore.install()
   // which doesn't exist in Electron. This polyfill extracts the extension ID
   // from the Chrome Web Store URL, constructs a CRX download URL, and triggers
   // a download that the existing download-manager auto-install handles.
@@ -4029,14 +4029,14 @@ app.on('session-created', (ses) => {
   );
 });
 
-// ─── Delegate custom URL schemes (acme://, etc.) to the OS ──────────────────
+// ─── Delegate custom URL schemes to the OS ───────────────────────────────────
 app.on('web-contents-created', (_ev, wc) => {
   wc.on('will-navigate', (event, url) => {
     if (url.startsWith('http://') || url.startsWith('https://') ||
         url.startsWith('file://') || url.startsWith('chrome-extension://')) {
       return; // normal navigation
     }
-    // Custom scheme (acme://, etc.) — hand off to the OS
+    // Custom scheme — hand off to the OS
     event.preventDefault();
     shell.openExternal(url).catch(e =>
       console.warn(`[main] Failed to open external URL ${url}:`, e)
