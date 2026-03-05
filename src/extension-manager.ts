@@ -466,6 +466,9 @@ export async function installExtension(
     // Patch MV3 service worker with native messaging polyfill before loading
     patchServiceWorkerPolyfill(finalPath);
 
+    // Clear cached service worker scripts so Chromium reads fresh polyfill
+    await ses.clearStorageData({ storages: ['serviceworkers'] }).catch(() => {});
+
     // Load into Electron
     const ext = await ses.loadExtension(finalPath, {
       allowFileAccess: options?.allowFileAccess ?? false,
@@ -805,6 +808,9 @@ export async function enableExtension(idOrName: string): Promise<ExtensionInfo |
     // Patch MV3 service worker with native messaging polyfill before loading
     patchServiceWorkerPolyfill(targetEntry.path);
 
+    // Clear cached service worker scripts so Chromium reads fresh polyfill
+    await ses.clearStorageData({ storages: ['serviceworkers'] }).catch(() => {});
+
     // Load into session
     const ext = await ses.loadExtension(targetEntry.path, {
       allowFileAccess: targetEntry.allowFileAccess ?? false,
@@ -869,6 +875,10 @@ export async function loadPersistedExtensionsForProfile(profileName?: string): P
 
       // Patch MV3 service worker with native messaging polyfill before loading
       patchServiceWorkerPolyfill(entry.path);
+
+      // Clear cached service worker scripts so Chromium reads fresh polyfill
+      // (SW cache is keyed by extension ID and persists across reinstalls)
+      await ses.clearStorageData({ storages: ['serviceworkers'] }).catch(() => {});
 
       const loaded = await ses.loadExtension(entry.path, {
         allowFileAccess: entry.allowFileAccess ?? false,
