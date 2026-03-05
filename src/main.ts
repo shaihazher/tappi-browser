@@ -1491,7 +1491,7 @@ function createWindow() {
       attachments: processedAttachments,
       scriptId: scriptId || undefined,
       scriptInputs: scriptInputs || undefined,
-      cliAuth: scriptId && currentConfig.llm.provider === 'claude-code' ? buildCliAuthConfig() : undefined,
+      cliAuth: currentConfig.llm.provider === 'claude-code' ? buildCliAuthConfig() : undefined,
     });
   });
 

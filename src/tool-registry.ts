@@ -35,6 +35,7 @@ import { sessionManager } from './session-manager';
 import { listIdentities } from './password-vault';
 import { createRecipeTools } from './recipes';
 import { updateScript } from './script-store';
+import { getPlaybook, extractDomain, isDomainExcluded } from './domain-playbook';
 import * as path from 'path';
 import * as os from 'os';
 import { getWorkspacePath, expandTilde, DEFAULT_WORKSPACE } from './workspace-resolver';
@@ -64,12 +65,47 @@ export interface ToolRegistryOptions {
   scriptId?: string;           // Set when executing a stored script — enables script_persist_fix tool
   onSubAgentProgress?: (data: any) => void;  // Progress callback for sub-agent UI chips
   onProfileSwitch?: (name: string) => Promise<{ success: boolean; error?: string }>;  // Profile switch callback
+  domainsVisited?: Set<string>;              // Domain playbook: tracks domains navigated to
+  domainToolCounts?: Map<string, number>;    // Domain playbook: non-navigate tool calls per domain
 }
 
 export function createTools(browserCtx: BrowserContext, sessionId = 'default', options?: ToolRegistryOptions) {
   // ─── Guardrail session state ───────────────────────────────────────────────
   let _elementsCalledThisSession = false;   // track elements() calls for click/type/paste hints
   let _profileReadThisSession = false;      // track profile reads for update_user_profile hint
+
+  // ─── Domain Playbook State ──────────────────────────────────────────────────
+  const _domainsVisited = options?.domainsVisited || new Set<string>();
+  const _playbooksInjected = new Set<string>();
+
+  /** Inject playbook for a domain if available (once per domain per session). */
+  function _injectPlaybookIfNeeded(url: string): string {
+    try {
+      const domain = extractDomain(url);
+      if (!domain || isDomainExcluded(domain) || _playbooksInjected.has(domain)) return '';
+      _domainsVisited.add(domain);
+      _playbooksInjected.add(domain);
+      const pb = getPlaybook(domain);
+      if (pb) {
+        console.log(`[playbook] Injected playbook for ${domain}`);
+        return `\n\n📋 Domain Playbook (${domain}):\n${pb.playbook}`;
+      }
+    } catch {}
+    return '';
+  }
+
+  /** Check if a navigation changed domains and inject playbook if so. */
+  function _checkDomainChange(urlBefore: string): string {
+    try {
+      const urlAfter = getWC()?.getURL?.() || '';
+      const domainBefore = extractDomain(urlBefore);
+      const domainAfter = extractDomain(urlAfter);
+      if (domainAfter && domainAfter !== domainBefore) {
+        return _injectPlaybookIfNeeded(urlAfter);
+      }
+    } catch {}
+    return '';
+  }
 
   // Phase 9.099: Project-scoped default CWD. When a conversation belongs to a
   // project with a working_dir, all exec/file tools use that as their default
@@ -167,11 +203,14 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         tab: z.number().optional().describe('Tab index (0-based) to target'),
       }),
       execute: async ({ index, tab }: { index: number; tab?: number }) => {
+        const urlBefore = getWC(tab)?.getURL?.() || '';
         const result = await pageTools.pageClick(getWC(tab), index);
+        let output = result;
         if (!_elementsCalledThisSession) {
-          return result + '\n\n⚠️ Call elements() first to see what\'s available before clicking by index — indexes shift on every page change.';
+          output += '\n\n⚠️ Call elements() first to see what\'s available before clicking by index — indexes shift on every page change.';
         }
-        return result;
+        output += _checkDomainChange(urlBefore);
+        return output;
       },
     }),
 
@@ -258,7 +297,11 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
       inputSchema: z.object({
         sequence: z.union([z.string(), z.array(z.string())]).describe('Key combo or array of actions'),
       }),
-      execute: async ({ sequence }: { sequence: string | string[] }) => pageTools.pageKeys(getWC(), sequence),
+      execute: async ({ sequence }: { sequence: string | string[] }) => {
+        const urlBefore = getWC()?.getURL?.() || '';
+        const result = await pageTools.pageKeys(getWC(), sequence);
+        return result + _checkDomainChange(urlBefore);
+      },
     }),
 
     eval_js: tool({
@@ -342,7 +385,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
           const wc = getWC(); // returns locked tab's webContents
           wc.loadURL(finalUrl);
           await browserTools.waitForLoad(wc, 4000);
-          return `Navigated to: ${finalUrl}\n💡 Page loaded. Call elements() to see interactive elements.`;
+          return `Navigated to: ${finalUrl}\n💡 Page loaded. Call elements() to see interactive elements.` + _injectPlaybookIfNeeded(finalUrl);
         }
         // Normalize the target URL the same way bNavigate does
         let finalUrl = url;
@@ -358,7 +401,8 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
           const result = await browserTools.bTab(browserCtx, ['switch', String(matchingTab.index)]);
           return `⚠️ "${finalUrl}" already open in tab [${matchingTab.index}]. Switched to existing tab instead.\n${result}`;
         }
-        return browserTools.bNavigate(browserCtx, [url]);
+        const navResult = await browserTools.bNavigate(browserCtx, [url]);
+        return navResult + _injectPlaybookIfNeeded(finalUrl);
       },
     }),
 

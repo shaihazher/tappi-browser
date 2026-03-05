@@ -50,6 +50,40 @@ Had a great conversation with Aria? **Scriptify** it. One click analyzes your co
 
 ---
 
+### **Domain Playbooks — The Browser That Learns From Experience**
+
+Most AI browsers treat every session like the first time. Navigate to a complex internal tool, struggle through the wrong URL paths, dismiss the same onboarding dialog, discover the right dropdown values — and then lose all of it when the conversation ends. Next session? Same struggle, same wasted tokens, same frustration.
+
+**Tappi remembers.**
+
+Domain Playbooks are structural learnings that Tappi automatically extracts and persists after every browsing session. When the agent navigates to a domain, struggles, and eventually figures out the right approach, that hard-won knowledge gets captured in SQLite and injected into every future session on that domain.
+
+**What gets captured:**
+- **URL patterns** — Correct paths and query parameters, so the agent never tries dead-end URLs again
+- **UI navigation** — Where features actually live, menu structures, required click sequences
+- **Prerequisite steps** — Dialogs to dismiss, cookie banners to clear, login flows to follow
+- **Element strategies** — How to find specific elements (iframes, shadow DOM, dynamic selectors)
+- **Anti-patterns** — Paths that *don't* work, so the agent avoids repeating old mistakes
+- **Rate limits & timing** — Discovered API limits, required waits between requests
+
+**What never gets captured:**
+- Passwords, tokens, or personal data
+- Transient content like search results or page text
+- Opinions or commentary — only actionable, structural knowledge
+
+**How it works:**
+1. The agent visits a domain and interacts with it (clicks, types, navigates)
+2. At the end of the turn, an LLM traces the session for error-to-correction patterns
+3. Only the *final working approach* is extracted — failed attempts are discarded
+4. Learnings are merged into the existing playbook (or a new one is created)
+5. Next time the agent navigates to that domain, the playbook is injected automatically
+
+**The result:** A browser that gets smarter with every session. The first time Tappi encounters a complex internal tool, it might take a few tries. The second time, it walks straight to the right URL, dismisses the right dialog, and uses the correct form values — because it already learned all of that. Every session compounds. Every mistake becomes permanent knowledge. The agent doesn't just complete tasks — it builds expertise.
+
+This is the difference between a stateless AI tool and a genuine AI agent. Tappi doesn't forget.
+
+---
+
 ## Screenshots
 
 | Aria Agent | Real Conversation |

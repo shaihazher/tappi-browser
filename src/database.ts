@@ -177,6 +177,16 @@ export function initDatabase(dbPath?: string): Database.Database {
   // Migration: add auth_requirements column if missing
   try { db.exec(`ALTER TABLE scripts ADD COLUMN auth_requirements TEXT`); } catch {}
 
+  // Domain playbooks: structural domain knowledge persisted across sessions
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS domain_playbooks (
+      domain TEXT PRIMARY KEY,
+      playbook TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      version INTEGER DEFAULT 1
+    )
+  `);
+
   // Safe migrations: add project_id + mode columns to conversations if not present
   try { db.exec(`ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL`); } catch {}
   try { db.exec(`ALTER TABLE conversations ADD COLUMN mode TEXT DEFAULT 'chat'`); } catch {}

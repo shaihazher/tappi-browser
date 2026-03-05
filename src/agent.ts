@@ -60,6 +60,7 @@ import {
 import { buildProjectContext } from './project-manager';
 import { getDb } from './database';
 import { reconcileScriptFix } from './scriptify-engine';
+import { updatePlaybooksFromSession } from './domain-playbook';
 
 import { bootstrapContext } from './coding-memory';
 import * as teamManager from './team-manager';
@@ -468,9 +469,14 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
       }
     }
 
+    // ─── Domain Playbook Tracking ─────────────────────────────────────────
+    const domainsVisited = new Set<string>();
+    const domainToolCounts = new Map<string, number>();
+
     const tools = createTools(browserCtx, sessionId, {
       developerMode, llmConfig, worktreeIsolation, agentBrowsingDataAccess, conversationId, projectWorkingDir,
       scriptId: opts.scriptId,
+      domainsVisited, domainToolCounts,
       onSubAgentProgress: (data) => broadcast('agent:subagent-progress', data),
       onProfileSwitch: (name: string) => new Promise((resolve) => {
         agentEvents.emit('profile:switch-request', name, (result: any) => {
@@ -697,6 +703,14 @@ Timezone: ${tz}
 
             toolsUsed.push(toolName);
             toolCallCount++;
+
+            // Domain playbook: attribute non-navigate tools to most recently visited domain
+            if (toolName !== 'navigate' && toolName !== 'search') {
+              const lastDomain = [...domainsVisited].pop();
+              if (lastDomain) {
+                domainToolCounts.set(lastDomain, (domainToolCounts.get(lastDomain) || 0) + 1);
+              }
+            }
 
             // Duplicate detection: same tool + same args 3x in a row
             const argsStr = JSON.stringify(tr.args ?? {});
@@ -1322,6 +1336,31 @@ Timezone: ${tz}
         }
       } catch (reconcileErr: any) {
         console.error('[agent] Script reconcile error (non-fatal):', reconcileErr?.message);
+      }
+    }
+
+    // ─── Domain Playbook Update ───────────────────────────────────────────
+    // After each turn, extract structural domain learnings and persist to SQLite.
+    if (domainsVisited.size > 0) {
+      try {
+        console.log(`[agent] Updating domain playbooks for: ${[...domainsVisited].join(', ')}`);
+        const pbResult = await updatePlaybooksFromSession(
+          domainsVisited, domainToolCounts, conversationEvents,
+          fullResponse || '', llmConfig, opts.cliAuth,
+        );
+        if (pbResult.updated.length > 0) {
+          console.log(`[agent] Playbooks updated: ${pbResult.updated.map(u => `${u.domain} (${u.reason})`).join(', ')}`);
+          if (ariaWebContents && !ariaWebContents.isDestroyed()) {
+            ariaWebContents.send('domain:playbook-updated', {
+              updates: pbResult.updated,
+            });
+          }
+        }
+        if (pbResult.errors.length > 0) {
+          console.warn(`[agent] Playbook update warnings: ${pbResult.errors.join('; ')}`);
+        }
+      } catch (pbErr: any) {
+        console.error('[agent] Playbook update error (non-fatal):', pbErr?.message);
       }
     }
 
