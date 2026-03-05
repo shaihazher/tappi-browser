@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, session, Menu, safeStorage, dialog, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, session, Menu, safeStorage, dialog, shell, protocol } from 'electron';
 // Phase 8.5: Media Engine
 import {
   initMediaEngine,
@@ -16,6 +16,12 @@ import {
 
 process.on('uncaughtException', (e) => console.error('[CRASH]', e));
 process.on('unhandledRejection', (e) => console.error('[REJECT]', e));
+
+// Register custom URL schemes before app.ready so Chromium doesn't crash
+// when navigating to unknown schemes (e.g. enterprise native app launchers)
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'acme', privileges: { standard: false, allowServiceWorkers: false, corsEnabled: false } },
+]);
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -3932,6 +3938,23 @@ ${body}
     tabManager.destroy();
   });
 }
+
+// Handle registered custom schemes — open via OS instead of in-browser
+app.on('ready', () => {
+  const { spawn } = require('child_process') as typeof import('child_process');
+  protocol.handle('acme', (request) => {
+    const url = request.url;
+    console.log('[main] Handling custom scheme via OS:', url);
+    if (process.platform === 'darwin') {
+      spawn('open', [url], { stdio: 'ignore', detached: true }).unref();
+    } else if (process.platform === 'win32') {
+      spawn('cmd', ['/c', 'start', '', url], { stdio: 'ignore', detached: true }).unref();
+    } else {
+      spawn('xdg-open', [url], { stdio: 'ignore', detached: true }).unref();
+    }
+    return new Response('', { status: 200 });
+  });
+});
 
 // Permission handling — with per-site remember-choice
 app.on('ready', () => {
