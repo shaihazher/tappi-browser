@@ -808,7 +808,6 @@ export async function scriptifyViaCli(
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
-    '--system-prompt', systemPrompt,
   ];
 
   if (model) {
@@ -827,7 +826,8 @@ export async function scriptifyViaCli(
       env,
     });
 
-    proc.stdin?.write(transcript);
+    const fullPrompt = `${systemPrompt}\n\n---\n\nHere is the conversation transcript to analyze:\n\n${transcript}`;
+    proc.stdin?.write(fullPrompt);
     proc.stdin?.end();
 
     let textResult = '';

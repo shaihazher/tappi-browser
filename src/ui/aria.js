@@ -1549,6 +1549,7 @@ async function loadMessagesForConversation(convId) {
     fetched.forEach(m => messages.push(m));
     renderAllMessages();
     scrollToBottom(false);
+    updateScriptifyBtnState();
   } catch (e) {
     console.error('[aria] getConversationMessages error:', e);
     showWelcome();
@@ -3674,12 +3675,14 @@ async function init() {
       // Phase 9.09: detect and show active project
       _detectCurrentProject();
       await loadMessagesForConversation(activeId);
+      updateScriptifyBtnState();
     } else if (conversations.length > 0) {
       // Switch to most recent
       currentConversationId = conversations[0].id;
       setActiveConvInSidebar(currentConversationId);
       _detectCurrentProject();
       await loadMessagesForConversation(currentConversationId);
+      updateScriptifyBtnState();
     } else {
       // No conversations yet — show welcome, create one lazily on first message
       showWelcome();
