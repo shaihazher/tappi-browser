@@ -1210,8 +1210,9 @@ function createWindow() {
   // ─── Claude Code Provider State ──────────────────────────────────────────
   let activeClaudeCodeProvider: any = null;
 
-  // ─── Script Execution: pending scriptId for agent persist-fix tool ───
+  // ─── Script Execution: pending scriptId/inputs for agent persist-fix tool ───
   let pendingScriptId: string | null = null;
+  let pendingScriptInputs: Record<string, any> | null = null;
 
   ipcMain.on('aria:send', async (_e, message: string, conversationId?: string, codingMode?: boolean, attachments?: Array<{ name: string; mimeType: string; size: number; data: ArrayBuffer }>) => {
     const apiKey = decryptApiKey(currentConfig.llm.apiKey);
@@ -1454,7 +1455,9 @@ function createWindow() {
     // Consume pendingScriptId (set by scripts:execute handler) so the agent
     // gets the script_persist_fix tool when executing a stored script.
     const scriptId = pendingScriptId;
+    const scriptInputs = pendingScriptInputs;
     pendingScriptId = null;
+    pendingScriptInputs = null;
 
     const browserCtx: BrowserContext = { window: mainWindow, tabManager, config: currentConfig };
     runAgent({
@@ -1487,6 +1490,8 @@ function createWindow() {
       ariaWebContents: tabManager?.ariaWebContents,
       attachments: processedAttachments,
       scriptId: scriptId || undefined,
+      scriptInputs: scriptInputs || undefined,
+      cliAuth: scriptId && currentConfig.llm.provider === 'claude-code' ? buildCliAuthConfig() : undefined,
     });
   });
 
@@ -1672,6 +1677,7 @@ function createWindow() {
     incrementRunCount(scriptId);
 
     pendingScriptId = scriptId;
+    pendingScriptInputs = Array.isArray(inputs) ? inputs[0] : inputs;
     ariaWC.send('scripts:execute-ready', { message: executionMessage, conversationId });
   });
 

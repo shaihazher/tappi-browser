@@ -404,6 +404,139 @@ export async function updateScriptDefinition(
   }
 }
 
+// ─── Auto-Reconcile Script Fixes (Post-Execution) ───
+
+const RECONCILE_PROMPT = `You are a script learning extractor. You receive:
+1. The ORIGINAL script definition (the scriptBody stored in the DB)
+2. The input values used for this run
+3. The full execution log (tool results + agent's final summary)
+
+IMPORTANT CONTEXT:
+- The scriptBody is a set of instructions that may contain inline Python code
+- During execution, the LLM extracted the Python code, wrote it to a .py file, ran it, and debugged any failures
+- Fixes were applied to the .py file, NOT to the scriptBody
+- Your job: incorporate those fixes back into the scriptBody's inline Python code
+- For non-Python scripts (playbooks): incorporate any learnings about better approaches,
+  corrected steps, or improved instructions
+
+RULES:
+- Preserve {{placeholder}} syntax for ALL input variables
+- For Python fixes: update the inline Python code within the scriptBody to match the working version
+- For playbook learnings: update step instructions, add warnings, correct URLs/parameters
+- Do NOT change the overall structure or intent of the script
+- Only incorporate genuine improvements, not run-specific details
+- If nothing meaningful changed, return the original scriptBody unchanged
+
+Respond with ONLY a JSON object (no markdown fences):
+{
+  "scriptBody": "the updated script body",
+  "summary": "brief description of what was learned/fixed",
+  "changed": true/false
+}`;
+
+/**
+ * Auto-reconcile script fixes after execution.
+ * Called structurally (not by agent) when errors were detected during script execution.
+ * Extracts the fix from the conversation and persists the corrected scriptBody.
+ */
+export async function reconcileScriptFix(
+  scriptId: string,
+  inputs: Record<string, any>,
+  conversationEvents: Array<{ role: string; content: string }>,
+  agentResponse: string,
+  llmConfig: LLMConfig,
+  cliAuth?: CliAuthConfig,
+): Promise<{ success: boolean; summary?: string; error?: string }> {
+  const script = getScript(scriptId);
+  if (!script) return { success: false, error: 'Script not found' };
+
+  // Build context: original script + inputs + error/fix conversation
+  const inputMapping = Object.entries(inputs)
+    .map(([k, v]) => `  {{${k}}} = ${JSON.stringify(v)}`)
+    .join('\n');
+
+  // Extract tool results (where errors and fixes are visible) — cap to avoid exceeding context
+  const relevantEvents = conversationEvents
+    .filter(e => e.role === 'tool')
+    .map(e => e.content)
+    .join('\n\n')
+    .slice(0, 30_000);
+
+  const userContent = [
+    'ORIGINAL SCRIPT BODY (with {{placeholders}}):',
+    script.scriptBody,
+    '',
+    'INPUT VALUES used for this run:',
+    inputMapping || '  (no inputs)',
+    '',
+    'EXECUTION LOG (tool results):',
+    relevantEvents,
+    '',
+    'AGENT SUMMARY (what the agent reported):',
+    agentResponse.slice(0, 5_000) || '(no summary)',
+  ].join('\n');
+
+  // Make LLM call (same dual-path as updateScriptDefinition)
+  let parsed: any;
+  try {
+    if (llmConfig.provider === 'claude-code') {
+      const cliResult = await scriptifyViaCli(userContent, RECONCILE_PROMPT, cliAuth);
+      if ('error' in cliResult) return { success: false, error: cliResult.error };
+      parsed = cliResult.data;
+    } else {
+      const model = createModel(llmConfig);
+      const providerOptions = buildProviderOptions(llmConfig);
+      const result = await generateText({
+        model,
+        providerOptions,
+        messages: [
+          { role: 'system', content: RECONCILE_PROMPT },
+          { role: 'user', content: userContent },
+        ],
+        maxOutputTokens: 16_384,
+      });
+      let text = result.text.trim();
+      if (text.startsWith('```')) {
+        text = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+      }
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return { success: false, error: 'Failed to parse reconciliation response' };
+      }
+    }
+  } catch (llmErr: any) {
+    return { success: false, error: `LLM call failed: ${llmErr?.message}` };
+  }
+
+  if (!parsed?.scriptBody) return { success: false, error: 'No scriptBody in reconciliation response' };
+
+  // Trust the LLM's changed field first (handles whitespace normalization)
+  if (parsed.changed === false) {
+    return { success: false, error: 'No meaningful changes detected' };
+  }
+
+  // Sanity check: the reconciled body should still contain all original placeholders
+  const originalPlaceholders = [...script.scriptBody.matchAll(/\{\{(\w+)\}\}/g)].map(m => m[1]);
+  const reconciledPlaceholders = [...parsed.scriptBody.matchAll(/\{\{(\w+)\}\}/g)].map(m => m[1]);
+  const missingPlaceholders = originalPlaceholders.filter(p => !reconciledPlaceholders.includes(p));
+  if (missingPlaceholders.length > 0) {
+    return { success: false, error: `Reconciled body lost placeholders: ${missingPlaceholders.join(', ')}` };
+  }
+
+  // Secondary check: don't update if the text is literally identical
+  if (parsed.scriptBody.trim() === script.scriptBody.trim()) {
+    return { success: false, error: 'No changes detected — script body unchanged' };
+  }
+
+  // Persist the fix
+  const updated = updateScript(scriptId, { scriptBody: parsed.scriptBody });
+  if (!updated) return { success: false, error: 'Failed to save updated script' };
+
+  console.log(`[scriptify] Auto-reconciled script ${scriptId}: ${parsed.summary || 'fixes applied'}`);
+  return { success: true, summary: parsed.summary || 'Bug fixes applied' };
+}
+
 // ─── Auth Requirement Validation ───
 
 export function validateAuthRequirements(authRequirements?: AuthRequirement[]): {

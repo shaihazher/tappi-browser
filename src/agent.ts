@@ -59,6 +59,7 @@ import {
 } from './conversation-store';
 import { buildProjectContext } from './project-manager';
 import { getDb } from './database';
+import { reconcileScriptFix } from './scriptify-engine';
 
 import { bootstrapContext } from './coding-memory';
 import * as teamManager from './team-manager';
@@ -317,6 +318,8 @@ interface AgentRunOptions {
   codexForceNonStream?: boolean; // Internal guard: retry codex once via non-stream generateText
   attachments?: ProcessedAttachment[]; // File attachments for multimodal messages
   scriptId?: string;  // Script ID when executing a stored script — enables script_persist_fix tool
+  scriptInputs?: Record<string, any>;  // Input values used for this script run — for auto-reconciliation
+  cliAuth?: any;  // CLI auth config for post-execution reconciliation LLM call
 }
 
 // Task-type addendums removed (Phase 9.12) — the agent decides when/if to spawn sub-agents.
@@ -1289,6 +1292,36 @@ Timezone: ${tz}
         try { if (ariaWebContents && !ariaWebContents.isDestroyed()) ariaWebContents.send('aria:conversation-updated', { conversationId }); } catch {}
       } catch (persistErr: any) {
         console.error('[agent] SQLite persist error (non-fatal):', persistErr?.message);
+      }
+    }
+
+    // ─── Auto-reconcile script learnings (structural enforcement) ──────────
+    // After any script execution, auto-persist fixes/learnings to the stored script.
+    // Skips if the agent already called script_persist_fix during execution.
+    if (opts.scriptId && !toolsUsed.includes('script_persist_fix')) {
+      try {
+        console.log('[agent] Script execution complete — auto-reconciling learnings');
+        const fixResult = await reconcileScriptFix(
+          opts.scriptId,
+          opts.scriptInputs || {},
+          conversationEvents,
+          fullResponse || '',
+          llmConfig,
+          opts.cliAuth,
+        );
+        if (fixResult.success) {
+          console.log('[agent] Script auto-updated:', fixResult.summary);
+          if (ariaWebContents && !ariaWebContents.isDestroyed()) {
+            ariaWebContents.send('scripts:auto-updated', {
+              scriptId: opts.scriptId,
+              summary: fixResult.summary,
+            });
+          }
+        } else {
+          console.warn('[agent] Script auto-reconcile skipped:', fixResult.error);
+        }
+      } catch (reconcileErr: any) {
+        console.error('[agent] Script reconcile error (non-fatal):', reconcileErr?.message);
       }
     }
 
