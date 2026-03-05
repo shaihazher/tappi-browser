@@ -318,17 +318,17 @@ function patchServiceWorkerPolyfill(extensionDir: string): void {
       try { if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath); } catch {}
     }
 
-    // Inline the polyfill directly into the entry file so the port/token
-    // are part of the main SW script. Chromium caches imported module scripts
-    // independently, so a separate polyfill import would serve stale
-    // port/token from a prior session.
-    const polyfillCode = buildServiceWorkerPolyfill(bridge.port, bridge.token);
+    // Write polyfill with current bridge port/token
+    fs.writeFileSync(polyfillPath, buildServiceWorkerPolyfill(bridge.port, bridge.token));
+
+    // Entry file uses static imports — ES modules execute imports in
+    // declaration order, so polyfill runs before the extension's SW.
+    // clearStorageData() (called before loadExtension) ensures Chromium
+    // reads fresh files instead of serving cached scripts from a prior session.
     fs.writeFileSync(
       entryPath,
-      `${polyfillCode}\nimport('./${originalSW}');\n`,
+      `import './${polyfillFile}';\nimport './${originalSW}';\n`,
     );
-    // Keep standalone polyfill for MV2 background pages (injected via executeScript)
-    fs.writeFileSync(polyfillPath, polyfillCode);
 
     // Update manifest if needed
     const needsWrite = currentSW !== entryFile || manifest.background.type !== 'module';
