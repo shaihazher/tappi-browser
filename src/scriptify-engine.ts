@@ -208,6 +208,15 @@ export async function scriptifyConversationViaCli(
     const filteredRows = rows.filter(r => r.role !== 'thinking');
     let transcript = buildScriptifyTranscript(rows);
 
+    // Validate transcript has meaningful user/assistant content
+    const hasConversation = filteredRows.some(r => r.role === 'user' || r.role === 'assistant');
+    if (!hasConversation || !transcript.trim()) {
+      return {
+        success: false,
+        error: 'Conversation has no user or assistant messages to analyze.',
+      };
+    }
+
     // Cap transcript length to avoid exceeding CLI input limits
     const MAX_TRANSCRIPT_CHARS = 50_000;
     if (transcript.length > MAX_TRANSCRIPT_CHARS) {

@@ -874,9 +874,26 @@ export async function scriptifyViaCli(
       ? `\nAdditional instructions from the user:\n${additionalInstructions}\n`
       : '';
     const fullPrompt = `${systemPrompt}\n\n---\n\nAnalyze this conversation transcript. Pay special attention to any errors, failures, or retries — the script you generate must incorporate the fixes and corrections discovered during the conversation, not reproduce the original bugs.${instructionsBlock}\n\nTranscript:\n\n${transcript}`;
-    proc.stdin?.write(fullPrompt);
-    proc.stdin?.end();
-    console.log(`[scriptify] prompt written to stdin (${fullPrompt.length} chars), stdin closed`);
+    // Write prompt to stdin with backpressure and error handling
+    let stdinError: Error | null = null;
+    if (proc.stdin) {
+      proc.stdin.on('error', (err: Error) => {
+        stdinError = err;
+        console.warn(`[scriptify] stdin error (CLI may have exited early): ${err.message}`);
+      });
+      const writeOk = proc.stdin.write(fullPrompt);
+      if (!writeOk) {
+        proc.stdin.once('drain', () => {
+          proc.stdin!.end();
+          console.log(`[scriptify] prompt drained and stdin closed (${fullPrompt.length} chars)`);
+        });
+      } else {
+        proc.stdin.end();
+        console.log(`[scriptify] prompt written to stdin (${fullPrompt.length} chars), stdin closed`);
+      }
+    } else {
+      console.error('[scriptify] proc.stdin is null — cannot write prompt');
+    }
 
     let textResult = '';
     let resultText = '';  // authoritative final text from 'result' message
@@ -934,9 +951,22 @@ export async function scriptifyViaCli(
       console.log(`[scriptify]   stderr (${stderr.length} chars): ${JSON.stringify(stderr.slice(0, 300))}`);
       console.log(`[scriptify]   textResult (${textResult.length} chars): ${JSON.stringify(textResult.slice(0, 300))}`);
       console.log(`[scriptify]   resultText (${resultText.length} chars): ${JSON.stringify(resultText.slice(0, 300))}`);
+      console.log(`[scriptify]   stdinError: ${stdinError?.message ?? 'none'} | stdoutBytes: ${stdoutBytes}`);
       if (code !== 0) {
-        // CLI may print errors to stdout (e.g. "cannot launch inside another session")
-        const detail = stderr.trim().slice(0, 300) || textResult.trim().slice(0, 300) || 'exited with no details';
+        // Build a descriptive error from all available signals
+        let detail = stderr.trim().slice(0, 300) || textResult.trim().slice(0, 300) || '';
+
+        if (!detail) {
+          const parts: string[] = [`exit code ${code ?? 'null'}`];
+          if (proc.signalCode) parts.push(`signal ${proc.signalCode}`);
+          if (stdinError) parts.push(`stdin: ${stdinError.message}`);
+          if (stdoutBytes === 0) parts.push('no stdout received');
+          if (stdinError?.message.includes('EPIPE') || (stdoutBytes === 0 && !stderr.trim())) {
+            parts.push('— CLI may have exited before processing input (check auth with `claude auth status`)');
+          }
+          detail = parts.join(', ');
+        }
+
         console.error('[claude-code] scriptify CLI failed:', detail);
         resolve({ error: `CLI error: ${detail}` });
         return;
@@ -1001,8 +1031,17 @@ export async function generateProfileViaCli(
       env,
     });
 
-    proc.stdin?.write(prompt);
-    proc.stdin?.end();
+    if (proc.stdin) {
+      proc.stdin.on('error', (err: Error) => {
+        console.warn(`[profile-gen] stdin error: ${err.message}`);
+      });
+      const writeOk = proc.stdin.write(prompt);
+      if (!writeOk) {
+        proc.stdin.once('drain', () => proc.stdin!.end());
+      } else {
+        proc.stdin.end();
+      }
+    }
 
     let textResult = '';
     let resultText = '';
@@ -1109,8 +1148,17 @@ export async function executeCronViaCli(
       env,
     });
 
-    proc.stdin?.write(fullPrompt);
-    proc.stdin?.end();
+    if (proc.stdin) {
+      proc.stdin.on('error', (err: Error) => {
+        console.warn(`[cron] stdin error: ${err.message}`);
+      });
+      const writeOk = proc.stdin.write(fullPrompt);
+      if (!writeOk) {
+        proc.stdin.once('drain', () => proc.stdin!.end());
+      } else {
+        proc.stdin.end();
+      }
+    }
 
     let textResult = '';
     let resultText = '';
