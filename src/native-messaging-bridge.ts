@@ -35,7 +35,7 @@ const activeWebSockets = new Map<string, { socket: import('net').Socket; connect
 // ─── Minimal WebSocket helpers ───────────────────────────────────────────────
 // Implements just enough of RFC 6455 for text frames, close, and ping/pong.
 
-const WS_GUID = '258EAFA5-E914-47DA-95CA-5AB4C11731A5';
+const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 function computeAcceptKey(key: string): string {
   return createHash('sha1').update(key + WS_GUID).digest('base64');
