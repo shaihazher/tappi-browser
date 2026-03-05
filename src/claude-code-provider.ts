@@ -502,6 +502,11 @@ curl -s -X DELETE http://localhost:18901/api/tabs/<ID> -H "Authorization: Bearer
 curl -s -X POST http://localhost:18901/api/tabs/<ID>/navigate -H "Authorization: Bearer $TAPPI_API_TOKEN" -H "Content-Type: application/json" -d '{"url":"https://example.com"}'
 \`\`\`
 
+### Domain Playbooks
+Navigate and tab-create responses may include a \`playbook\` field with domain-specific knowledge from previous sessions (URL patterns, UI navigation tips, workarounds, anti-patterns). Click and key responses may also include playbooks if the action caused a cross-domain navigation.
+
+**When a response contains a \`playbook\` field:** Read it carefully and follow its guidance — it captures what worked (and what didn't) on this domain in prior sessions, saving you from repeating mistakes.
+
 ### Page Reading
 \`\`\`bash
 # Read page text (returns ~4KB chunk)

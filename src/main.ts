@@ -98,7 +98,7 @@ import {
 // Phase 8.6: Self-Capture
 import { captureCleanupOnQuit, getRecordingStatus, handleRecord } from './capture-tools';
 // Phase 8.45: Local HTTP API server
-import { startApiServer, stopApiServer, ensureApiToken, API_PORT } from './api-server';
+import { startApiServer, stopApiServer, ensureApiToken, API_PORT, resetApiPlaybookSession, getApiPlaybookSession } from './api-server';
 
 let mainWindow: BrowserWindow;
 let tabManager: TabManager;
@@ -1431,6 +1431,7 @@ function createWindow() {
       }
 
       // Send to Claude Code
+      resetApiPlaybookSession(); // Track domains visited during this turn
       try {
         await activeClaudeCodeProvider.sendMessage(message, processedAttachments);
         // Persist assistant response to conversation store
@@ -1443,6 +1444,34 @@ function createWindow() {
         // If plan mode completed, notify UI so it can show approve/edit buttons
         if (activeClaudeCodeProvider.isPlanPending) {
           try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('aria:cc-plan-complete', { conversationId: effectiveConvId }); } catch {}
+        }
+        // ─── Domain Playbook Update (CC path) ────────────────────────────────
+        try {
+          const pbSession = getApiPlaybookSession();
+          if (pbSession && pbSession.domainsVisited.size > 0) {
+            const { updatePlaybooksFromSession } = await import('./domain-playbook');
+            console.log(`[main] CC playbook update for: ${[...pbSession.domainsVisited].join(', ')}`);
+            const syntheticEvents = [{ role: 'tool' as const, content: ccResponseBuffer || '' }];
+            const pbResult = await updatePlaybooksFromSession(
+              pbSession.domainsVisited,
+              pbSession.domainToolCounts,
+              syntheticEvents,
+              ccResponseBuffer || '',
+              { provider: currentConfig.llm.provider, model: currentConfig.llm.model, apiKey: '' } as any,
+              buildCliAuthConfig(),
+            );
+            if (pbResult.updated.length > 0) {
+              console.log(`[main] CC playbooks updated: ${pbResult.updated.map((u: any) => `${u.domain} (${u.reason})`).join(', ')}`);
+              if (ariaWC && !ariaWC.isDestroyed()) {
+                ariaWC.send('domain:playbook-updated', { updates: pbResult.updated });
+              }
+            }
+            if (pbResult.errors.length > 0) {
+              console.warn(`[main] CC playbook warnings: ${pbResult.errors.join('; ')}`);
+            }
+          }
+        } catch (pbErr: any) {
+          console.error('[main] CC playbook update error (non-fatal):', pbErr?.message);
         }
       } catch (err: any) {
         console.error('[main] claude-code send error:', err);

@@ -19,6 +19,7 @@ import * as pageTools from './page-tools';
 import * as browserTools from './browser-tools';
 import * as captureTools from './capture-tools';
 import { getDb } from './database';
+import { getPlaybook, extractDomain, isDomainExcluded } from './domain-playbook';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -111,6 +112,75 @@ setInterval(() => {
     if (now > e.resetAt) rateLimiter.delete(ip);
   }
 }, 300_000).unref();
+
+// ─── Domain Playbook Session State ──────────────────────────────────────────
+// Tracks domains visited and tool counts per API session (for CC provider path).
+// Reset when a new CC session starts (called from main.ts).
+
+interface ApiPlaybookSession {
+  domainsVisited: Set<string>;
+  playbooksInjected: Set<string>;
+  domainToolCounts: Map<string, number>;
+  lastNavigatedDomain: string | null;
+}
+
+let _activePlaybookSession: ApiPlaybookSession | null = null;
+
+/** Create/reset the API playbook session. Called from main.ts before CC sendMessage. */
+export function resetApiPlaybookSession(): void {
+  _activePlaybookSession = {
+    domainsVisited: new Set(),
+    playbooksInjected: new Set(),
+    domainToolCounts: new Map(),
+    lastNavigatedDomain: null,
+  };
+}
+
+/** Get the current session's tracking data for updatePlaybooksFromSession. */
+export function getApiPlaybookSession(): { domainsVisited: Set<string>; domainToolCounts: Map<string, number> } | null {
+  if (!_activePlaybookSession) return null;
+  return {
+    domainsVisited: _activePlaybookSession.domainsVisited,
+    domainToolCounts: _activePlaybookSession.domainToolCounts,
+  };
+}
+
+/** Inject playbook for a URL if available (once per domain per session). */
+function _apiInjectPlaybookIfNeeded(url: string): { playbook: string; domain: string } | null {
+  if (!_activePlaybookSession) return null;
+  try {
+    const domain = extractDomain(url);
+    if (!domain || isDomainExcluded(domain) || _activePlaybookSession.playbooksInjected.has(domain)) return null;
+    _activePlaybookSession.domainsVisited.add(domain);
+    _activePlaybookSession.playbooksInjected.add(domain);
+    const pb = getPlaybook(domain);
+    if (pb) {
+      console.log(`[api-playbook] Injected playbook for ${domain}`);
+      return { playbook: pb.playbook, domain };
+    }
+  } catch {}
+  return null;
+}
+
+/** Track a navigation — sets lastNavigatedDomain and records the visit. */
+function _apiTrackNavigation(url: string): void {
+  if (!_activePlaybookSession) return;
+  const domain = extractDomain(url);
+  if (domain && !isDomainExcluded(domain)) {
+    _activePlaybookSession.domainsVisited.add(domain);
+    _activePlaybookSession.lastNavigatedDomain = domain;
+  }
+}
+
+/** Track a non-navigate tool call against the last navigated domain. */
+function _apiTrackToolCall(): void {
+  if (!_activePlaybookSession || !_activePlaybookSession.lastNavigatedDomain) return;
+  const domain = _activePlaybookSession.lastNavigatedDomain;
+  _activePlaybookSession.domainToolCounts.set(
+    domain,
+    (_activePlaybookSession.domainToolCounts.get(domain) || 0) + 1,
+  );
+}
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
@@ -270,7 +340,14 @@ async function handleRequest(
     await new Promise(r => setTimeout(r, 300)); // brief wait for tab init
     const tabs = tabManager.getTabList();
     const tab = tabs.find(t => t.id === tabId);
-    return json(res, 200, tab || { id: tabId });
+    const response: any = tab || { id: tabId };
+    // Domain playbook: track + inject if created with a URL
+    if (body.url) {
+      _apiTrackNavigation(body.url);
+      const pb = _apiInjectPlaybookIfNeeded(body.url);
+      if (pb) { response.playbook = pb.playbook; response.playbookDomain = pb.domain; }
+    }
+    return json(res, 200, response);
   }
 
   // ── DELETE /api/tabs/:id ───────────────────────────────────────────────────────
@@ -303,7 +380,12 @@ async function handleRequest(
       const body = await readBody(req);
       if (!body.url) return err(res, 400, 'url required');
       tabManager.navigate(m.id, body.url);
-      return json(res, 200, { success: true });
+      // Domain playbook: track navigation and inject playbook if available
+      _apiTrackNavigation(body.url);
+      const pb = _apiInjectPlaybookIfNeeded(body.url);
+      const response: any = { success: true };
+      if (pb) { response.playbook = pb.playbook; response.playbookDomain = pb.domain; }
+      return json(res, 200, response);
     }
   }
 
@@ -337,8 +419,22 @@ async function handleRequest(
       if (body.index === undefined) return err(res, 400, 'index required');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
+      _apiTrackToolCall();
+      const urlBefore = wc.getURL?.() || '';
       const result = await pageTools.pageClick(wc, body.index);
-      return json(res, 200, { result });
+      // Check if click caused cross-domain navigation
+      const response: any = { result };
+      try {
+        const urlAfter = wc.getURL?.() || '';
+        const domainBefore = extractDomain(urlBefore);
+        const domainAfter = extractDomain(urlAfter);
+        if (domainAfter && domainAfter !== domainBefore) {
+          _apiTrackNavigation(urlAfter);
+          const pb = _apiInjectPlaybookIfNeeded(urlAfter);
+          if (pb) { response.playbook = pb.playbook; response.playbookDomain = pb.domain; }
+        }
+      } catch {}
+      return json(res, 200, response);
     }
   }
 
@@ -350,6 +446,7 @@ async function handleRequest(
       if (body.index === undefined || body.text === undefined) return err(res, 400, 'index and text required');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
+      _apiTrackToolCall();
       const result = await pageTools.pageType(wc, body.index, body.text);
       return json(res, 200, { result });
     }
@@ -363,6 +460,7 @@ async function handleRequest(
       if (body.index === undefined || body.text === undefined) return err(res, 400, 'index and text required');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
+      _apiTrackToolCall();
       const result = await pageTools.pagePaste(wc, body.index, body.text);
       return json(res, 200, { result });
     }
@@ -415,6 +513,7 @@ async function handleRequest(
       if (body.x === undefined || body.y === undefined) return err(res, 400, 'x and y required');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
+      _apiTrackToolCall();
       const result = await pageTools.pageClickXY(wc, body.x, body.y);
       return json(res, 200, { result });
     }
@@ -428,6 +527,7 @@ async function handleRequest(
       if (body.x === undefined || body.y === undefined) return err(res, 400, 'x and y required');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
+      _apiTrackToolCall();
       const result = await pageTools.pageHoverXY(wc, body.x, body.y);
       return json(res, 200, { result });
     }
@@ -441,6 +541,7 @@ async function handleRequest(
       if (!body.direction) return err(res, 400, 'direction required (up|down|top|bottom)');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
+      _apiTrackToolCall();
       const result = await pageTools.pageScroll(wc, body.direction, body.amount);
       return json(res, 200, { result });
     }
@@ -454,8 +555,22 @@ async function handleRequest(
       if (!body.keys) return err(res, 400, 'keys required');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
+      _apiTrackToolCall();
+      const urlBefore = wc.getURL?.() || '';
       const result = await pageTools.pageKeys(wc, body.keys);
-      return json(res, 200, { result });
+      // Check if keys (e.g. Enter) caused cross-domain navigation
+      const response: any = { result };
+      try {
+        const urlAfter = wc.getURL?.() || '';
+        const domainBefore = extractDomain(urlBefore);
+        const domainAfter = extractDomain(urlAfter);
+        if (domainAfter && domainAfter !== domainBefore) {
+          _apiTrackNavigation(urlAfter);
+          const pb = _apiInjectPlaybookIfNeeded(urlAfter);
+          if (pb) { response.playbook = pb.playbook; response.playbookDomain = pb.domain; }
+        }
+      } catch {}
+      return json(res, 200, response);
     }
   }
 
@@ -467,6 +582,7 @@ async function handleRequest(
       if (!body.js) return err(res, 400, 'js required');
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
+      _apiTrackToolCall();
       const result = await pageTools.pageEval(wc, body.js);
       return json(res, 200, { result });
     }
