@@ -1939,6 +1939,11 @@ function openSettings() {
     if (timeoutSelect && config.llm?.agentTimeoutMs !== undefined) {
       timeoutSelect.value = String(config.llm.agentTimeoutMs);
     }
+    // Enterprise settings
+    const entAuthServer = document.getElementById('enterprise-auth-server');
+    const entAuthDelegate = document.getElementById('enterprise-auth-delegate');
+    if (entAuthServer) entAuthServer.value = config.enterprise?.authServerWhitelist || '';
+    if (entAuthDelegate) entAuthDelegate.value = config.enterprise?.authDelegateWhitelist || '';
     // Developer mode
     updateToggle('toggle-devmode', config.developerMode || false);
     updateDevModeIndicator(config.developerMode || false);
@@ -2059,6 +2064,10 @@ settingsSave.addEventListener('click', async () => {
       agentBrowsingDataAccess: document.getElementById('toggle-agent-browsing')?.classList.contains('on') || false,
     },
     workspacePath: settingWorkspace ? settingWorkspace.value.trim() || undefined : undefined,
+    enterprise: {
+      authServerWhitelist: document.getElementById('enterprise-auth-server')?.value.trim() || undefined,
+      authDelegateWhitelist: document.getElementById('enterprise-auth-delegate')?.value.trim() || undefined,
+    },
   };
 
   // Only send API key if user typed a new one
@@ -2077,6 +2086,35 @@ settingsSave.addEventListener('click', async () => {
     settingApikey.type = 'password';
     setTimeout(closeSettings, 800);
   }
+});
+
+// Enterprise save button — saves only enterprise settings + shows restart notice
+const enterpriseSaveBtn = document.getElementById('enterprise-save');
+if (enterpriseSaveBtn) {
+  enterpriseSaveBtn.addEventListener('click', async () => {
+    const updates = {
+      enterprise: {
+        authServerWhitelist: document.getElementById('enterprise-auth-server')?.value.trim() || undefined,
+        authDelegateWhitelist: document.getElementById('enterprise-auth-delegate')?.value.trim() || undefined,
+      },
+    };
+    const result = await window.tappi.saveConfig(updates);
+    if (result.success) {
+      enterpriseSaveBtn.textContent = '✓ Saved — restart required';
+      const notice = document.getElementById('enterprise-restart-notice');
+      if (notice) notice.classList.remove('hidden');
+      setTimeout(() => { enterpriseSaveBtn.textContent = 'Save Enterprise Settings'; }, 3000);
+    }
+  });
+}
+
+// Show restart notice when enterprise fields change
+['enterprise-auth-server', 'enterprise-auth-delegate'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('input', () => {
+    const notice = document.getElementById('enterprise-restart-notice');
+    if (notice) notice.classList.remove('hidden');
+  });
 });
 
 statusDarkmode.addEventListener('click', () => {

@@ -2592,6 +2592,13 @@ Rules:
     if (updates.workspacePath !== undefined) {
       currentConfig.workspacePath = updates.workspacePath || undefined;
     }
+    // Enterprise Kerberos/SPNEGO settings (requires restart to take effect)
+    if ((updates as any).enterprise) {
+      currentConfig.enterprise = {
+        ...currentConfig.enterprise,
+        ...(updates as any).enterprise,
+      };
+    }
     saveConfig(currentConfig);
     console.log('[config] Saved:', currentConfig.llm.provider, currentConfig.llm.model);
 

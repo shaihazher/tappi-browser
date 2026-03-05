@@ -173,6 +173,10 @@
             <span class="settings-tab-icon">🧩</span>
             <span>Extensions</span>
           </button>
+          <button class="settings-tab" data-tab="enterprise">
+            <span class="settings-tab-icon">🏢</span>
+            <span>Enterprise</span>
+          </button>
         </nav>
         <div id="settings-content">
         <!-- General tab -->
@@ -595,6 +599,28 @@
             <p class="api-empty-hint">Load an unpacked extension directory, install a .crx file, or download one from a website.</p>
           </div>
         </div>
+      </div>
+
+      <!-- Enterprise tab -->
+      <div id="settings-enterprise" class="settings-tab-content" data-tab="enterprise">
+        <div class="settings-section">
+          <h3>Kerberos / SPNEGO Single Sign-On</h3>
+          <p class="settings-hint">Enable automatic Kerberos authentication for intranet sites. Comma-separated domain patterns (e.g. <code>*.example.com,intranet.corp.com</code>).</p>
+          <div class="settings-row">
+            <label for="enterprise-auth-server">Auth Server Allowlist</label>
+            <input id="enterprise-auth-server" type="text" placeholder="*.example.com,*.corp.com">
+          </div>
+          <p class="settings-hint">Servers that can request Kerberos authentication. Maps to Chromium's <code>AuthServerAllowlist</code> policy.</p>
+          <div class="settings-row">
+            <label for="enterprise-auth-delegate">Delegation Allowlist</label>
+            <input id="enterprise-auth-delegate" type="text" placeholder="*.example.com,*.corp.com">
+          </div>
+          <p class="settings-hint">Servers that can receive delegated Kerberos credentials. Maps to Chromium's <code>AuthNegotiateDelegateAllowlist</code> policy.</p>
+          <div id="enterprise-restart-notice" class="hidden" style="margin-top:12px;padding:10px 14px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--text-secondary);">
+            ⚠️ These settings require a browser restart to take effect.
+          </div>
+        </div>
+        <button id="enterprise-save" class="primary-btn">Save Enterprise Settings</button>
       </div>
         </div><!-- #settings-content -->
       </div><!-- #settings-layout -->
