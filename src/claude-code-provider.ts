@@ -589,7 +589,7 @@ You are running inside a context window with finite capacity. Every tool call's 
 1. **\`elements\`** (~200 tokens) — first tool for ANY page. Shows clickable items with indexes. Use \`grep\` param to filter.
 2. **\`text\`** (~500 tokens) — read page content, articles, prices, errors. Use \`grep\` and \`selector\` params to scope.
 3. **\`eval_js\`** (~100 tokens) — targeted extraction when you know the DOM structure.
-4. **\`screenshot\`** (~1K+ tokens, IMAGE) — **last resort only.** Each screenshot is a full-page PNG that consumes vision tokens.
+4. **\`screenshot\`** (~640 tokens, IMAGE) — **last resort only.** Each screenshot is a 1024px JPEG that consumes vision tokens.
 
 ### Screenshot Rules
 - **NEVER screenshot to understand a page.** Use \`text\` and \`elements\` — they're faster, cheaper, and searchable.
@@ -607,7 +607,7 @@ grep > scroll > read-all. Always.
 ### Context Budget Awareness
 You have a single conversation context window. It does not reset between tool calls. Plan your tool usage:
 - A 10-page browsing session with text tools: ~5K tokens of tool output
-- The same session with screenshots after every navigation: ~10K+ tokens of images → context crash
+- The same session with screenshots after every navigation: ~6K+ tokens of images → context pressure
 - When in doubt, use text. You can always take ONE screenshot at the end to verify visually.
 
 ## Problem-Solving Directive

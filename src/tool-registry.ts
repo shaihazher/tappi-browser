@@ -482,22 +482,23 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     }),
 
     browser_screenshot: tool({
-      description: 'Capture a screenshot of the browser tab, window, or full scrollable page. Returns file path + metadata. target: "tab" (default) | "window" (full Electron window) | "fullpage" (stitched scrollable page). format: "png" (default) | "jpeg". quality: JPEG quality 1-100 (default 90). saveTo: custom file path (default: <workspace>/screenshots/).',
+      description: 'Capture a screenshot of the browser tab, window, or full scrollable page. Returns file path + metadata. target: "tab" (default) | "window" (full Electron window) | "fullpage" (stitched scrollable page). format: "jpeg" (default) | "png". quality: JPEG quality 1-100 (default 80). maxDimension: max width/height in px (default: 1024). saveTo: custom file path (default: <workspace>/screenshots/).',
       inputSchema: z.object({
         target:  z.enum(['tab', 'window', 'fullpage']).optional().describe('What to capture (default: tab)'),
-        saveTo:  z.string().optional().describe('File path to save to (default: <workspace>/screenshots/capture-{ts}.png)'),
-        format:  z.enum(['png', 'jpeg']).optional().describe('Image format (default: png)'),
-        quality: z.number().optional().describe('JPEG quality 1-100 (default: 90)'),
+        saveTo:  z.string().optional().describe('File path to save to (default: <workspace>/screenshots/capture-{ts}.jpeg)'),
+        format:  z.enum(['png', 'jpeg']).optional().describe('Image format (default: jpeg)'),
+        quality: z.number().optional().describe('JPEG quality 1-100 (default: 80)'),
+        maxDimension: z.number().optional().describe('Max width/height in pixels (default: 1024)'),
       }),
-      execute: async ({ target, saveTo, format, quality }: {
-        target?: 'tab' | 'window' | 'fullpage'; saveTo?: string; format?: 'png' | 'jpeg'; quality?: number;
+      execute: async ({ target, saveTo, format, quality, maxDimension }: {
+        target?: 'tab' | 'window' | 'fullpage'; saveTo?: string; format?: 'png' | 'jpeg'; quality?: number; maxDimension?: number;
       }) => {
         try {
           // Phase 8.35: Capture the real web tab, not the Aria tab.
           const result = await captureTools.captureScreenshot(
             browserCtx.window,
             browserCtx.tabManager.activeWebTabWebContents,
-            { target, saveTo, format, quality },
+            { target, saveTo, format, quality, maxDimension },
           );
           return `✅ Screenshot saved: ${result.path} (${result.width}×${result.height}, ${(result.size / 1024).toFixed(1)} KB)\n💡 For finding/clicking elements, elements() returns indexed refs in ~200 tokens. Screenshots need vision (~1K tokens). Best for: visual layout verification, canvas apps, or when the user asks to see the page.`;
         } catch (e: any) {

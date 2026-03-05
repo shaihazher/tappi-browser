@@ -17,13 +17,13 @@ import { waitForLoad, waitForContent } from './browser-tools';
 
 // ─── Screenshot helpers ───
 
-const SCREENSHOT_MAX_DIM = 2048;
+const SCREENSHOT_MAX_DIM = 1024;
 
 /**
  * Capture page screenshot. Retries with backoff until a valid image is obtained.
  * Always returns a valid NativeImage — never throws.
  */
-export async function safeCapturePage(wc: WebContents): Promise<Electron.NativeImage> {
+export async function safeCapturePage(wc: WebContents, maxDim: number = SCREENSHOT_MAX_DIM): Promise<Electron.NativeImage> {
   const MAX_ATTEMPTS = 6;
   const BACKOFF = [100, 300, 600, 1000, 2000, 3000];
 
@@ -58,10 +58,10 @@ export async function safeCapturePage(wc: WebContents): Promise<Electron.NativeI
       }
 
       // Downscale for Claude API compatibility on Retina/high-DPI displays
-      if (width > SCREENSHOT_MAX_DIM || height > SCREENSHOT_MAX_DIM) {
+      if (width > maxDim || height > maxDim) {
         return width >= height
-          ? image.resize({ width: SCREENSHOT_MAX_DIM })
-          : image.resize({ height: SCREENSHOT_MAX_DIM });
+          ? image.resize({ width: maxDim })
+          : image.resize({ height: maxDim });
       }
       return image;
     } catch {
@@ -79,10 +79,10 @@ export async function safeCapturePage(wc: WebContents): Promise<Electron.NativeI
     }
     const image = await wc.capturePage();
     const { width, height } = image.getSize();
-    if (width > SCREENSHOT_MAX_DIM || height > SCREENSHOT_MAX_DIM) {
+    if (width > maxDim || height > maxDim) {
       return width >= height
-        ? image.resize({ width: SCREENSHOT_MAX_DIM })
-        : image.resize({ height: SCREENSHOT_MAX_DIM });
+        ? image.resize({ width: maxDim })
+        : image.resize({ height: maxDim });
     }
     return image;
   } catch {
@@ -557,10 +557,10 @@ function cullOldScreenshots() {
   try {
     const tmpDir = require('os').tmpdir();
     const cutoff = Date.now() - 60 * 60 * 1000;
-    const files = fs.readdirSync(tmpDir).filter(f => f.startsWith('tappi-screenshot-') && f.endsWith('.png'));
+    const files = fs.readdirSync(tmpDir).filter(f => f.startsWith('tappi-screenshot-') && (f.endsWith('.png') || f.endsWith('.jpg')));
     let deleted = 0;
     for (const f of files) {
-      const ts = parseInt(f.replace('tappi-screenshot-', '').replace('.png', ''), 10);
+      const ts = parseInt(f.replace('tappi-screenshot-', '').replace('.png', '').replace('.jpg', ''), 10);
       if (ts && ts < cutoff) {
         try { fs.unlinkSync(path.join(tmpDir, f)); deleted++; } catch {}
       }
@@ -569,13 +569,14 @@ function cullOldScreenshots() {
   } catch {}
 }
 
-export async function pageScreenshot(wc: WebContents, filePath?: string): Promise<string> {
-  const image = await safeCapturePage(wc);
+export async function pageScreenshot(wc: WebContents, filePath?: string, maxDim?: number): Promise<string> {
+  const image = await safeCapturePage(wc, maxDim);
   // Always save to file — never return inline base64 (it would be 1M+ tokens in conversation history)
   const resolved = filePath
     ? path.resolve(filePath)
-    : path.join(require('os').tmpdir(), `tappi-screenshot-${Date.now()}.png`);
-  fs.writeFileSync(resolved, image.toPNG());
+    : path.join(require('os').tmpdir(), `tappi-screenshot-${Date.now()}.jpg`);
+  const isJpeg = resolved.endsWith('.jpg') || resolved.endsWith('.jpeg');
+  fs.writeFileSync(resolved, isJpeg ? image.toJPEG(80) : image.toPNG());
   const sizeKB = Math.round(fs.statSync(resolved).size / 1024);
 
   // Clean up old temp screenshots (>1 hour) — only for auto-generated paths

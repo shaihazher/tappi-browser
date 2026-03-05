@@ -56,6 +56,7 @@ export interface ScreenshotParams {
   saveTo?: string;
   format?: 'png' | 'jpeg';
   quality?: number;
+  maxDimension?: number;
 }
 
 export interface ScreenshotResult {
@@ -74,8 +75,9 @@ export async function captureScreenshot(
   params: ScreenshotParams,
 ): Promise<ScreenshotResult> {
   const target  = params.target  || 'tab';
-  const format  = params.format  || 'png';
-  const quality = Math.min(100, Math.max(1, params.quality ?? 90));
+  const format  = params.format  || 'jpeg';
+  const quality = Math.min(100, Math.max(1, params.quality ?? 80));
+  const maxDim  = params.maxDimension ?? 1024;
   const ts      = Date.now();
 
   const defaultName = `capture-${ts}.${format}`;
@@ -117,7 +119,14 @@ export async function captureScreenshot(
       : await activeWebContents!.capturePage();
   }
 
-  const { width, height } = image.getSize();
+  // Downscale if needed
+  let { width, height } = image.getSize();
+  if (width > maxDim || height > maxDim) {
+    image = width >= height
+      ? image.resize({ width: maxDim })
+      : image.resize({ height: maxDim });
+    ({ width, height } = image.getSize());
+  }
   const buf = format === 'jpeg' ? image.toJPEG(quality) : image.toPNG();
   fs.writeFileSync(savePath, buf);
 

@@ -386,21 +386,23 @@ async function handleRequest(
     if (method === 'GET' && m) {
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
-      const result = await pageTools.pageScreenshot(wc, undefined);
+      const maxDim = query.maxDim ? parseInt(query.maxDim, 10) : undefined;
+      const result = await pageTools.pageScreenshot(wc, undefined, maxDim);
       return json(res, 200, { result });
     }
   }
 
-  // ── GET /api/tabs/:id/screenshot/raw — returns actual PNG binary ────────────
+  // ── GET /api/tabs/:id/screenshot/raw — returns actual JPEG binary ────────────
   {
     const m = matchRoute('/api/tabs/:id/screenshot/raw', urlPath);
     if (method === 'GET' && m) {
       const wc = tabManager.getWebContentsForTab(m.id);
       if (!wc) return err(res, 404, 'Tab not found');
-      const image = await pageTools.safeCapturePage(wc);
-      const png = image.toPNG();
-      res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length });
-      res.end(png);
+      const maxDim = query.maxDim ? parseInt(query.maxDim, 10) : undefined;
+      const image = await pageTools.safeCapturePage(wc, maxDim);
+      const buf = image.toJPEG(80);
+      res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': buf.length });
+      res.end(buf);
       return;
     }
   }
@@ -722,7 +724,7 @@ async function handleRequest(
     const result = await captureTools.captureScreenshot(
       mainWindow,
       wc,
-      { target: body.target || 'tab', format: body.format, quality: body.quality, saveTo: body.saveTo },
+      { target: body.target || 'tab', format: body.format, quality: body.quality, saveTo: body.saveTo, maxDimension: body.maxDimension },
     );
     return json(res, 200, { path: result.path, width: result.width, height: result.height, size: result.size });
   }
