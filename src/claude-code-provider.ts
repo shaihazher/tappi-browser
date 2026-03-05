@@ -904,15 +904,7 @@ export async function scriptifyViaCli(
 
     proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
 
-    const timeout = setTimeout(() => {
-      try { proc.kill('SIGTERM'); } catch {}
-      flushLineBuffer();
-      console.error('[claude-code] scriptify timed out. stderr:', stderr.slice(0, 500));
-      resolve({ error: 'Scriptify timed out after 120s. Conversation may be too long — try a shorter one.' });
-    }, 120_000);
-
     proc.on('close', (code) => {
-      clearTimeout(timeout);
       flushLineBuffer();
       if (code !== 0) {
         // CLI may print errors to stdout (e.g. "cannot launch inside another session")
@@ -939,7 +931,6 @@ export async function scriptifyViaCli(
     });
 
     proc.on('error', (err: Error) => {
-      clearTimeout(timeout);
       console.error('[claude-code] scriptify spawn error:', err.message);
       resolve({ error: `Failed to start CLI: ${err.message}` });
     });
