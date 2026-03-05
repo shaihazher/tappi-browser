@@ -86,10 +86,18 @@ const darkModeCSSKeys = new Map<string, string>(); // webContents id → CSS key
 export function waitForLoad(wc: WebContents, timeoutMs = 4000): Promise<void> {
   return new Promise<void>((resolve) => {
     let done = false;
-    const finish = () => { if (!done) { done = true; resolve(); } };
+    const finish = () => {
+      if (done) return;
+      done = true;
+      wc.removeListener('did-finish-load', onLoad);
+      wc.removeListener('did-fail-load', onFail);
+      resolve();
+    };
+    const onLoad = () => { clearTimeout(timer); finish(); };
+    const onFail = () => { clearTimeout(timer); finish(); };
     const timer = setTimeout(finish, timeoutMs);
-    wc.once('did-finish-load', () => { clearTimeout(timer); finish(); });
-    wc.once('did-fail-load', () => { clearTimeout(timer); finish(); });
+    wc.once('did-finish-load', onLoad);
+    wc.once('did-fail-load', onFail);
   });
 }
 

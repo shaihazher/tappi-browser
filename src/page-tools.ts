@@ -27,11 +27,26 @@ export async function safeCapturePage(wc: WebContents): Promise<Electron.NativeI
   const MAX_ATTEMPTS = 6;
   const BACKOFF = [100, 300, 600, 1000, 2000, 3000];
 
+  // Guard: destroyed WebContents can never capture
+  if (wc.isDestroyed()) {
+    const { nativeImage } = require('electron');
+    return nativeImage.createEmpty();
+  }
+
+  // If page is actively navigating, wait for it to settle first
+  if (wc.isLoading()) {
+    await waitForLoad(wc, 8000);
+  }
+
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
-      // On first failure or if page is loading, wait for it to settle
       if (attempt > 0) {
-        await waitForLoad(wc, BACKOFF[attempt]);
+        await sleep(BACKOFF[attempt]);
+      }
+
+      if (wc.isDestroyed()) {
+        const { nativeImage } = require('electron');
+        return nativeImage.createEmpty();
       }
 
       const image = await wc.capturePage();
@@ -39,7 +54,6 @@ export async function safeCapturePage(wc: WebContents): Promise<Electron.NativeI
 
       // 0×0 means page isn't painted yet — retry
       if (width === 0 || height === 0) {
-        await sleep(BACKOFF[attempt]);
         continue;
       }
 
@@ -56,16 +70,25 @@ export async function safeCapturePage(wc: WebContents): Promise<Electron.NativeI
     }
   }
 
-  // Final attempt after full wait-for-load
-  await waitForLoad(wc, 5000);
-  const image = await wc.capturePage();
-  const { width, height } = image.getSize();
-  if (width > SCREENSHOT_MAX_DIM || height > SCREENSHOT_MAX_DIM) {
-    return width >= height
-      ? image.resize({ width: SCREENSHOT_MAX_DIM })
-      : image.resize({ height: SCREENSHOT_MAX_DIM });
+  // Final attempt after generous wait-for-load
+  try {
+    await waitForLoad(wc, 5000);
+    if (wc.isDestroyed()) {
+      const { nativeImage } = require('electron');
+      return nativeImage.createEmpty();
+    }
+    const image = await wc.capturePage();
+    const { width, height } = image.getSize();
+    if (width > SCREENSHOT_MAX_DIM || height > SCREENSHOT_MAX_DIM) {
+      return width >= height
+        ? image.resize({ width: SCREENSHOT_MAX_DIM })
+        : image.resize({ height: SCREENSHOT_MAX_DIM });
+    }
+    return image;
+  } catch {
+    const { nativeImage } = require('electron');
+    return nativeImage.createEmpty();
   }
-  return image;
 }
 
 // ─── Helpers ───
