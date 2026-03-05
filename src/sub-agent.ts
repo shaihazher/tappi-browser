@@ -37,6 +37,7 @@ import { addMessage, addMessages, getWindow, getFullHistory, clearHistory, sanit
 import { purgeSession } from './output-buffer';
 import { cleanupSession } from './shell-tools';
 import { loadUserProfileTxt } from './user-profile';
+import { classifyError, buildBudgetWarning } from './agent-harness';
 
 // ─── Types ───
 
@@ -49,6 +50,7 @@ export interface SubAgentTask {
   workingDir?: string;      // Working directory for file operations
   status: 'running' | 'completed' | 'failed' | 'killed';
   sessionId: string;
+  parentSessionId: string;  // parent session for delegation-patience lookup
   assignedTabId?: string;   // dedicated browser tab for this sub-agent
   abortController?: AbortController; // Phase 9.12: for kill support
   result?: string;
@@ -79,13 +81,29 @@ const MAX_CONCURRENT = 5;
 const activeAgents = new Map<string, SubAgentTask>();
 let agentCounter = 0;
 
-// Phase 10: Depth presets — tighter step/output budgets for token efficiency.
-// quick: 3 steps (was 5), standard: 10 steps (was 15), deep: 20 steps (was 30).
+/**
+ * Count running sub-agents, optionally filtered to a parent session.
+ * Used by agent.ts for delegation-patience: suppress idle detection
+ * while sub-agents are actively working.
+ */
+export function getActiveSubAgentCount(parentSessionId?: string): number {
+  let count = 0;
+  for (const [, agent] of activeAgents) {
+    if (agent.status === 'running') {
+      if (!parentSessionId || agent.parentSessionId === parentSessionId) count++;
+    }
+  }
+  return count;
+}
+
+// Depth presets — realistic step budgets for actual agentic work.
+// A minimal web search (search → click → read → click → read → synthesize) needs 6+ steps.
+// Standard research across 3 pages needs 15-20 steps. Deep research/coding needs 30-50.
 export type SubAgentDepth = 'quick' | 'standard' | 'deep';
 const DEPTH_PRESETS: Record<SubAgentDepth, { maxSteps: number; maxSources: number; maxOutputChars: number; thinkingEnabled: boolean; maxOutputTokens: number }> = {
-  quick:    { maxSteps: 3,  maxSources: 1, maxOutputChars: 800,  thinkingEnabled: false, maxOutputTokens: 4096 },
-  standard: { maxSteps: 10, maxSources: 3, maxOutputChars: 2000, thinkingEnabled: false, maxOutputTokens: 16384 },
-  deep:     { maxSteps: 20, maxSources: 5, maxOutputChars: 4000, thinkingEnabled: true,  maxOutputTokens: 16384 },
+  quick:    { maxSteps: 8,  maxSources: 2, maxOutputChars: 1500, thinkingEnabled: false, maxOutputTokens: 8192 },
+  standard: { maxSteps: 25, maxSources: 5, maxOutputChars: 4000, thinkingEnabled: false, maxOutputTokens: 16384 },
+  deep:     { maxSteps: 50, maxSources: 8, maxOutputChars: 8000, thinkingEnabled: true,  maxOutputTokens: 16384 },
 };
 
 // ─── Task Classifier ───
@@ -378,6 +396,7 @@ export async function spawnSubAgent(
     workingDir,
     status: 'running',
     sessionId,
+    parentSessionId,
     assignedTabId,
     abortController,
     startedAt: Date.now(),
@@ -866,52 +885,87 @@ Timezone: ${tz}
       console.log(`[sub-agent] ${agentTask.id} codex backend metrics:`, JSON.stringify(codexRun.metrics));
     } else {
       executionMode = 'generateText';
-      const result = await generateText({
-        model,
-        system: systemPrompt,
-        messages: llmMessages as any,
-        tools,
-        // Phase 10: Depth-based output token limit (was 30000 for all depths)
-        ...(subLlmConfig.provider !== 'openai-codex' ? { maxOutputTokens: depthPreset.maxOutputTokens } : {}),
-        ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
-        stopWhen: stepCountIs(MAX_STEPS),
-        abortSignal,
-        // Phase 10: Truncate old tool results to prevent context bloat across multi-step loops.
-        // Tool results >3000 chars are trimmed before each subsequent LLM call.
-        prepareStep: async ({ messages: currentMessages }: { messages: any[] }) => {
-          return {
-            messages: currentMessages.map((msg: any) => {
-              if (msg.role === 'tool' && typeof msg.content === 'string' && msg.content.length > 3000) {
-                return { ...msg, content: msg.content.slice(0, 3000) + '\n...(truncated)' };
-              }
-              if (msg.role === 'tool' && Array.isArray(msg.content)) {
-                return {
-                  ...msg,
-                  content: msg.content.map((part: any) => {
-                    if (part.type === 'tool-result' && typeof part.result === 'string' && part.result.length > 3000) {
-                      return { ...part, result: part.result.slice(0, 3000) + '\n...(truncated)' };
-                    }
-                    return part;
-                  }),
-                };
-              }
-              return msg;
-            }),
-          };
-        },
-        onStepFinish: handleStepFinish,
-      });
 
-      finalText = (result.text || '').trim();
-      fallbackSteps = result.steps || [];
-      try {
-        const response = await (result as any).response;
-        const responseMessages = response?.messages || [];
-        if (Array.isArray(responseMessages) && responseMessages.length > 0) {
-          structuredResponseMessages = responseMessages as ChatMessage[];
+      // Retry loop: max 2 retries for sub-agents (tighter budget than main agent)
+      const SUB_AGENT_MAX_RETRIES = 2;
+      let truncationLimit = 3000; // Tightened on context_length retry
+
+      for (let attempt = 0; attempt <= SUB_AGENT_MAX_RETRIES; attempt++) {
+        try {
+          const currentTruncLimit = truncationLimit;
+          const result = await generateText({
+            model,
+            system: systemPrompt,
+            messages: llmMessages as any,
+            tools,
+            // Depth-based output token limit
+            ...(subLlmConfig.provider !== 'openai-codex' ? { maxOutputTokens: depthPreset.maxOutputTokens } : {}),
+            ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
+            stopWhen: stepCountIs(MAX_STEPS),
+            abortSignal,
+            prepareStep: async ({ messages: currentMessages }: { messages: any[] }) => {
+              // Budget warning at 80% of MAX_STEPS
+              const budgetMessages = [...currentMessages];
+              if (observedSteps >= Math.floor(MAX_STEPS * 0.8) && observedSteps < MAX_STEPS) {
+                budgetMessages.push({
+                  role: 'user',
+                  content: buildBudgetWarning(observedSteps, MAX_STEPS),
+                } as any);
+              }
+              // Truncate old tool results to prevent context bloat
+              return {
+                messages: budgetMessages.map((msg: any) => {
+                  if (msg.role === 'tool' && typeof msg.content === 'string' && msg.content.length > currentTruncLimit) {
+                    return { ...msg, content: msg.content.slice(0, currentTruncLimit) + '\n...(truncated)' };
+                  }
+                  if (msg.role === 'tool' && Array.isArray(msg.content)) {
+                    return {
+                      ...msg,
+                      content: msg.content.map((part: any) => {
+                        if (part.type === 'tool-result' && typeof part.result === 'string' && part.result.length > currentTruncLimit) {
+                          return { ...part, result: part.result.slice(0, currentTruncLimit) + '\n...(truncated)' };
+                        }
+                        return part;
+                      }),
+                    };
+                  }
+                  return msg;
+                }),
+              };
+            },
+            onStepFinish: handleStepFinish,
+          });
+
+          finalText = (result.text || '').trim();
+          fallbackSteps = result.steps || [];
+          try {
+            const response = await (result as any).response;
+            const responseMessages = response?.messages || [];
+            if (Array.isArray(responseMessages) && responseMessages.length > 0) {
+              structuredResponseMessages = responseMessages as ChatMessage[];
+            }
+          } catch {
+            // Best-effort only
+          }
+          break; // Success — exit retry loop
+        } catch (retryErr: any) {
+          if (retryErr?.name === 'AbortError') throw retryErr; // Don't retry aborts
+
+          const classified = classifyError(retryErr);
+          if (!classified.retryable || attempt >= SUB_AGENT_MAX_RETRIES) throw retryErr;
+
+          // On context_length error, tighten truncation
+          if (classified.category === 'context_length') {
+            truncationLimit = Math.max(500, Math.floor(truncationLimit / 2));
+            console.warn(`[sub-agent] ${agentTask.id} context_length error — tightening truncation to ${truncationLimit} chars`);
+          }
+
+          const delayMs = classified.suggestedDelayMs * (attempt + 1);
+          console.warn(`[sub-agent] ${agentTask.id} ${classified.category} error (attempt ${attempt + 1}/${SUB_AGENT_MAX_RETRIES + 1}), retrying in ${delayMs}ms: ${retryErr?.message?.slice(0, 200)}`);
+          await new Promise(r => setTimeout(r, delayMs));
+          // Reset tracking for retry
+          resetRunTracking();
         }
-      } catch {
-        // Best-effort only
       }
     }
 

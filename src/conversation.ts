@@ -370,3 +370,38 @@ ${transcript.join('\n')}
 
 Summary (2-4 bullets, past tense, ~100 words max):`;
 }
+
+// ─── Force Compaction ────────────────────────────────────────────────────────
+
+/**
+ * Force mid-run context compaction. Summarizes evicted messages using a
+ * secondary (cheaper) model and updates the eviction summary.
+ *
+ * Called by agent.ts when estimated token usage exceeds 80% of budget.
+ * Uses the existing buildSummaryPrompt → generateText → setEvictionSummary flow.
+ */
+export async function forceCompaction(
+  sessionId: string,
+  generateSummary: (prompt: string) => Promise<string>,
+): Promise<boolean> {
+  const evicted = getUnsummarizedEvictedMessages(sessionId);
+  if (!evicted) return false;
+
+  try {
+    const prompt = buildSummaryPrompt(evicted.messages);
+    const summary = await generateSummary(prompt);
+    if (summary && summary.trim().length > 0) {
+      const state = getState(sessionId);
+      // Merge with existing summary if present
+      const merged = state.evictionSummary
+        ? `${state.evictionSummary}\n\n${summary.trim()}`
+        : summary.trim();
+      setEvictionSummary(sessionId, merged, evicted.boundary);
+      console.log(`[conversation] Force compaction: summarized ${evicted.messages.length} messages for session ${sessionId}`);
+      return true;
+    }
+  } catch (err: any) {
+    console.error('[conversation] Force compaction failed:', err?.message);
+  }
+  return false;
+}

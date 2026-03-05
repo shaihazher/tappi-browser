@@ -68,6 +68,26 @@ import { getLoginHint } from './login-state';
 import { profileManager } from './profile-manager';
 import { sessionManager } from './session-manager';
 import { listIdentities } from './password-vault';
+import { getActiveSubAgentCount } from './sub-agent';
+import { forceCompaction } from './conversation';
+import {
+  classifyError,
+  truncateToolResults,
+  createProgressState,
+  assessProgress,
+  updateProgressState,
+  buildReflectionPrompt,
+  buildCourseCorrection,
+  buildSelfCheckPrompt,
+  buildTimeReflection,
+  buildContinuationState,
+  buildContinuationPrimer,
+  setContinuationState,
+  getContinuationState,
+  clearContinuationState,
+  estimateMessageTokens,
+  type ProgressState,
+} from './agent-harness';
 
 // Wrapper: clear conversation history AND working context for a session
 export function clearHistory(sessionId: string = 'default'): void {
@@ -538,6 +558,15 @@ Timezone: ${tz}
     // Restore in-memory history from persisted conversation after restart/switch.
     hydrateSessionFromConversationIfNeeded(sessionId, conversationId);
 
+    // ─── Continuation State: inject context from previous failed run ────────
+    const prevContinuation = getContinuationState(sessionId);
+    if (prevContinuation) {
+      const primer = buildContinuationPrimer(prevContinuation);
+      addMessage(sessionId, { role: 'system', content: primer });
+      clearContinuationState(sessionId);
+      console.log(`[agent] Injected continuation primer (reason: ${prevContinuation.reason}, ${prevContinuation.toolCallCount} prior tool calls)`);
+    }
+
     // Add user message to history
     addMessage(sessionId, { role: 'user', content: userMessage });
 
@@ -597,9 +626,12 @@ Timezone: ${tz}
     let warningInjected = false;
     let dupHintPending = false;
     let recentCalls: Array<{ tool: string; args: string }> = [];
-    let idleCount = 0;
     let emptyToolCallFinishCount = 0; // Counts steps where finishReason=tool-calls but 0 parsed calls
     let toolCallCount = 0;
+    const progressState: ProgressState = createProgressState();
+    let lastReflectionStep = 0;     // Step-based self-reflection tracking
+    let lastTimeReflectionMs = Date.now(); // Time-based reflection tracking
+    let compactionInProgress = false; // Prevent double-trigger of mid-run compaction
 
     // Phase 9.15: direct Codex backend path now uses AI SDK streamText/Responses.
     // Keep legacy manual codex loop disabled for compatibility while preserving code for fallback.
@@ -644,10 +676,18 @@ Timezone: ${tz}
       warningPending = true;
     }, Math.floor(timeoutMs * 0.8));
 
-    // Progress interval: emit agent:progress every second while running
+    // Enhanced progress interval: emit agent:progress every second with richer data
     const progressInterval = setInterval(() => {
       const elapsed = Date.now() - runStart;
-      broadcast('agent:progress', { elapsed, toolCalls: toolCallCount, timeoutMs });
+      broadcast('agent:progress', {
+        elapsed,
+        toolCalls: toolCallCount,
+        timeoutMs,
+        uniqueTools: progressState.uniqueToolsUsed.size,
+        lastToolName: toolsUsed.length > 0 ? toolsUsed[toolsUsed.length - 1] : undefined,
+        textLength: fullResponse.length,
+        stuckSignals: progressState.textOnlySteps,
+      });
       agentProgressData = { running: true, elapsed, toolCalls: toolCallCount, timeoutMs };
     }, 1000);
     agentProgressData = { running: true, elapsed: 0, toolCalls: 0, timeoutMs };
@@ -668,6 +708,10 @@ Timezone: ${tz}
     const conversationEvents: Array<{ role: string; content: string }> = [];
     // Capture user intent for playbook generation
     conversationEvents.push({ role: 'user', content: userMessage });
+
+    // ─── Retry Loop: wrap LLM call + stream in retry for transient errors ───
+    const MAIN_MAX_RETRIES = 3;
+    for (let mainAttempt = 0; mainAttempt <= MAIN_MAX_RETRIES; mainAttempt++) {
     try {
       // Stream-start fires on first chunk from LLM (no early artificial indicators).
       console.log('[agent] Calling LLM:', llmConfig.provider, llmConfig.model, 'key:', llmConfig.apiKey.slice(0, 4) + '***');
@@ -692,11 +736,13 @@ Timezone: ${tz}
 
           console.log(`[agent] STEP FINISH — step: ${event.stepNumber ?? '?'}, finishReason: ${finishReason}, tools: ${toolResults.length}, parsed_calls: ${toolCalls.length}, tool_intent: ${toolIntent ? 'yes' : 'no'}, text: ${(event.text?.length ?? 0)} chars, reasoning: ${(event.reasoningText?.length ?? 0)} chars`);
 
-          if (toolResults.length === 0) {
-            idleCount++;
-          } else {
-            idleCount = 0;
-          }
+          // Update progress state (replaces simple idleCount)
+          const hasActiveSubAgents = getActiveSubAgentCount(sessionId) > 0;
+          updateProgressState(progressState, {
+            toolCalls: toolCalls.map((tc: any) => ({ toolName: tc.toolName, args: tc.args })),
+            toolResults: toolResults.map((tr: any) => ({ toolName: tr.toolName || 'unknown', result: tr.output ?? tr.result })),
+            hasActiveSubAgents,
+          });
 
           // Detect anomalous "finishReason=tool-calls but 0 actual calls" — always a bug
           if (/tool/i.test(finishReason) && toolCalls.length === 0 && toolResults.length === 0) {
@@ -775,6 +821,7 @@ Timezone: ${tz}
           providerOptions: callProviderOptions,
           abortSignal: abortController.signal,
           prepareStep: async ({ messages: currentMessages }) => {
+            let injectedMessages = [...currentMessages];
             // 80% timeout warning injection (parity with AI SDK prepareStep path)
             if (warningPending && !warningInjected) {
               warningInjected = true;
@@ -783,19 +830,15 @@ Timezone: ${tz}
               const totalMin = Math.floor(timeoutMs / 60000);
               const warningMsg = `[⏰ Approaching timeout (${elapsedMin}m of ${totalMin}m). Wrap up your current task.]`;
               console.log('[agent] Injecting timeout warning');
-              return {
-                messages: [...currentMessages, { role: 'user', content: warningMsg } as any],
-              };
+              injectedMessages.push({ role: 'user', content: warningMsg } as any);
             }
             // Duplicate detection hint injection
             if (dupHintPending) {
               dupHintPending = false;
-              return {
-                messages: [...currentMessages, {
-                  role: 'user',
-                  content: "[You're repeating the same action. Try a different approach.]",
-                } as any],
-              };
+              injectedMessages.push({
+                role: 'user',
+                content: "[You're repeating the same action. Try a different approach.]",
+              } as any);
             }
             // Detect "finishReason=tool-calls but 0 parsed calls" stall — abort after 2
             if (emptyToolCallFinishCount >= 2) {
@@ -805,14 +848,27 @@ Timezone: ${tz}
               abortController.abort();
               return undefined;
             }
-            // Idle detection: 5 consecutive text-only turns → abort
-            if (idleCount >= 5) {
-              console.log(`[agent] Idle detection: ${idleCount} text-only turns — stopping`);
-              stopReason = 'idle';
-              _lastStopReason = 'idle';
-              abortController.abort();
+            // Sub-agent-aware idle suppression + progress assessment
+            const hasActiveSubAgents = getActiveSubAgentCount(sessionId) > 0;
+            if (!hasActiveSubAgents) {
+              const assessment = assessProgress(progressState);
+              if (assessment.action === 'abort') {
+                console.log(`[agent] Progress assessment: ABORT — ${assessment.reason}`);
+                stopReason = 'idle';
+                _lastStopReason = 'idle';
+                abortController.abort();
+                return undefined;
+              }
+              if (assessment.action === 'inject_reflection') {
+                injectedMessages.push({ role: 'user', content: buildReflectionPrompt(progressState) } as any);
+              }
+              if (assessment.action === 'inject_course_correction') {
+                injectedMessages.push({ role: 'user', content: buildCourseCorrection(assessment.reason || 'stuck') } as any);
+              }
             }
-            return undefined;
+            // Tool result truncation
+            truncateToolResults(injectedMessages, { recentMaxBytes: 8192, olderMaxBytes: 2048 });
+            return injectedMessages !== currentMessages ? { messages: injectedMessages } : undefined;
           },
           onReasoningDelta: (delta: string) => {
             codexReasoningChunkCount++;
@@ -898,6 +954,8 @@ Timezone: ${tz}
           stopWhen: stepCountIs(200),
           abortSignal: abortController.signal,
           prepareStep: async ({ messages: currentMessages }: { messages: any[] }) => {
+            let injectedMessages = [...currentMessages];
+
             // 80% timeout warning injection
             if (warningPending && !warningInjected) {
               warningInjected = true;
@@ -906,17 +964,15 @@ Timezone: ${tz}
               const totalMin = Math.floor(timeoutMs / 60000);
               const warningMsg = `[⏰ Approaching timeout (${elapsedMin}m of ${totalMin}m). Wrap up your current task.]`;
               console.log('[agent] Injecting timeout warning');
-              return { messages: [...currentMessages, { role: 'user', content: warningMsg }] };
+              injectedMessages.push({ role: 'user', content: warningMsg } as any);
             }
             // Duplicate detection hint injection
             if (dupHintPending) {
               dupHintPending = false;
-              return {
-                messages: [...currentMessages, {
-                  role: 'user',
-                  content: "[You're repeating the same action. Try a different approach.]",
-                }],
-              };
+              injectedMessages.push({
+                role: 'user',
+                content: "[You're repeating the same action. Try a different approach.]",
+              } as any);
             }
             // Detect "finishReason=tool-calls but 0 parsed calls" stall — abort after 2
             if (emptyToolCallFinishCount >= 2) {
@@ -926,14 +982,82 @@ Timezone: ${tz}
               abortController.abort();
               return undefined;
             }
-            // Idle detection: 5 consecutive text-only turns → abort
-            if (idleCount >= 5) {
-              console.log(`[agent] Idle detection: ${idleCount} text-only turns — stopping`);
-              stopReason = 'idle';
-              _lastStopReason = 'idle';
-              abortController.abort();
+
+            // ─── Sub-agent-aware idle suppression ────────────────────────
+            // When sub-agents are running, suppress idle/progress checks entirely.
+            // The main agent IS making progress — its sub-agents are working.
+            const hasActiveSubAgents = getActiveSubAgentCount(sessionId) > 0;
+            if (!hasActiveSubAgents) {
+              // Progress assessment (replaces crude idleCount >= 5 → abort)
+              const assessment = assessProgress(progressState);
+              if (assessment.action === 'abort') {
+                console.log(`[agent] Progress assessment: ABORT — ${assessment.reason}`);
+                stopReason = 'idle';
+                _lastStopReason = 'idle';
+                abortController.abort();
+                return undefined;
+              }
+              if (assessment.action === 'inject_reflection') {
+                console.log(`[agent] Progress assessment: inject reflection — ${assessment.reason}`);
+                injectedMessages.push({ role: 'user', content: buildReflectionPrompt(progressState) } as any);
+              }
+              if (assessment.action === 'inject_course_correction') {
+                console.log(`[agent] Progress assessment: inject course correction — ${assessment.reason}`);
+                injectedMessages.push({ role: 'user', content: buildCourseCorrection(assessment.reason || 'stuck') } as any);
+              }
+
+              // ─── Step-based self-reflection (every 25 tool-calling steps) ──
+              if (toolCallCount >= 25 && toolCallCount - lastReflectionStep >= 25) {
+                lastReflectionStep = toolCallCount;
+                const elapsedMin = Math.floor((Date.now() - runStart) / 60_000);
+                console.log(`[agent] Injecting self-check at step ${toolCallCount}`);
+                injectedMessages.push({ role: 'user', content: buildSelfCheckPrompt(toolCallCount, elapsedMin) } as any);
+              }
+
+              // ─── Time-based reflection (every 10 minutes) ─────────────────
+              const now = Date.now();
+              if (now - lastTimeReflectionMs >= 600_000) {
+                lastTimeReflectionMs = now;
+                const elapsedMin = Math.floor((now - runStart) / 60_000);
+                console.log(`[agent] Injecting time-based reflection at ${elapsedMin}m`);
+                injectedMessages.push({ role: 'user', content: buildTimeReflection(elapsedMin) } as any);
+              }
             }
-            return undefined;
+
+            // ─── Tool result truncation (every step) ────────────────────
+            truncateToolResults(injectedMessages, { recentMaxBytes: 8192, olderMaxBytes: 2048 });
+
+            // ─── Proactive mid-run compaction ───────────────────────────
+            if (!compactionInProgress) {
+              const estimatedTokens = estimateMessageTokens(injectedMessages);
+              if (estimatedTokens > 80_000) { // 80% of 100K budget
+                compactionInProgress = true;
+                console.log(`[agent] Context pressure high (${estimatedTokens} est. tokens) — triggering mid-run compaction`);
+                forceCompaction(sessionId, async (prompt: string) => {
+                  try {
+                    const secondaryConfig = getModelConfig('secondary', llmConfig);
+                    const compactModel = createModel(secondaryConfig);
+                    const compactProviderOptions = buildProviderOptions(secondaryConfig);
+                    const compactResult = await generateText({
+                      model: compactModel,
+                      prompt,
+                      maxOutputTokens: 500,
+                      ...(Object.keys(compactProviderOptions).length > 0 ? { providerOptions: compactProviderOptions } : {}),
+                    });
+                    return compactResult.text || '';
+                  } catch (e: any) {
+                    console.error('[agent] Mid-run compaction LLM call failed:', e?.message);
+                    return '';
+                  }
+                }).catch(e => {
+                  console.error('[agent] Mid-run compaction error:', e?.message);
+                }).finally(() => {
+                  compactionInProgress = false;
+                });
+              }
+            }
+
+            return injectedMessages !== currentMessages ? { messages: injectedMessages } : undefined;
           },
           onStepFinish: handleStepFinish,
         };
@@ -1152,23 +1276,26 @@ Timezone: ${tz}
       }
 
       console.log('[agent] Stream complete, response:', fullResponse.length, 'chars, tools:', toolsUsed.length, '| mode:', resultMode);
+      break; // Success — exit retry loop
     } catch (streamErr: any) {
-      // AbortError = intentional stop (timeout, idle detection, or manual stop)
+      // AbortError = intentional stop (timeout, idle detection, or manual stop) — never retry
       if (streamErr?.name === 'AbortError') {
         if (stopReason === 'timeout') {
-          // Graceful timeout: preserve partial output + append notice
+          // Graceful timeout: preserve partial output + append notice + continuation state
           const elapsed = Date.now() - runStart;
           const min = Math.floor(elapsed / 60000);
           const sec = Math.floor((elapsed % 60000) / 1000);
           const durStr = min > 0 ? `${min}m ${sec}s` : `${sec}s`;
-          const notice = `\n\n---\n⏰ Agent timed out after ${durStr}. ${toolCallCount} tool calls completed.`;
+          const notice = `\n\n---\n⏰ Agent timed out after ${durStr}. ${toolCallCount} tool calls completed. To continue, send a follow-up message.`;
           if (!streamStarted) broadcast('agent:stream-start', {});
+          // Build continuation state for resume on next message
+          const lastTool = toolsUsed.length > 0 ? toolsUsed[toolsUsed.length - 1] : 'none';
+          setContinuationState(sessionId, buildContinuationState('timeout', toolCallCount, lastTool, elapsed, fullResponse));
           if (fullResponse) {
             sendChunk(mainWindow, notice, true, ariaWebContents);
-            // Persist partial + notice for context
             addMessage(sessionId, { role: 'assistant' as const, content: fullResponse + notice });
           } else if (toolsUsed.length > 0) {
-            sendChunk(mainWindow, `⏰ Timed out after ${durStr}. ${toolCallCount} tool calls completed: ${[...new Set(toolsUsed)].join(', ')}`, true, ariaWebContents);
+            sendChunk(mainWindow, `⏰ Timed out after ${durStr}. ${toolCallCount} tool calls completed: ${[...new Set(toolsUsed)].join(', ')}. To continue, send a follow-up message.`, true, ariaWebContents);
           } else {
             sendChunk(mainWindow, `⏰ Agent timed out after ${durStr}.`, true, ariaWebContents);
           }
@@ -1191,15 +1318,50 @@ Timezone: ${tz}
         }
         return;
       }
+
+      // ─── Retry on transient errors ─────────────────────────────────
+      const classified = classifyError(streamErr);
+      if (classified.retryable && mainAttempt < MAIN_MAX_RETRIES) {
+        const delayMs = classified.suggestedDelayMs * (mainAttempt + 1);
+        console.warn(`[agent] ${classified.category} error (attempt ${mainAttempt + 1}/${MAIN_MAX_RETRIES + 1}), retrying in ${delayMs}ms: ${streamErr?.message?.slice(0, 200)}`);
+
+        // Notify UI about retry
+        if (!streamStarted) {
+          broadcast('agent:stream-start', {});
+          streamStarted = true;
+        }
+        sendChunk(mainWindow, `\n[Retrying after ${classified.category} error...]`, false, ariaWebContents);
+
+        // On context_length error, force compaction before retry
+        if (classified.category === 'context_length') {
+          try {
+            await forceCompaction(sessionId, async (prompt: string) => {
+              const secondaryConfig = getModelConfig('secondary', llmConfig);
+              const compactModel = createModel(secondaryConfig);
+              const compactResult = await generateText({ model: compactModel, prompt, maxOutputTokens: 500 });
+              return compactResult.text || '';
+            });
+          } catch (compErr: any) {
+            console.error('[agent] Compaction before retry failed:', compErr?.message);
+          }
+        }
+
+        await new Promise(r => setTimeout(r, delayMs));
+        continue; // Retry
+      }
+
+      // Not retryable or attempts exhausted — save continuation state and fail
       if (llmConfig.provider === 'openai-codex') {
         logProviderRequestError('agent.main.stream', streamErr);
       } else {
         console.error('[agent] Stream error:', streamErr?.message || streamErr);
       }
       if (!errorSent) {
+        const lastTool = toolsUsed.length > 0 ? toolsUsed[toolsUsed.length - 1] : 'none';
+        setContinuationState(sessionId, buildContinuationState('error', toolCallCount, lastTool, Date.now() - runStart, fullResponse));
         const details = extractRequestErrorDetails(streamErr, 1200);
         const errMsg = details.responseBody || details.message || 'Stream error';
-        sendError(mainWindow, errMsg, ariaWebContents);
+        sendError(mainWindow, `${errMsg}. To continue, send a follow-up message.`, ariaWebContents);
         errorSent = true;
       }
       return;
@@ -1209,6 +1371,7 @@ Timezone: ${tz}
       clearInterval(progressInterval);
       agentProgressData = { running: false, elapsed: Date.now() - runStart, toolCalls: toolCallCount, timeoutMs };
     }
+    } // end retry loop
 
     // ─── Persist structured response messages (Phase 7.9) ───────────────────
     // Instead of saving just the flat text, save the full AI SDK ResponseMessage[]

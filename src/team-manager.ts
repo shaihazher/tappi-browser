@@ -16,6 +16,7 @@ import {
   extractRequestErrorDetails,
   type LLMConfig,
 } from './llm-client';
+import { classifyError } from './agent-harness';
 import { createTools } from './tool-registry';
 import type { BrowserContext } from './browser-tools';
 import { addMessage, addMessages, getWindow, clearHistory, type ChatMessage } from './conversation';
@@ -542,7 +543,9 @@ async function runTeammateSession(
       systemPrompt,
     );
 
-    let result;
+    let result: any;
+    const TEAMMATE_MAX_RETRIES = 2;
+    for (let tmAttempt = 0; tmAttempt <= TEAMMATE_MAX_RETRIES; tmAttempt++) {
     try {
     result = await streamText({
       model,
@@ -664,6 +667,7 @@ async function runTeammateSession(
         } catch {}
       },
     });
+    break; // Success — exit retry loop
     } catch (initErr: any) {
       // Catch InvalidPromptError / TypeValidationError on initial teammate invocation
       const errName = initErr?.name || initErr?.constructor?.name || '';
@@ -671,9 +675,18 @@ async function runTeammateSession(
         logProviderRequestError(`team.${name}.init`, initErr);
       }
       console.error(`[team] ${name} INITIAL streamText failed (${errName}):`, initErr?.message?.slice?.(0, 200));
-      // Rethrow — we can't simplify the initial invocation (no prior context to summarize)
-      throw initErr;
+
+      // Retry on transient errors (rate limit, network, server errors)
+      if (initErr?.name === 'AbortError' || tmAttempt >= TEAMMATE_MAX_RETRIES) throw initErr;
+      const classified = classifyError(initErr);
+      if (!classified.retryable) throw initErr;
+
+      const delayMs = classified.suggestedDelayMs * (tmAttempt + 1);
+      console.warn(`[team] ${name} retrying after ${classified.category} (attempt ${tmAttempt + 1}/${TEAMMATE_MAX_RETRIES + 1}) in ${delayMs}ms`);
+      await new Promise(r => setTimeout(r, delayMs));
+      continue; // Retry
     }
+    } // end retry loop
 
     let fullResponse = '';
     let tmChunkCount = 0;
@@ -985,7 +998,11 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
       systemPrompt,
     );
 
-    const result = await streamText({
+    let result: any;
+    const RESUME_MAX_RETRIES = 2;
+    for (let resumeAttempt = 0; resumeAttempt <= RESUME_MAX_RETRIES; resumeAttempt++) {
+    try {
+    result = await streamText({
       model,
       system: systemPrompt,
       messages: resumedMessages as any,
@@ -1060,6 +1077,17 @@ async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void
         } catch {}
       },
     });
+    break; // Success — exit retry loop
+    } catch (resumeInitErr: any) {
+      if (resumeInitErr?.name === 'AbortError' || resumeAttempt >= RESUME_MAX_RETRIES) throw resumeInitErr;
+      const classified = classifyError(resumeInitErr);
+      if (!classified.retryable) throw resumeInitErr;
+      const delayMs = classified.suggestedDelayMs * (resumeAttempt + 1);
+      console.warn(`[team] ${name} resume retrying after ${classified.category} (attempt ${resumeAttempt + 1}/${RESUME_MAX_RETRIES + 1}) in ${delayMs}ms`);
+      await new Promise(r => setTimeout(r, delayMs));
+      continue;
+    }
+    } // end resume retry loop
     let fullResponse = '';
     let chunksReceived = 0;
     try {
