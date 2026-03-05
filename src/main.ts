@@ -67,7 +67,7 @@ import { scheduleProfileUpdate, deleteProfile, loadUserProfileTxt, saveUserProfi
 import { purgeSession } from './output-buffer';
 import { installExtension, installFromCrx, listExtensions, getExtension, removeExtension, enableExtension, disableExtension, loadPersistedExtensionsForProfile, extensionHasPermission } from './extension-manager';
 import { discoverNativeHosts, cleanupNativeHosts } from './native-messaging';
-import { startNativeMessagingBridge, stopNativeMessagingBridge, buildPolyfillScript } from './native-messaging-bridge';
+import { startNativeMessagingBridge, stopNativeMessagingBridge, buildPolyfillScript, setCookieSession } from './native-messaging-bridge';
 import { initCronManager, updateCronContext, addJob as cronAddJob, listJobs as cronListJobs, updateJob as cronUpdateJob, deleteJob as cronDeleteJob, runJobNow as cronRunJobNow, getJobsList, getActiveJobCount, cleanupCron } from './cron-manager';
 import {
   createConversation,
@@ -785,6 +785,9 @@ function createWindow() {
   // can be written with valid port/token during patchServiceWorkerPolyfill().
   discoverNativeHosts();
   startNativeMessagingBridge(extensionHasPermission).then(({ port: bridgePort, token: bridgeToken }) => {
+    // Provide the profile session to the bridge for chrome.cookies API
+    setCookieSession(session.fromPartition(profileManager.getSessionPartition()));
+
     // Now load persisted extensions — bridge is ready for polyfill injection
     loadPersistedExtensionsForProfile().catch(e =>
       console.error('[main] Extension auto-load error:', e)

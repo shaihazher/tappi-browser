@@ -29,6 +29,14 @@ let server: http.Server | null = null;
 let bridgePort = 0;
 let bridgeToken = '';
 
+// Electron session for chrome.cookies API (set via setCookieSession)
+let cookieSession: any = null;
+
+/** Set the Electron session used for chrome.cookies API in the bridge. */
+export function setCookieSession(ses: any): void {
+  cookieSession = ses;
+}
+
 // Track active WebSocket connections for cleanup
 const activeWebSockets = new Map<string, { socket: import('net').Socket; connectionId: string }>();
 
@@ -220,6 +228,114 @@ export function startNativeMessagingBridge(
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ hosts }));
         return;
+      }
+
+      // ── Cookie API endpoints ──────────────────────────────────────────────
+      // Provides functional chrome.cookies.* for extensions via the polyfill.
+
+      if (url.pathname.startsWith('/cookies/') && cookieSession) {
+        const auth = req.headers.authorization;
+        if (!auth || auth !== `Bearer ${bridgeToken}`) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const cookies = cookieSession.cookies;
+
+        // Helper: convert Electron cookie to Chrome cookie shape
+        const toChromeFormat = (c: any) => ({
+          name: c.name,
+          value: c.value,
+          domain: c.domain,
+          hostOnly: c.hostOnly ?? !c.domain?.startsWith('.'),
+          path: c.path || '/',
+          secure: c.secure ?? false,
+          httpOnly: c.httpOnly ?? false,
+          sameSite: c.sameSite || 'unspecified',
+          session: c.session ?? !c.expirationDate,
+          expirationDate: c.expirationDate,
+          storeId: '0',
+        });
+
+        try {
+          // POST /cookies/get — get single cookie
+          if (req.method === 'POST' && url.pathname === '/cookies/get') {
+            const body = JSON.parse(await readBody(req));
+            const results = await cookies.get({ url: body.url, name: body.name });
+            const cookie = results.length > 0 ? toChromeFormat(results[0]) : null;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ cookie }));
+            return;
+          }
+
+          // POST /cookies/getAll — get cookies matching filter
+          if (req.method === 'POST' && url.pathname === '/cookies/getAll') {
+            const body = JSON.parse(await readBody(req));
+            const filter: any = {};
+            if (body.url) filter.url = body.url;
+            if (body.domain) filter.domain = body.domain;
+            if (body.name) filter.name = body.name;
+            if (body.path) filter.path = body.path;
+            if (body.secure !== undefined) filter.secure = body.secure;
+            if (body.session !== undefined) filter.session = body.session;
+            const results = await cookies.get(filter);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ cookies: results.map(toChromeFormat) }));
+            return;
+          }
+
+          // POST /cookies/set — set a cookie
+          if (req.method === 'POST' && url.pathname === '/cookies/set') {
+            const body = JSON.parse(await readBody(req));
+            if (!body.url) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Missing url' }));
+              return;
+            }
+            const details: any = { url: body.url };
+            if (body.name !== undefined) details.name = body.name;
+            if (body.value !== undefined) details.value = body.value;
+            if (body.domain !== undefined) details.domain = body.domain;
+            if (body.path !== undefined) details.path = body.path;
+            if (body.secure !== undefined) details.secure = body.secure;
+            if (body.httpOnly !== undefined) details.httpOnly = body.httpOnly;
+            if (body.sameSite !== undefined) details.sameSite = body.sameSite;
+            if (body.expirationDate !== undefined) details.expirationDate = body.expirationDate;
+            await cookies.set(details);
+            // Read back the cookie to return it
+            const readBack = await cookies.get({ url: body.url, name: body.name || details.name });
+            const cookie = readBack.length > 0 ? toChromeFormat(readBack[0]) : null;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ cookie }));
+            return;
+          }
+
+          // POST /cookies/remove — remove a cookie
+          if (req.method === 'POST' && url.pathname === '/cookies/remove') {
+            const body = JSON.parse(await readBody(req));
+            if (!body.url || !body.name) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Missing url or name' }));
+              return;
+            }
+            await cookies.remove(body.url, body.name);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ details: { url: body.url, name: body.name, storeId: '0' } }));
+            return;
+          }
+
+          // GET /cookies/getAllCookieStores
+          if (req.method === 'GET' && url.pathname === '/cookies/getAllCookieStores') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ stores: [{ id: '0', tabIds: [] }] }));
+            return;
+          }
+        } catch (e: any) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: e.message || String(e) }));
+          return;
+        }
       }
 
       res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -621,22 +737,55 @@ if (!self.__tappiNativeMessagingInjected) {
     shimAndDispatch(chrome.runtime.onStartup, {}, [0, 250, 1000]);
   })();
 
-  // ── API stubs for unsupported chrome.* namespaces ──
-  // Electron does not expose cookies, contextMenus, or downloads in service
-  // workers. Provide no-op stubs so extensions don't crash on access.
+  // ── API stubs / bridges for unsupported chrome.* namespaces ──
   (function() {
     function noopEvent() {
       return { addListener: function(){}, removeListener: function(){}, hasListener: function(){ return false; }, hasListeners: function(){ return false; } };
     }
     function noopCb(cb) { if (typeof cb === 'function') setTimeout(function(){ cb(); }, 0); }
 
+    // ── chrome.cookies — backed by Electron session.cookies via bridge ──
+    var _cookieHeaders = {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + BRIDGE_TOKEN
+    };
+    function _cookieFetch(endpoint, body) {
+      return fetch(BRIDGE_BASE + '/cookies/' + endpoint, {
+        method: 'POST',
+        headers: _cookieHeaders,
+        body: JSON.stringify(body || {})
+      }).then(function(r) { return r.json(); });
+    }
     if (!chrome.cookies) {
       chrome.cookies = {
-        get: function(_d, cb) { noopCb(cb); },
-        getAll: function(_d, cb) { if (typeof cb === 'function') setTimeout(function(){ cb([]); }, 0); },
-        set: function(_d, cb) { noopCb(cb); },
-        remove: function(_d, cb) { noopCb(cb); },
-        getAllCookieStores: function(cb) { if (typeof cb === 'function') setTimeout(function(){ cb([]); }, 0); },
+        get: function(details, cb) {
+          _cookieFetch('get', details)
+            .then(function(d) { if (cb) cb(d.cookie || null); })
+            .catch(function() { if (cb) cb(null); });
+        },
+        getAll: function(details, cb) {
+          _cookieFetch('getAll', details)
+            .then(function(d) { if (cb) cb(d.cookies || []); })
+            .catch(function() { if (cb) cb([]); });
+        },
+        set: function(details, cb) {
+          _cookieFetch('set', details)
+            .then(function(d) { if (cb) cb(d.cookie || null); })
+            .catch(function() { if (cb) cb(null); });
+        },
+        remove: function(details, cb) {
+          _cookieFetch('remove', details)
+            .then(function(d) { if (cb) cb(d.details || null); })
+            .catch(function() { if (cb) cb(null); });
+        },
+        getAllCookieStores: function(cb) {
+          fetch(BRIDGE_BASE + '/cookies/getAllCookieStores', {
+            headers: { 'Authorization': 'Bearer ' + BRIDGE_TOKEN }
+          })
+            .then(function(r) { return r.json(); })
+            .then(function(d) { if (cb) cb(d.stores || []); })
+            .catch(function() { if (cb) cb([]); });
+        },
         onChanged: noopEvent()
       };
     }
