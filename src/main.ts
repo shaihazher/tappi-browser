@@ -61,6 +61,7 @@ import { listModelsForProvider } from './model-list';
 import { loadTools, verifyAllTools } from './tool-manager';
 import { setProjectUpdateCallback } from './tool-registry';
 import { cleanupAll as cleanupShell } from './shell-tools';
+import { listPlaybooks, getPlaybook, upsertPlaybook, deletePlaybook } from './domain-playbook';
 import { cleanupAllSubAgents } from './sub-agent';
 import { cleanupAllTeams, getActiveTeam, getTeamStatusUI, setTeamUpdateCallback, interruptTeammate, getActiveTeamId } from './team-manager';
 import { scheduleProfileUpdate, deleteProfile, loadUserProfileTxt, saveUserProfileTxt, loadProfile, generateProfile } from './user-profile';
@@ -1469,6 +1470,7 @@ function createWindow() {
               if (ariaWC && !ariaWC.isDestroyed()) {
                 ariaWC.send('domain:playbook-updated', { updates: pbResult.updated });
               }
+              try { mainWindow.webContents.send('playbooks:updated'); } catch {}
             }
             if (pbResult.errors.length > 0) {
               console.warn(`[main] CC playbook warnings: ${pbResult.errors.join('; ')}`);
@@ -3112,6 +3114,33 @@ Rules:
     const key = getApiKey(name);
     if (!key) return { key: '' };
     return { key };
+  });
+
+  // ─── Domain Playbooks IPC ───
+  ipcMain.handle('playbooks:list', () => listPlaybooks());
+
+  ipcMain.handle('playbooks:get', (_e, domain: string) => getPlaybook(domain));
+
+  ipcMain.handle('playbooks:update', (_e, domain: string, content: string) => {
+    if (!domain || !content?.trim()) return { success: false, error: 'Domain and content required' };
+    try {
+      upsertPlaybook(domain, content);
+      mainWindow.webContents.send('playbooks:updated');
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Failed to update playbook' };
+    }
+  });
+
+  ipcMain.handle('playbooks:delete', (_e, domain: string) => {
+    if (!domain) return { success: false, error: 'Domain required' };
+    try {
+      deletePlaybook(domain);
+      mainWindow.webContents.send('playbooks:updated');
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Failed to delete playbook' };
+    }
   });
 
   // ─── Developer Mode IPC ───

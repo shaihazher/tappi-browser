@@ -169,6 +169,10 @@
             <span class="settings-tab-icon">⏰</span>
             <span>Cron Jobs</span>
           </button>
+          <button class="settings-tab" data-tab="playbooks">
+            <span class="settings-tab-icon">📘</span>
+            <span>Playbooks</span>
+          </button>
           <button class="settings-tab" data-tab="extensions">
             <span class="settings-tab-icon">🧩</span>
             <span>Extensions</span>
@@ -578,6 +582,38 @@
             <div class="api-form-actions">
               <button id="cron-form-cancel" class="ghost-btn">Cancel</button>
               <button id="cron-form-save" class="primary-btn" style="width:auto;padding:8px 24px">Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Playbooks tab -->
+      <div id="settings-playbooks" class="settings-tab-content" data-tab="playbooks">
+        <div class="api-services-header">
+          <p class="api-services-desc">Domain playbooks capture structural knowledge from browsing sessions. The agent uses them to navigate sites more effectively.</p>
+        </div>
+        <div id="playbooks-list">
+          <div class="api-empty-state">
+            <span class="api-empty-icon">📘</span>
+            <p>No domain playbooks yet.</p>
+            <p class="api-empty-hint">Playbooks are created automatically when the agent learns domain-specific patterns during browsing sessions.</p>
+          </div>
+        </div>
+        <!-- View/Edit form (hidden by default) -->
+        <div id="playbook-form" class="hidden">
+          <div class="settings-section">
+            <h3 id="playbook-form-title">Edit Playbook</h3>
+            <div class="playbook-domain-display">
+              <span id="playbook-form-domain"></span>
+              <span id="playbook-form-meta" class="settings-hint"></span>
+            </div>
+            <textarea id="playbook-content" rows="14" placeholder="Domain-specific knowledge (bullet points)..." maxlength="2000"></textarea>
+            <div class="playbook-textarea-footer">
+              <span id="playbook-char-count" class="settings-hint">0 / 2000</span>
+            </div>
+            <div class="api-form-actions">
+              <button id="playbook-form-cancel" class="ghost-btn">Cancel</button>
+              <button id="playbook-form-save" class="primary-btn" style="width:auto;padding:8px 24px">Save</button>
             </div>
           </div>
         </div>

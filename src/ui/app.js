@@ -1962,6 +1962,7 @@ function closeSettings() {
   window.tappi.hideOverlay();
   hideApiForm();
   hideCronForm();
+  hidePlaybookForm();
 }
 
 function switchSettingsTab(tabName) {
@@ -1978,6 +1979,7 @@ function switchSettingsTab(tabName) {
   if (tabName === 'profiles') { if (typeof loadProfilesTab === 'function') loadProfilesTab(); }
   if (tabName === 'my-profile') loadMyProfileTab();
   if (tabName === 'extensions') loadExtensions();
+  if (tabName === 'playbooks') loadPlaybooks();
 }
 
 // Tab switching
@@ -2845,6 +2847,129 @@ if (window.tappi.onCronJobCompleted) {
     toast.textContent = `⏰ ${data.name} ${data.status === 'success' ? '✓' : '✗'}`;
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 3000);
+  });
+}
+
+// ═══════════════════════════════════════════
+//  DOMAIN PLAYBOOKS
+// ═══════════════════════════════════════════
+
+let playbookEditingDomain = null;
+
+async function loadPlaybooks() {
+  const list = document.getElementById('playbooks-list');
+  if (!list) return;
+
+  try {
+    const playbooks = await window.tappi.getPlaybooks();
+
+    if (!playbooks || playbooks.length === 0) {
+      list.innerHTML = `
+        <div class="api-empty-state">
+          <span class="api-empty-icon">📘</span>
+          <p>No domain playbooks yet.</p>
+          <p class="api-empty-hint">Playbooks are created automatically when the agent learns domain-specific patterns during browsing sessions.</p>
+        </div>`;
+      return;
+    }
+
+    list.innerHTML = '';
+    for (const pb of playbooks) {
+      const card = document.createElement('div');
+      card.className = 'api-service-card';
+
+      const updatedStr = formatRelativeTime(pb.updatedAt);
+      const preview = pb.playbook.length > 120
+        ? pb.playbook.slice(0, 120) + '...'
+        : pb.playbook;
+
+      card.innerHTML = `
+        <span class="api-service-status">🌐</span>
+        <div class="api-service-info">
+          <div class="api-service-name">${escHtml(pb.domain)}</div>
+          <div class="api-service-url">v${pb.version} · updated ${escHtml(updatedStr)}</div>
+          <div class="playbook-preview">${escHtml(preview)}</div>
+        </div>
+        <div class="api-service-actions">
+          <button class="api-action-btn" title="View / Edit" data-action="edit" data-domain="${escHtml(pb.domain)}">✏️</button>
+          <button class="api-action-btn danger" title="Delete" data-action="delete" data-domain="${escHtml(pb.domain)}">🗑</button>
+        </div>`;
+      list.appendChild(card);
+    }
+
+    list.querySelectorAll('.api-action-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const domain = btn.dataset.domain;
+        if (btn.dataset.action === 'edit') {
+          showPlaybookForm(domain);
+        } else if (btn.dataset.action === 'delete') {
+          if (confirm('Delete playbook for "' + domain + '"? The agent will re-learn it on the next visit.')) {
+            window.tappi.deletePlaybook(domain).then(() => loadPlaybooks());
+          }
+        }
+      });
+    });
+  } catch (e) {
+    list.innerHTML = '<p style="color:#ff5252">Failed to load playbooks</p>';
+  }
+}
+
+async function showPlaybookForm(domain) {
+  playbookEditingDomain = domain;
+  const form = document.getElementById('playbook-form');
+  const domainEl = document.getElementById('playbook-form-domain');
+  const metaEl = document.getElementById('playbook-form-meta');
+  const textarea = document.getElementById('playbook-content');
+
+  domainEl.textContent = domain;
+
+  const pb = await window.tappi.getPlaybook(domain);
+  if (pb) {
+    textarea.value = pb.playbook;
+    metaEl.textContent = 'v' + pb.version + ' · last updated ' + new Date(pb.updatedAt).toLocaleString();
+  } else {
+    textarea.value = '';
+    metaEl.textContent = '';
+  }
+
+  updatePlaybookCharCount();
+  form.classList.remove('hidden');
+  textarea.focus();
+}
+
+function hidePlaybookForm() {
+  const form = document.getElementById('playbook-form');
+  if (form) form.classList.add('hidden');
+  playbookEditingDomain = null;
+}
+
+function updatePlaybookCharCount() {
+  const textarea = document.getElementById('playbook-content');
+  const charCount = document.getElementById('playbook-char-count');
+  if (textarea && charCount) {
+    charCount.textContent = textarea.value.length + ' / 2000';
+  }
+}
+
+document.getElementById('playbook-content')?.addEventListener('input', updatePlaybookCharCount);
+document.getElementById('playbook-form-cancel')?.addEventListener('click', hidePlaybookForm);
+document.getElementById('playbook-form-save')?.addEventListener('click', async () => {
+  if (!playbookEditingDomain) return;
+  const content = document.getElementById('playbook-content').value.trim();
+  if (!content) {
+    document.getElementById('playbook-content').focus();
+    return;
+  }
+  const result = await window.tappi.updatePlaybook(playbookEditingDomain, content);
+  if (result.success) {
+    hidePlaybookForm();
+    loadPlaybooks();
+  }
+});
+
+if (window.tappi.onPlaybooksUpdated) {
+  window.tappi.onPlaybooksUpdated(() => {
+    if (currentSettingsTab === 'playbooks') loadPlaybooks();
   });
 }
 

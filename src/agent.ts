@@ -1538,6 +1538,7 @@ Timezone: ${tz}
               updates: pbResult.updated,
             });
           }
+          try { mainWindow.webContents.send('playbooks:updated'); } catch {}
         }
         if (pbResult.errors.length > 0) {
           console.warn(`[agent] Playbook update warnings: ${pbResult.errors.join('; ')}`);

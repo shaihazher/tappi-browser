@@ -117,6 +117,15 @@ contextBridge.exposeInMainWorld('tappi', {
     ipcRenderer.on('api-services:updated', (_e, services) => callback(services));
   },
 
+  // Domain Playbooks
+  getPlaybooks: () => ipcRenderer.invoke('playbooks:list'),
+  getPlaybook: (domain: string) => ipcRenderer.invoke('playbooks:get', domain),
+  updatePlaybook: (domain: string, content: string) => ipcRenderer.invoke('playbooks:update', domain, content),
+  deletePlaybook: (domain: string) => ipcRenderer.invoke('playbooks:delete', domain),
+  onPlaybooksUpdated: (callback: () => void) => {
+    ipcRenderer.on('playbooks:updated', () => callback());
+  },
+
   // Extensions
   getExtensions: () => ipcRenderer.invoke('extensions:list'),
   installExtension: (data: { path: string; allowFileAccess?: boolean }) => ipcRenderer.invoke('extensions:install', data),

@@ -2326,6 +2326,58 @@ body.dark-mode #autocomplete-dropdown {
   color: #ff5252;
 }
 
+/* ═══ DOMAIN PLAYBOOKS ═══ */
+
+#playbooks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.playbook-preview {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.4;
+  margin-top: 4px;
+  white-space: pre-line;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.playbook-domain-display {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.playbook-textarea-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+#playbook-content {
+  width: 100%;
+  min-height: 200px;
+  max-height: 400px;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+}
+
 /* ═══ CRON JOBS ═══ */
 
 .cron-header {
