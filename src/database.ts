@@ -176,6 +176,8 @@ export function initDatabase(dbPath?: string): Database.Database {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_scripts_updated ON scripts(updated_at DESC)`);
   // Migration: add auth_requirements column if missing
   try { db.exec(`ALTER TABLE scripts ADD COLUMN auth_requirements TEXT`); } catch {}
+  // Migration: add domains column for playbook tracking
+  try { db.exec(`ALTER TABLE scripts ADD COLUMN domains TEXT`); } catch {}
 
   // Domain playbooks: structural domain knowledge persisted across sessions
   db.exec(`

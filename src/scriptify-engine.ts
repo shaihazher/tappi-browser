@@ -15,6 +15,7 @@ import { getDb } from './database';
 import { createScript, getScript, updateScript, type Script, type AuthRequirement } from './script-store';
 import { scriptifyViaCli, type CliAuthConfig } from './claude-code-provider';
 import { getPasswordsForDomain } from './password-vault';
+import { waitForPlaybookUpdate, getPlaybook, isDomainExcluded } from './domain-playbook';
 
 // ─── Shared System Prompt ───
 
@@ -44,6 +45,8 @@ IMPORTANT — DISTILL LEARNINGS:
 - For data-processing workflows (scraping, APIs, file operations): design Python scripts to accept a file_path input for bulk CSV/Excel data. The script should iterate over rows internally using pandas or csv module.
 - When a script naturally operates on a single item, still use single-value {{placeholders}}.
 - Include a file_path field (type: "file_path") in the inputSchema when designed for native bulk processing.
+
+If domain playbooks are provided, incorporate their learnings (URL patterns, UI navigation sequences, workarounds, anti-patterns) directly into the generated script.
 
 Also identify any domains that required authentication during the conversation.
 Include an "authRequirements" array in your JSON output:
@@ -100,10 +103,42 @@ function buildScriptifyTranscript(
   return annotated.map(r => `### ${r.role.toUpperCase()}\n${r.content}`).join('\n\n---\n\n');
 }
 
+// ─── Domain Extraction ───
+
+function extractDomainsFromTranscript(
+  rows: Array<{ role: string; content: string }>
+): string[] {
+  const domains = new Set<string>();
+  const urlRegex = /https?:\/\/([a-zA-Z0-9.-]+)/g;
+
+  for (const row of rows) {
+    // Extract from "Navigated to:" tool results and general URLs
+    let match;
+    while ((match = urlRegex.exec(row.content)) !== null) {
+      const domain = match[1].toLowerCase();
+      if (!isDomainExcluded(domain)) {
+        domains.add(domain);
+      }
+    }
+  }
+
+  return [...domains];
+}
+
 const SCRIPTIFY_ANALYSIS_PREFIX = 'Analyze this conversation transcript. Pay special attention to any errors, failures, or retries — the script you generate must incorporate the fixes and corrections discovered during the conversation, not reproduce the original bugs.';
 
-function buildScriptifyUserMessage(transcript: string, additionalInstructions?: string): string {
+function buildScriptifyUserMessage(
+  transcript: string,
+  additionalInstructions?: string,
+  playbooks?: Array<{ domain: string; playbook: string }>,
+): string {
   const parts = [SCRIPTIFY_ANALYSIS_PREFIX];
+  if (playbooks && playbooks.length > 0) {
+    const playbookSection = playbooks.map(
+      p => `--- ${p.domain} ---\n${p.playbook}`
+    ).join('\n\n');
+    parts.push(`\n\nDOMAIN KNOWLEDGE (incorporate this into the generated script):\n${playbookSection}`);
+  }
   if (additionalInstructions) {
     parts.push(`\nAdditional instructions from the user:\n${additionalInstructions}`);
   }
@@ -119,6 +154,9 @@ export async function scriptifyConversation(
   additionalInstructions?: string,
 ): Promise<{ success: boolean; script?: { id: string; name: string; description: string }; error?: string }> {
   try {
+    // Wait for any in-progress playbook update to finish
+    await waitForPlaybookUpdate();
+
     // Load conversation messages
     const rows = getDb().prepare(
       `SELECT role, content, created_at FROM conversation_messages
@@ -132,6 +170,17 @@ export async function scriptifyConversation(
     // Build transcript (filtered + annotated)
     const transcript = buildScriptifyTranscript(rows);
 
+    // Extract domains and fetch playbooks
+    const extractedDomains = extractDomainsFromTranscript(rows);
+    const playbooks: Array<{ domain: string; playbook: string }> = [];
+    for (const domain of extractedDomains) {
+      const pb = getPlaybook(domain);
+      if (pb) playbooks.push({ domain, playbook: pb.playbook });
+    }
+
+    // Merge domains from auth requirements
+    const allDomains = new Set(extractedDomains);
+
     const model = createModel(llmConfig);
     const providerOptions = buildProviderOptions(llmConfig);
 
@@ -140,7 +189,7 @@ export async function scriptifyConversation(
       providerOptions,
       messages: [
         { role: 'system', content: SCRIPTIFY_SYSTEM_PROMPT },
-        { role: 'user', content: buildScriptifyUserMessage(transcript, additionalInstructions) },
+        { role: 'user', content: buildScriptifyUserMessage(transcript, additionalInstructions, playbooks.length > 0 ? playbooks : undefined) },
       ],
       maxOutputTokens: 4096,
     });
@@ -163,6 +212,13 @@ export async function scriptifyConversation(
       return { success: false, error: 'Generated script is missing required fields.' };
     }
 
+    // Merge auth requirement domains into allDomains
+    if (Array.isArray(parsed.authRequirements)) {
+      for (const req of parsed.authRequirements) {
+        if (req.domain) allDomains.add(req.domain);
+      }
+    }
+
     // Store the script
     const script = createScript({
       name: parsed.name,
@@ -174,6 +230,7 @@ export async function scriptifyConversation(
       authRequirements: Array.isArray(parsed.authRequirements) && parsed.authRequirements.length > 0
         ? parsed.authRequirements
         : undefined,
+      domains: allDomains.size > 0 ? [...allDomains] : undefined,
     });
 
     return {
@@ -194,6 +251,9 @@ export async function scriptifyConversationViaCli(
   additionalInstructions?: string,
 ): Promise<{ success: boolean; script?: { id: string; name: string; description: string }; error?: string }> {
   try {
+    // Wait for any in-progress playbook update to finish
+    await waitForPlaybookUpdate();
+
     // Load conversation messages
     const rows = getDb().prepare(
       `SELECT role, content, created_at FROM conversation_messages
@@ -207,6 +267,16 @@ export async function scriptifyConversationViaCli(
     // Build transcript (filtered + annotated)
     const filteredRows = rows.filter(r => r.role !== 'thinking');
     let transcript = buildScriptifyTranscript(rows);
+
+    // Extract domains and fetch playbooks
+    const extractedDomains = extractDomainsFromTranscript(rows);
+    const playbooks: Array<{ domain: string; playbook: string }> = [];
+    for (const domain of extractedDomains) {
+      const pb = getPlaybook(domain);
+      if (pb) playbooks.push({ domain, playbook: pb.playbook });
+    }
+
+    const allDomains = new Set(extractedDomains);
 
     // Validate transcript has meaningful user/assistant content
     const hasConversation = filteredRows.some(r => r.role === 'user' || r.role === 'assistant');
@@ -235,8 +305,16 @@ export async function scriptifyConversationViaCli(
       transcript = parts.join('\n\n---\n\n');
     }
 
-    // Call CLI
-    const result = await scriptifyViaCli(transcript, SCRIPTIFY_SYSTEM_PROMPT, auth, additionalInstructions);
+    // Call CLI — inject playbook knowledge into the user message via additionalInstructions
+    let enrichedInstructions = additionalInstructions || '';
+    if (playbooks.length > 0) {
+      const playbookSection = playbooks.map(
+        p => `--- ${p.domain} ---\n${p.playbook}`
+      ).join('\n\n');
+      enrichedInstructions = `DOMAIN KNOWLEDGE (incorporate this into the generated script):\n${playbookSection}\n\n${enrichedInstructions}`;
+    }
+
+    const result = await scriptifyViaCli(transcript, SCRIPTIFY_SYSTEM_PROMPT, auth, enrichedInstructions || undefined);
 
     if ('error' in result) {
       return { success: false, error: result.error };
@@ -246,6 +324,13 @@ export async function scriptifyConversationViaCli(
     // Validate required fields
     if (!parsed.name || !parsed.scriptBody || !parsed.scriptType) {
       return { success: false, error: 'Generated script is missing required fields.' };
+    }
+
+    // Merge auth requirement domains
+    if (Array.isArray(parsed.authRequirements)) {
+      for (const req of parsed.authRequirements) {
+        if (req.domain) allDomains.add(req.domain);
+      }
     }
 
     // Store the script
@@ -259,6 +344,7 @@ export async function scriptifyConversationViaCli(
       authRequirements: Array.isArray(parsed.authRequirements) && parsed.authRequirements.length > 0
         ? parsed.authRequirements
         : undefined,
+      domains: allDomains.size > 0 ? [...allDomains] : undefined,
     });
 
     return {
@@ -535,6 +621,111 @@ export async function reconcileScriptFix(
 
   console.log(`[scriptify] Auto-reconciled script ${scriptId}: ${parsed.summary || 'fixes applied'}`);
   return { success: true, summary: parsed.summary || 'Bug fixes applied' };
+}
+
+// ─── Playbook Reconciliation ───
+
+const PLAYBOOK_RECONCILE_PROMPT = `You are a script updater. You receive:
+1. An existing scriptBody (with {{placeholder}} variables)
+2. Updated domain playbook knowledge for a specific domain
+
+Your job: update the scriptBody to incorporate the new playbook knowledge while preserving:
+- ALL {{placeholder}} variables exactly as they appear
+- The overall structure and intent of the script
+- All existing functionality
+
+WHAT TO UPDATE:
+- URL patterns: if the playbook shows correct paths, update hardcoded URLs
+- Navigation sequences: if the playbook describes better click sequences, update them
+- Workarounds: if the playbook describes workarounds for known issues, add them
+- Anti-patterns: if the playbook warns against certain approaches used in the script, fix them
+
+RULES:
+- Preserve ALL {{placeholder}} syntax for input variables
+- Do NOT change the script's purpose or overall structure
+- Only make changes directly informed by the playbook knowledge
+- If the playbook knowledge doesn't apply to this script, return unchanged
+
+Respond with ONLY a JSON object (no markdown fences):
+{
+  "scriptBody": "the updated script body",
+  "summary": "brief description of what was updated",
+  "changed": true/false
+}`;
+
+export async function reconcileScriptWithPlaybook(
+  scriptId: string,
+  domain: string,
+  newPlaybook: string,
+  llmConfig: LLMConfig,
+  cliAuth?: CliAuthConfig,
+): Promise<{ success: boolean; summary?: string; error?: string }> {
+  const script = getScript(scriptId);
+  if (!script) return { success: false, error: 'Script not found' };
+
+  const userContent = [
+    'EXISTING SCRIPT BODY (with {{placeholders}}):',
+    script.scriptBody,
+    '',
+    `UPDATED PLAYBOOK FOR ${domain}:`,
+    newPlaybook,
+  ].join('\n');
+
+  let parsed: any;
+  try {
+    if (llmConfig.provider === 'claude-code') {
+      const cliResult = await scriptifyViaCli(userContent, PLAYBOOK_RECONCILE_PROMPT, cliAuth);
+      if ('error' in cliResult) return { success: false, error: cliResult.error };
+      parsed = cliResult.data;
+    } else {
+      const model = createModel(llmConfig);
+      const providerOptions = buildProviderOptions(llmConfig);
+      const result = await generateText({
+        model,
+        providerOptions,
+        messages: [
+          { role: 'system', content: PLAYBOOK_RECONCILE_PROMPT },
+          { role: 'user', content: userContent },
+        ],
+        maxOutputTokens: 16_384,
+      });
+      let text = result.text.trim();
+      if (text.startsWith('```')) {
+        text = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+      }
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return { success: false, error: 'Failed to parse playbook reconciliation response' };
+      }
+    }
+  } catch (llmErr: any) {
+    return { success: false, error: `LLM call failed: ${llmErr?.message}` };
+  }
+
+  if (!parsed?.scriptBody) return { success: false, error: 'No scriptBody in reconciliation response' };
+
+  if (parsed.changed === false) {
+    return { success: false, error: 'No meaningful changes from playbook' };
+  }
+
+  // Validate placeholders preserved
+  const originalPlaceholders = [...script.scriptBody.matchAll(/\{\{(\w+)\}\}/g)].map(m => m[1]);
+  const reconciledPlaceholders = [...parsed.scriptBody.matchAll(/\{\{(\w+)\}\}/g)].map(m => m[1]);
+  const missingPlaceholders = originalPlaceholders.filter(p => !reconciledPlaceholders.includes(p));
+  if (missingPlaceholders.length > 0) {
+    return { success: false, error: `Reconciled body lost placeholders: ${missingPlaceholders.join(', ')}` };
+  }
+
+  if (parsed.scriptBody.trim() === script.scriptBody.trim()) {
+    return { success: false, error: 'No changes detected — script body unchanged' };
+  }
+
+  const updated = updateScript(scriptId, { scriptBody: parsed.scriptBody });
+  if (!updated) return { success: false, error: 'Failed to save updated script' };
+
+  console.log(`[scriptify] Playbook-reconciled script ${scriptId} for ${domain}: ${parsed.summary || 'playbook applied'}`);
+  return { success: true, summary: parsed.summary || 'Playbook knowledge applied' };
 }
 
 // ─── Auth Requirement Validation ───

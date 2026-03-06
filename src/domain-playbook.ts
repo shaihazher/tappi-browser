@@ -9,6 +9,7 @@ import { generateText } from 'ai';
 import { createModel, buildProviderOptions, type LLMConfig } from './llm-client';
 import { getDb } from './database';
 import { scriptifyViaCli, type CliAuthConfig } from './claude-code-provider';
+import { agentEvents } from './agent-bus';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -36,6 +37,16 @@ const EXCLUDED_DOMAIN_PATTERNS = [
 export function isDomainExcluded(domain: string): boolean {
   if (EXCLUDED_DOMAINS.has(domain)) return true;
   return EXCLUDED_DOMAIN_PATTERNS.some(p => p.test(domain));
+}
+
+// ─── Inflight Update Gate ────────────────────────────────────────────────────────
+
+let _inflightUpdate: Promise<any> | null = null;
+
+export async function waitForPlaybookUpdate(): Promise<void> {
+  if (_inflightUpdate) {
+    try { await _inflightUpdate; } catch {}
+  }
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────
@@ -75,6 +86,8 @@ export function upsertPlaybook(domain: string, playbook: string): void {
       updated_at = excluded.updated_at,
       version = version + 1
   `).run(domain, trimmed, now);
+
+  agentEvents.emit('playbook:updated', { domain, playbook: trimmed });
 }
 
 export function deletePlaybook(domain: string): void {
@@ -159,6 +172,19 @@ If NO domains have genuinely useful structural learnings, respond: { "updates": 
 // ─── Post-Execution Update ──────────────────────────────────────────────────────
 
 export async function updatePlaybooksFromSession(
+  domainsVisited: Set<string>,
+  domainToolCounts: Map<string, number>,
+  conversationEvents: Array<{ role: string; content: string }>,
+  agentResponse: string,
+  llmConfig: LLMConfig,
+  cliAuth?: CliAuthConfig,
+): Promise<{ updated: Array<{ domain: string; reason: string }>; errors: string[] }> {
+  const work = _updatePlaybooksFromSessionImpl(domainsVisited, domainToolCounts, conversationEvents, agentResponse, llmConfig, cliAuth);
+  _inflightUpdate = work;
+  try { return await work; } finally { _inflightUpdate = null; }
+}
+
+async function _updatePlaybooksFromSessionImpl(
   domainsVisited: Set<string>,
   domainToolCounts: Map<string, number>,
   conversationEvents: Array<{ role: string; content: string }>,

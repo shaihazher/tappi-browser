@@ -83,8 +83,8 @@ import {
   saveClaudeCodeSessionId,
   getClaudeCodeSessionId,
 } from './conversation-store';
-import { listScripts, getScript, deleteScript, incrementRunCount } from './script-store';
-import { scriptifyConversation, scriptifyConversationViaCli, updateScriptDefinition, buildExecutionPrompt, parseBulkFile, validateAuthRequirements } from './scriptify-engine';
+import { listScripts, getScript, deleteScript, incrementRunCount, getScriptsByDomain } from './script-store';
+import { scriptifyConversation, scriptifyConversationViaCli, updateScriptDefinition, buildExecutionPrompt, parseBulkFile, validateAuthRequirements, reconcileScriptWithPlaybook } from './scriptify-engine';
 import type { CliAuthConfig } from './claude-code-provider';
 import {
   createProject,
@@ -2921,6 +2921,30 @@ Rules:
   agentEvents.on('profile:switch-request', async (name: string, callback?: (result: any) => void) => {
     const result = await performProfileSwitch(name);
     if (callback) callback(result);
+  });
+
+  // Auto-reconcile scripts when their domain playbooks are updated
+  agentEvents.on('playbook:updated', async ({ domain, playbook }: { domain: string; playbook: string }) => {
+    const affected = getScriptsByDomain(domain);
+    if (!affected.length) return;
+
+    const apiKey = decryptApiKey(currentConfig.llm.apiKey);
+    const isCC = currentConfig.llm.provider === 'claude-code';
+    const llmConfig: any = {
+      provider: currentConfig.llm.provider,
+      model: currentConfig.llm.model,
+      apiKey: apiKey || undefined,
+      thinking: currentConfig.llm.thinking,
+    };
+    const cliAuth = isCC ? buildCliAuthConfig() : undefined;
+
+    for (const script of affected) {
+      try {
+        await reconcileScriptWithPlaybook(script.id, domain, playbook, llmConfig, cliAuth);
+      } catch (err: any) {
+        console.error(`[main] Playbook reconciliation failed for script ${script.id}:`, err?.message);
+      }
+    }
   });
 
   ipcMain.handle('profile:delete', (_e, name: string) => {

@@ -37,6 +37,7 @@ export interface Script {
   lastRun?: string;
   runCount: number;
   authRequirements?: AuthRequirement[];
+  domains?: string[];
 }
 
 // ─── Row mapping ─────────────────────────────────────────────────────────────
@@ -55,6 +56,7 @@ interface ScriptRow {
   run_count: number;
   archived: number;
   auth_requirements: string | null;
+  domains: string | null;
 }
 
 function rowToScript(row: ScriptRow): Script {
@@ -71,6 +73,7 @@ function rowToScript(row: ScriptRow): Script {
     lastRun: row.last_run || undefined,
     runCount: row.run_count,
     authRequirements: row.auth_requirements ? JSON.parse(row.auth_requirements) : undefined,
+    domains: row.domains ? JSON.parse(row.domains) : undefined,
   };
 }
 
@@ -84,8 +87,8 @@ export function createScript(
   const now = new Date().toISOString();
 
   db.prepare(
-    `INSERT INTO scripts (id, name, description, script_type, input_schema, script_body, source_conversation_id, created_at, updated_at, run_count, archived, auth_requirements)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`
+    `INSERT INTO scripts (id, name, description, script_type, input_schema, script_body, source_conversation_id, created_at, updated_at, run_count, archived, auth_requirements, domains)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`
   ).run(
     id,
     data.name,
@@ -96,7 +99,8 @@ export function createScript(
     data.sourceConversationId || null,
     now,
     now,
-    data.authRequirements ? JSON.stringify(data.authRequirements) : null
+    data.authRequirements ? JSON.stringify(data.authRequirements) : null,
+    data.domains ? JSON.stringify(data.domains) : null
   );
 
   return {
@@ -111,6 +115,7 @@ export function createScript(
     updatedAt: now,
     runCount: 0,
     authRequirements: data.authRequirements,
+    domains: data.domains,
   };
 }
 
@@ -128,7 +133,7 @@ export function listScripts(): Script[] {
 
 export function updateScript(
   id: string,
-  updates: Partial<Pick<Script, 'name' | 'description' | 'scriptType' | 'inputSchema' | 'scriptBody' | 'authRequirements'>>
+  updates: Partial<Pick<Script, 'name' | 'description' | 'scriptType' | 'inputSchema' | 'scriptBody' | 'authRequirements' | 'domains'>>
 ): Script | null {
   const existing = getScript(id);
   if (!existing) return null;
@@ -162,6 +167,10 @@ export function updateScript(
     sets.push('auth_requirements = ?');
     bindings.push(JSON.stringify(updates.authRequirements));
   }
+  if (updates.domains !== undefined) {
+    sets.push('domains = ?');
+    bindings.push(updates.domains ? JSON.stringify(updates.domains) : null);
+  }
 
   bindings.push(id);
   db.prepare(`UPDATE scripts SET ${sets.join(', ')} WHERE id = ?`).run(...bindings);
@@ -172,6 +181,13 @@ export function updateScript(
 export function deleteScript(id: string): boolean {
   const info = getDb().prepare('DELETE FROM scripts WHERE id = ?').run(id);
   return info.changes > 0;
+}
+
+export function getScriptsByDomain(domain: string): Script[] {
+  const rows = getDb().prepare(
+    `SELECT * FROM scripts WHERE archived = 0 AND domains LIKE ? ORDER BY updated_at DESC`
+  ).all(`%"${domain}"%`) as ScriptRow[];
+  return rows.map(rowToScript);
 }
 
 export function incrementRunCount(id: string): void {
