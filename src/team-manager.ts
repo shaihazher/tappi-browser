@@ -465,6 +465,8 @@ export async function runTeammate(opts: TeammateRunOptions): Promise<string> {
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes idle → auto-shutdown
 const STEPS_PER_TURN = 50;             // Max steps per streamText turn
 const MAX_RETRIES = 2;
+const MAX_AUTO_CONTINUE_TURNS = 8;     // Hard cap on consecutive auto-continue turns
+const ZERO_PROGRESS_THRESHOLD = 3;     // Consecutive 0-progress turns → stagnation exit
 
 async function runTeammateLoop(
   teammate: Teammate,
@@ -549,6 +551,10 @@ async function runTeammateLoop(
     );
 
     let turnNumber = 0;
+    let autoContinueTurns = 0;
+    let zeroProgressTurns = 0;
+    let lastToolCount = 0;
+    let lastFilesCount = 0;
 
     // ─── Turn Loop ───
     while (true) {
@@ -659,6 +665,19 @@ async function runTeammateLoop(
         if (streamErr?.name !== 'AbortError') throw streamErr;
       }
 
+      // ─── Measure turn progress (stagnation detection) ───
+      const currentToolCount = teammate.toolsUsed.length;
+      const currentFilesCount = (teammate.filesWritten || []).length;
+      const madeProgress = fullResponse.length > 0 || currentToolCount > lastToolCount || currentFilesCount > lastFilesCount;
+      if (madeProgress) {
+        zeroProgressTurns = 0;
+      } else {
+        zeroProgressTurns++;
+        console.warn(`[team] ${name} zero-progress turn ${zeroProgressTurns}/${ZERO_PROGRESS_THRESHOLD}`);
+      }
+      lastToolCount = currentToolCount;
+      lastFilesCount = currentFilesCount;
+
       console.log(`[team] ${name} turn ${turnNumber} done — ${fullResponse.length} chars, ${teammate.toolsUsed.length} total tools`);
 
       // Persist conversation history
@@ -710,13 +729,55 @@ async function runTeammateLoop(
         break;
       }
 
-      // ─── Check incomplete tasks → auto-continue ───
+      // ─── Check incomplete tasks → auto-continue (with stagnation guardrails) ───
       const incompleteTasks = myTasks.filter(t => t.status !== 'completed');
       if (incompleteTasks.length > 0) {
-        console.log(`[team] ${name} has ${incompleteTasks.length} incomplete task(s) — auto-continuing.`);
+        autoContinueTurns++;
+
+        // Guardrail: hard cap or stagnation → force-exit
+        const hitHardCap = autoContinueTurns > MAX_AUTO_CONTINUE_TURNS;
+        const hitStagnation = zeroProgressTurns >= ZERO_PROGRESS_THRESHOLD;
+        if (hitHardCap || hitStagnation) {
+          const reason = hitStagnation
+            ? `stagnation (${zeroProgressTurns} zero-progress turns)`
+            : `hard cap (${autoContinueTurns} auto-continue turns)`;
+          console.warn(`[team] ${name} auto-continue guardrail triggered: ${reason} — force-exiting.`);
+
+          // Force-complete incomplete tasks
+          for (const t of incompleteTasks) {
+            try {
+              updateTask(teamId, t.id, {
+                status: 'completed',
+                result: `[AUTO-COMPLETED] Guardrail exit: ${reason}. Partial result: ${(teammate.result || '').slice(0, 300)}`,
+              });
+            } catch {}
+          }
+
+          teammate.status = 'done';
+          teammate.finishedAt = Date.now();
+          sendMessage(teamId, 'system', '@lead', `${name} exited due to ${reason}. Incomplete tasks were auto-completed with partial results.`, {
+            type: 'system',
+            summary: `${name} guardrail exit: ${reason}`,
+          });
+          teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
+          teamBroadcast('team:teammate-done', { name, status: 'done', summary: `Guardrail exit: ${reason}` });
+          persistTeamEvent(team?.conversationId, 'teammate-done', { name, status: 'done', summary: `Guardrail exit: ${reason}` });
+          notifyUpdate(teamId);
+          break;
+        }
+
+        // Normal auto-continue (with escalating hint if no progress)
         const taskNames = incompleteTasks.map(t => t.title).join(', ');
-        addMessage(sessionId, { role: 'user', content: `[SYSTEM] You still have ${incompleteTasks.length} incomplete task(s): ${taskNames}. Continue working on them. Use task_update to mark tasks as completed when done.` });
+        let continueMsg = `[SYSTEM] You still have ${incompleteTasks.length} incomplete task(s): ${taskNames}. Continue working on them. Use task_update to mark tasks as completed when done.`;
+        if (zeroProgressTurns > 0) {
+          continueMsg += ` IMPORTANT: You have made no visible progress for ${zeroProgressTurns} turn(s). If you have completed your work, call task_update NOW to mark your task(s) as completed.`;
+        }
+        console.log(`[team] ${name} has ${incompleteTasks.length} incomplete task(s) — auto-continuing (turn ${autoContinueTurns}/${MAX_AUTO_CONTINUE_TURNS}, zero-progress: ${zeroProgressTurns}/${ZERO_PROGRESS_THRESHOLD}).`);
+        addMessage(sessionId, { role: 'user', content: continueMsg });
         continue; // Skip idle wait, go directly to next turn
+      } else {
+        // Not auto-continuing — reset counter
+        autoContinueTurns = 0;
       }
 
       // ─── Go idle ───

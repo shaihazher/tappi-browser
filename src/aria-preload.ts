@@ -162,6 +162,9 @@ contextBridge.exposeInMainWorld('aria', {
   onPlanComplete: (cb: (data: any) => void) => {
     ipcRenderer.on('aria:cc-plan-complete', (_e, data) => cb(data));
   },
+  onCCModeSwitched: (cb: (data: { mode: string }) => void) => {
+    ipcRenderer.on('aria:cc-mode-switched', (_e, data) => cb(data));
+  },
 
   // ─── Vercel SDK Plan Mode ───
   approveAgentPlan: () => ipcRenderer.invoke('aria:approve-plan'),

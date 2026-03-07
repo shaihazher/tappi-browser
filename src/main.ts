@@ -1296,9 +1296,16 @@ function createWindow() {
       const { ClaudeCodeProvider, isClaudeCodeInstalled, installClaudeCode: installCC } = await import('./claude-code-provider');
       const { ensureApiToken } = await import('./api-server');
 
-      const ccMode = (currentConfig.llm as any).claudeCodeMode || 'full';
+      let ccMode: 'plan' | 'full' = (currentConfig.llm as any).claudeCodeMode || 'full';
       const ccAuth: 'api-key' | 'oauth' | 'bedrock' = (currentConfig.llm as any).claudeCodeAuth || 'oauth';
       const ariaWC = tabManager?.ariaWebContents;
+
+      // Conversational plan mode switching: detect intent from message
+      if (detectPlanIntent(message) && ccMode !== 'plan') {
+        ccMode = 'plan';
+        (currentConfig.llm as any).claudeCodeMode = 'plan';
+        try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('aria:cc-mode-switched', { mode: 'plan' }); } catch {}
+      }
 
       // Auto-install if not present
       const installed = await isClaudeCodeInstalled(ccAuth);
@@ -1432,6 +1439,34 @@ function createWindow() {
         addConversationMessage(effectiveConvId, 'user', message);
       }
 
+      // ─── Conversational plan approval ───
+      // If a plan is pending and user says "do it" / "go ahead", auto-approve
+      const EXECUTE_PATTERNS = [
+        /^do it\b/i, /^execute\b/i, /^go ahead\b/i, /^proceed\b/i,
+        /^implement\b/i, /^run it\b/i, /^ship it\b/i, /^let'?s do/i,
+        /^build it\b/i, /^approved?\b/i, /^yes[,.]?\s*(do|go|execute|proceed)/i,
+        /^make it\b/i, /^lgtm\b/i,
+      ];
+      if (activeClaudeCodeProvider.isPlanPending && EXECUTE_PATTERNS.some(p => p.test(message.trim()))) {
+        try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-start', {}); } catch {}
+        try { mainWindow.webContents.send('agent:stream-start', {}); } catch {}
+        try {
+          await activeClaudeCodeProvider.approvePlan();
+          if (ccResponseBuffer.trim()) {
+            addConversationMessage(effectiveConvId, 'assistant', ccResponseBuffer);
+          }
+          if (activeClaudeCodeProvider.isPlanPending) {
+            try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('aria:cc-plan-complete', { conversationId: effectiveConvId }); } catch {}
+          }
+        } catch (err: any) {
+          console.error('[main] conversational cc-approve error:', err);
+          const errChunk = { text: `\n\n❌ ${err.message || 'Plan execution failed'}`, done: true };
+          try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-chunk', errChunk); } catch {}
+          try { mainWindow.webContents.send('agent:stream-chunk', errChunk); } catch {}
+        }
+        return;
+      }
+
       // Send to Claude Code
       resetApiPlaybookSession(); // Track domains visited during this turn
       try {
@@ -1495,10 +1530,30 @@ function createWindow() {
     pendingScriptId = null;
     pendingScriptInputs = null;
 
+    // ─── Conversational plan approval (Vercel SDK path) ───
+    // If plan is pending and user says "do it" / "go ahead", auto-approve
+    const SDK_EXECUTE_PATTERNS = [
+      /^do it\b/i, /^execute\b/i, /^go ahead\b/i, /^proceed\b/i,
+      /^implement\b/i, /^run it\b/i, /^ship it\b/i, /^let'?s do/i,
+      /^build it\b/i, /^approved?\b/i, /^yes[,.]?\s*(do|go|execute|proceed)/i,
+      /^make it\b/i, /^lgtm\b/i,
+    ];
+    if (isPlanPending() && SDK_EXECUTE_PATTERNS.some(p => p.test(message.trim()))) {
+      const pendingOpts = getPendingPlanOpts();
+      resetAgentPlanState();
+      if (pendingOpts) {
+        const effectiveConvId = convId || activeConversationId || 'default';
+        addMessage(pendingOpts.sessionId || 'default', { role: 'user', content: 'Approved. Execute the plan.' });
+        addConversationMessage(effectiveConvId, 'user', 'Approved. Execute the plan.');
+        await runAgent({ ...pendingOpts, userMessage: 'Approved. Execute the plan.', planMode: false });
+        return;
+      }
+    }
+
     // Reset any stale plan state when user sends a new message
     resetAgentPlanState();
 
-    const planMode = currentConfig.llm.provider !== 'claude-code' && detectPlanIntent(message);
+    const planMode = detectPlanIntent(message);
 
     const browserCtx: BrowserContext = { window: mainWindow, tabManager, config: currentConfig };
     await runAgent({

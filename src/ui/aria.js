@@ -2742,6 +2742,13 @@ window.aria?.onPlanComplete?.(() => {
   _showPlanActionBar();
 });
 
+// Sync CC mode dropdown when conversational plan switching occurs
+window.aria?.onCCModeSwitched?.((data) => {
+  const sel = document.getElementById('aria-cc-mode-select');
+  if (sel) sel.value = data.mode;
+  currentModelConfig.claudeCodeMode = data.mode;
+});
+
 // Vercel SDK plan-complete listener
 window.aria?.onAgentPlanComplete?.(() => {
   _planProvider = 'agent';
