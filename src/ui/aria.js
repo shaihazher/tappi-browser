@@ -1941,6 +1941,31 @@ function appendMessageEl(msg) {
     } else {
       bubble.textContent = content;
     }
+  } else if (role === 'team-event') {
+    try {
+      const data = JSON.parse(msg.content || '{}');
+      wrapper.className = 'aria-msg team-event';
+      const card = document.createElement('div');
+      card.className = 'team-event-card';
+      if (data.type === 'teammate-start') {
+        card.innerHTML = `<span class="te-icon">\u{1F464}</span> <b>${escHtml(data.name)}</b> (${escHtml(data.role || '')}) started: ${escHtml((data.task || '').slice(0, 120))}`;
+      } else if (data.type === 'teammate-turn') {
+        card.innerHTML = `<span class="te-icon">\u{1F504}</span> <b>${escHtml(data.name)}</b> turn ${data.turn}: ${(data.tools || []).length} tools` +
+          (data.files && data.files.length ? `, files: ${data.files.map(f => escHtml(f)).join(', ')}` : '') +
+          (data.response ? `<div class="te-response">${escHtml(data.response.slice(0, 200))}</div>` : '');
+      } else if (data.type === 'teammate-done') {
+        const icon = data.status === 'done' ? '\u2705' : data.status === 'failed' ? '\u274C' : '\u23F9';
+        card.innerHTML = `<span class="te-icon">${icon}</span> <b>${escHtml(data.name)}</b> ${escHtml(data.status)}: ${escHtml((data.summary || '').slice(0, 200))}`;
+      } else if (data.type === 'team-dissolved') {
+        card.innerHTML = `<span class="te-icon">\u{1F3C1}</span> <b>Team dissolved</b> (${data.duration || '?'}min)` +
+          `<div class="te-teammates">${(data.teammates || []).map(t => `${escHtml(t.name)}: ${escHtml(t.status)}`).join(' | ')}</div>`;
+      } else {
+        card.textContent = msg.content || '';
+      }
+      bubble.appendChild(card);
+    } catch {
+      bubble.textContent = msg.content || '';
+    }
   } else {
     // user, system
     // Check for attachments (from current session or rehydrated from history)

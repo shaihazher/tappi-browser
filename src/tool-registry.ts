@@ -1210,6 +1210,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
           browserCtx,
           llmConfig: options.llmConfig,
           sessionId,
+          conversationId: options.conversationId,
         })
       : {}),
 

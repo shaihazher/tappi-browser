@@ -413,6 +413,7 @@ function hydrateSessionFromConversationIfNeeded(sessionId: string, conversationI
     const BATCH_SIZE = 200;
     let offset = 0;
     let restored = 0;
+    const teamEventSummary: string[] = [];
 
     while (true) {
       const rows = getConversationMessages(conversationId, offset, BATCH_SIZE);
@@ -422,6 +423,18 @@ function hydrateSessionFromConversationIfNeeded(sessionId: string, conversationI
         const content = (row.content || '').toString();
         if (!content) continue;
 
+        if (row.role === 'team-event') {
+          try {
+            const data = JSON.parse(content);
+            if (data.type === 'teammate-done') {
+              teamEventSummary.push(`${data.name} (${data.status}): ${(data.summary || '').slice(0, 150)}`);
+            } else if (data.type === 'team-dissolved') {
+              teamEventSummary.push(`Team dissolved after ${data.duration}min. Results: ${(data.teammates || []).map((t: any) => `${t.name}:${t.status}`).join(', ')}`);
+            }
+          } catch {}
+          continue;
+        }
+
         if (row.role === 'user' || row.role === 'assistant' || row.role === 'system') {
           addMessage(sessionId, { role: row.role as 'user' | 'assistant' | 'system', content });
           restored++;
@@ -430,6 +443,15 @@ function hydrateSessionFromConversationIfNeeded(sessionId: string, conversationI
 
       if (rows.length < BATCH_SIZE) break;
       offset += rows.length;
+    }
+
+    // Inject team event summary as context for the agent
+    if (teamEventSummary.length > 0) {
+      addMessage(sessionId, {
+        role: 'user',
+        content: `[Previous session context — agent team results]\n${teamEventSummary.join('\n')}`,
+      });
+      restored++;
     }
 
     if (restored > 0) {

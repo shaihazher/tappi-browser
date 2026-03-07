@@ -21,6 +21,7 @@ export interface TeamToolsContext {
   browserCtx: BrowserContext;
   llmConfig?: LLMConfig;
   sessionId: string;
+  conversationId?: string;
 }
 
 /**
@@ -307,7 +308,8 @@ export function createTeamCreateTool(ctx: TeamToolsContext) {
       const useWorktrees = worktree_isolation ?? true;
       const aw = (ctx.browserCtx.tabManager as any).ariaWebContents ?? null;
       const { teamId, summary } = await teamManager.createTeam(
-        task, working_dir, ctx.browserCtx, ctx.llmConfig, teammates, useWorktrees, aw
+        task, working_dir, ctx.browserCtx, ctx.llmConfig, teammates, useWorktrees, aw,
+        ctx.conversationId,
       );
       broadcastTeamUpdate(ctx);
       return summary;

@@ -21,6 +21,8 @@ import {
   type LLMConfig,
 } from './llm-client';
 import { classifyError } from './agent-harness';
+import { updatePlaybooksFromSession } from './domain-playbook';
+import { addConversationMessage } from './conversation-store';
 import { createTools } from './tool-registry';
 import type { BrowserContext } from './browser-tools';
 import { addMessage, addMessages, getWindow, clearHistory, type ChatMessage } from './conversation';
@@ -86,6 +88,8 @@ export interface TeamSession {
   currentPhase: number;
   validationResults?: string;
   _autoDissolveScheduled?: boolean;
+  llmConfig?: LLMConfig;
+  conversationId?: string;
 }
 
 export interface Teammate {
@@ -115,6 +119,10 @@ export interface Teammate {
   _model?: any;
   _provider?: string;
   _activityLog?: string[];
+  // Domain playbook tracking
+  _domainsVisited?: Set<string>;
+  _domainToolCounts?: Map<string, number>;
+  _conversationEvents?: Array<{ role: string; content: string }>;
 }
 
 export interface TeammateRunOptions {
@@ -300,6 +308,7 @@ export async function createTeam(
   teammateConfigs?: Array<{ name: string; role: string; model?: string }>,
   worktreeIsolation?: boolean,
   ariaWebContents?: WebContents | null,
+  conversationId?: string,
 ): Promise<{ teamId: string; summary: string }> {
   // Max 10 teammates across all teams
   const totalTeammates = Array.from(activeTeams.values()).reduce((sum, t) => sum + t.teammates.size, 0);
@@ -332,6 +341,8 @@ export async function createTeam(
     ariaWebContents: ariaWebContents ?? null,
     contracts: [],
     currentPhase: 1,
+    llmConfig,
+    conversationId,
   };
 
   activeTeams.set(teamId, team);
@@ -466,6 +477,17 @@ async function runTeammateLoop(
   const { sessionId, name, role } = teammate;
   console.log(`[team] ${name} turn loop starting — teamId: ${teamId}, task: ${task.slice(0, 60)}`);
 
+  // Domain playbook tracking
+  const domainsVisited = new Set<string>();
+  const domainToolCounts = new Map<string, number>();
+  const conversationEvents: Array<{ role: string; content: string }> = [];
+  conversationEvents.push({ role: 'user', content: task });
+  teammate._domainsVisited = domainsVisited;
+  teammate._domainToolCounts = domainToolCounts;
+  teammate._conversationEvents = conversationEvents;
+
+  const team = activeTeams.get(teamId);
+
   // Broadcast helper
   function teamBroadcast(channel: string, data: any): void {
     try {
@@ -476,6 +498,7 @@ async function runTeammateLoop(
   }
 
   teamBroadcast('team:teammate-start', { id: teammate.id, name, role, task });
+  persistTeamEvent(team?.conversationId, 'teammate-start', { name, role, task: task.slice(0, 300) });
 
   let teammateProvider = llmConfig.provider;
 
@@ -488,7 +511,6 @@ async function runTeammateLoop(
     teammateProvider = tmConfig.provider;
 
     const model = createModel(tmConfig);
-    const team = activeTeams.get(teamId);
     const tools = createTools(browserCtx, sessionId, {
       developerMode: teamDevMode,
       llmConfig: tmConfig,
@@ -497,6 +519,8 @@ async function runTeammateLoop(
       worktreeIsolation: team?.worktreeIsolation,
       projectWorkingDir: teammate.worktreePath || team?.workingDir || process.cwd(),
       lockedTabId: teammate.assignedTabId ? String(teammate.assignedTabId) : undefined,
+      domainsVisited,
+      domainToolCounts,
     });
 
     // Store frozen config
@@ -587,6 +611,22 @@ async function runTeammateLoop(
                   }
                 } catch {}
 
+                // Domain playbook: attribute non-navigate tools + collect conversation events
+                try {
+                  for (const tr of toolResults) {
+                    const toolName = (tr as any).toolName || 'unknown';
+                    if (toolName !== 'navigate' && toolName !== 'search' && domainsVisited.size > 0) {
+                      const lastDomain = [...domainsVisited].pop();
+                      if (lastDomain) domainToolCounts.set(lastDomain, (domainToolCounts.get(lastDomain) || 0) + 1);
+                    }
+                    const args = (tr as any).args || (tr as any).input || {};
+                    const rawResult = (tr as any).result ?? (tr as any).output ?? '';
+                    const resultStr = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult ?? '');
+                    conversationEvents.push({ role: 'tool-call', content: formatTeammateToolCall(toolName, args) });
+                    conversationEvents.push({ role: 'tool', content: resultStr.slice(0, 2000) });
+                  }
+                } catch {}
+
                 notifyUpdate(teamId);
               } catch {}
             },
@@ -625,6 +665,14 @@ async function runTeammateLoop(
       await persistTeammateStructuredHistory(sessionId, result, fullResponse, `${name}.turn${turnNumber}`);
       teammate.result = fullResponse || `Used ${teammate.toolsUsed.length} tools: ${[...new Set(teammate.toolsUsed)].join(', ')}`;
 
+      // Persist turn to SQLite
+      persistTeamEvent(team?.conversationId, 'teammate-turn', {
+        name, turn: turnNumber,
+        tools: [...new Set(teammate.toolsUsed.slice(-20))],
+        response: fullResponse.slice(0, 500),
+        files: (teammate.filesWritten || []).slice(-10),
+      });
+
       // ─── Check shutdown ───
       // Exit if shutdown was requested (teammate had one turn to wrap up)
       // The only way to prevent exit is to explicitly reject via shutdown_response(approve: false)
@@ -634,6 +682,7 @@ async function runTeammateLoop(
         teammate.finishedAt = Date.now();
         teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
         teamBroadcast('team:teammate-done', { name, status: 'done', summary: (teammate.result || '').slice(0, 300) });
+        persistTeamEvent(team?.conversationId, 'teammate-done', { name, status: 'done', summary: (teammate.result || '').slice(0, 500) });
         notifyUpdate(teamId);
         break;
       }
@@ -656,6 +705,7 @@ async function runTeammateLoop(
         });
         teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
         teamBroadcast('team:teammate-done', { name, status: 'done', summary: 'All tasks completed' });
+        persistTeamEvent(team?.conversationId, 'teammate-done', { name, status: 'done', summary: (teammate.result || '').slice(0, 500) });
         notifyUpdate(teamId);
         break;
       }
@@ -712,6 +762,7 @@ async function runTeammateLoop(
         teammate.finishedAt = Date.now();
         teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
         teamBroadcast('team:teammate-done', { name, status: 'done', summary: 'Idle timeout' });
+        persistTeamEvent(team?.conversationId, 'teammate-done', { name, status: 'done', summary: 'Idle timeout' });
         sendMessage(teamId, 'system', '@lead', `${name} auto-shutdown after idle timeout.`, {
           type: 'system',
           summary: `${name} idle timeout`,
@@ -737,6 +788,7 @@ async function runTeammateLoop(
     console.error(`[team] ${name} loop error:`, errMsg, err?.stack?.slice?.(0, 300));
     teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
     teamBroadcast('team:teammate-done', { name, status: 'failed', summary: errMsg });
+    persistTeamEvent(team?.conversationId, 'teammate-done', { name, status: 'failed', summary: errMsg.slice(0, 500) });
     teammate.status = 'failed';
     teammate.error = errMsg;
     teammate.finishedAt = Date.now();
@@ -777,6 +829,26 @@ function trackFileWrites(teammate: Teammate, toolName: string, tr: any, resultSt
       if (!teammate.filesWritten) teammate.filesWritten = [];
       teammate.filesWritten.push(redirectMatch[1]);
     }
+  }
+}
+
+function formatTeammateToolCall(toolName: string, args: Record<string, any>): string {
+  const MAX_VAL = 120, MAX_TOTAL = 300;
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(args)) {
+    const str = typeof value === 'string' ? value : JSON.stringify(value);
+    parts.push(str.length > 500 ? `${key}: <${str.length} chars>` : `${key}: ${str.length > MAX_VAL ? str.slice(0, MAX_VAL) + '...' : str}`);
+  }
+  const full = `${toolName} -> ${parts.join(', ')}`;
+  return full.length > MAX_TOTAL ? full.slice(0, MAX_TOTAL) + '...' : full;
+}
+
+function persistTeamEvent(conversationId: string | undefined, eventType: string, data: Record<string, any>): void {
+  if (!conversationId) return;
+  try {
+    addConversationMessage(conversationId, 'team-event', JSON.stringify({ type: eventType, ...data, ts: Date.now() }));
+  } catch (e: any) {
+    console.error('[team] persistTeamEvent error:', e?.message);
   }
 }
 
@@ -1263,6 +1335,33 @@ export async function dissolveTeam(teamId: string): Promise<string> {
   } catch (memErr: any) {
     console.error('[team] coding-memory persist error (non-fatal):', memErr?.message);
   }
+
+  // Update domain playbooks from teammate activity
+  for (const [, tm] of team.teammates) {
+    if (tm._domainsVisited && tm._domainsVisited.size > 0 && team.llmConfig) {
+      try {
+        const pbResult = await updatePlaybooksFromSession(
+          tm._domainsVisited, tm._domainToolCounts || new Map(),
+          tm._conversationEvents || [], tm.result || '',
+          team.llmConfig, undefined,
+        );
+        if (pbResult.updated.length > 0) {
+          console.log(`[team] Playbooks updated from ${tm.name}: ${pbResult.updated.map(u => `${u.domain} (${u.reason})`).join(', ')}`);
+          if (team.ariaWebContents && !team.ariaWebContents.isDestroyed()) {
+            team.ariaWebContents.send('domain:playbook-updated', { updates: pbResult.updated });
+          }
+        }
+      } catch (e: any) {
+        console.error(`[team] Playbook update from ${tm.name} failed (non-fatal):`, e?.message);
+      }
+    }
+  }
+
+  // Persist team dissolution event
+  persistTeamEvent(team.conversationId, 'team-dissolved', {
+    teamId, duration: ((Date.now() - new Date(team.created_at).getTime()) / 1000 / 60).toFixed(1),
+    teammates: Array.from(team.teammates.values()).map(t => ({ name: t.name, status: t.status, result: t.result?.slice(0, 200) })),
+  });
 
   // Cleanup
   for (const [, tm] of team.teammates) {
