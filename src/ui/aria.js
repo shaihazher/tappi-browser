@@ -2910,6 +2910,7 @@ const _activeToolCards = new Map(); // toolId -> { cardEl, state, toolName, inpu
 const _ccToolIcons = {
   Bash: '>_', Read: '\u{1F4D6}', Write: '\u{270F}\u{FE0F}', Edit: '\u{1F4DD}',
   Grep: '\u{1F50D}', Glob: '\u{1F4C2}', WebFetch: '\u{1F310}', TodoWrite: '\u{2705}',
+  AskUserQuestion: '\u{2753}',
 };
 
 function _getToolIcon(name) {
@@ -2925,6 +2926,11 @@ function _getToolSummary(name, input) {
     case 'Glob': return input.pattern || '';
     case 'WebFetch': return input.url || '';
     case 'TodoWrite': return 'Updating task list';
+    case 'AskUserQuestion': {
+      const questions = input.questions || [];
+      if (questions.length === 1) return questions[0].question || 'Question';
+      return `${questions.length} questions`;
+    }
     default: {
       const keys = Object.keys(input).slice(0, 1);
       return keys.length ? `${keys[0]}: ${String(input[keys[0]] ?? '').slice(0, 80)}` : '';
@@ -2937,6 +2943,7 @@ function _buildToolCard(toolId, toolName, opts = {}) {
   card.className = 'cc-tool-card';
   card.dataset.toolId = toolId;
   card.dataset.state = opts.state || 'running';
+  card.dataset.toolName = toolName;
 
   const icon = _getToolIcon(toolName);
   const summary = opts.summary || '';
@@ -2977,6 +2984,73 @@ function _renderToolInput(card, toolName, input) {
     case 'WebFetch':
       html = `<code>${_escHtml(input.url || '')}</code>`;
       break;
+    case 'AskUserQuestion': {
+      const questions = input.questions || [];
+      const container = document.createElement('div');
+      container.className = 'cc-ask-questions';
+
+      questions.forEach((q) => {
+        const qDiv = document.createElement('div');
+        qDiv.className = 'cc-ask-question';
+
+        const qText = document.createElement('div');
+        qText.className = 'cc-ask-question-text';
+        qText.textContent = q.question || '';
+        qDiv.appendChild(qText);
+
+        const optsDiv = document.createElement('div');
+        optsDiv.className = 'cc-ask-options';
+
+        (q.options || []).forEach(opt => {
+          const chip = document.createElement('button');
+          chip.className = 'cc-ask-option-chip';
+          const labelSpan = document.createElement('span');
+          labelSpan.className = 'cc-ask-opt-label';
+          labelSpan.textContent = opt.label;
+          chip.appendChild(labelSpan);
+          if (opt.description) chip.title = opt.description;
+
+          // If card is already done (persisted), render disabled
+          const cardState = card.dataset.state;
+          if (cardState === 'done' || cardState === 'error') {
+            chip.disabled = true;
+          } else {
+            chip.addEventListener('click', () => {
+              const chatInput = document.getElementById('aria-input');
+              if (chatInput) {
+                chatInput.value = opt.label;
+                chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+                const sendBtn = document.getElementById('aria-send-btn');
+                if (sendBtn) sendBtn.click();
+              }
+            });
+          }
+          optsDiv.appendChild(chip);
+        });
+
+        // "Other" free-text option
+        const otherChip = document.createElement('button');
+        otherChip.className = 'cc-ask-option-chip cc-ask-other';
+        otherChip.textContent = 'Other...';
+        const cardState = card.dataset.state;
+        if (cardState === 'done' || cardState === 'error') {
+          otherChip.disabled = true;
+        } else {
+          otherChip.addEventListener('click', () => {
+            const chatInput = document.getElementById('aria-input');
+            if (chatInput) chatInput.focus();
+          });
+        }
+        optsDiv.appendChild(otherChip);
+
+        qDiv.appendChild(optsDiv);
+        container.appendChild(qDiv);
+      });
+
+      inputEl.innerHTML = '';
+      inputEl.appendChild(container);
+      return;
+    }
     default: {
       const keys = Object.keys(input).slice(0, 3);
       const pairs = keys.map(k => `<b>${_escHtml(k)}:</b> ${_escHtml(String(input[k] ?? '').slice(0, 200))}`);
@@ -3070,6 +3144,15 @@ if (window.aria.onCCToolComplete) {
 
     // Render input details
     _renderToolInput(card, data.toolName, data.input);
+
+    // Auto-expand AskUserQuestion so the user sees the questions
+    if (data.toolName === 'AskUserQuestion') {
+      const body = card.querySelector('.cc-tool-card-body');
+      if (body) body.classList.add('expanded');
+      const toggle = card.querySelector('.cc-tool-toggle');
+      if (toggle) toggle.textContent = '\u{25BE}';
+    }
+
     scrollToBottom();
   });
 }
@@ -3088,6 +3171,26 @@ if (window.aria.onCCToolResult) {
 
     const card = entry.cardEl;
     const isError = data.isError || false;
+
+    // AskUserQuestion: keep expanded, disable chips, skip auto-collapse
+    if (entry.toolName === 'AskUserQuestion') {
+      card.dataset.state = 'done';
+      const statusEl = card.querySelector('.cc-tool-status');
+      if (statusEl) statusEl.innerHTML = '';
+      card.querySelectorAll('.cc-ask-option-chip').forEach(c => c.disabled = true);
+
+      const persistData = {
+        toolId: data.toolId,
+        toolName: entry.toolName,
+        input: entry.input,
+        result: data.content,
+        isError: isError,
+      };
+      messages.push({ role: 'cc-tool-card', content: JSON.stringify(persistData), timestamp: Date.now() });
+      _activeToolCards.delete(data.toolId);
+      scrollToBottom();
+      return;
+    }
 
     // Render result
     _renderToolResult(card, entry.toolName, data.content || '', isError);

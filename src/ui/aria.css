@@ -2600,6 +2600,37 @@ body.coding-mode .cc-tool-card-header:hover { background: rgba(137, 180, 250, 0.
 body.coding-mode .cc-tool-input pre,
 body.coding-mode .cc-tool-result pre { background: rgba(255, 255, 255, 0.04); }
 
+/* AskUserQuestion cards */
+.cc-ask-questions { display: flex; flex-direction: column; gap: 12px; }
+.cc-ask-question-text { font-size: 13px; font-weight: 500; color: var(--text); margin-bottom: 8px; line-height: 1.4; }
+.cc-ask-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.cc-ask-option-chip {
+  padding: 6px 14px;
+  border: 1px solid var(--border-light, #e5e7eb);
+  border-radius: 16px;
+  background: var(--bg-secondary, #f9fafb);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  color: var(--text);
+}
+.cc-ask-option-chip:hover:not(:disabled) {
+  border-color: var(--lotus, #8b5cf6);
+  background: rgba(139, 92, 246, 0.08);
+  color: var(--lotus, #8b5cf6);
+}
+.cc-ask-option-chip:disabled { opacity: 0.5; cursor: default; }
+.cc-ask-other { border-style: dashed; color: var(--text-dim); }
+.cc-tool-card[data-tool-name="AskUserQuestion"] .cc-tool-card-header { background: rgba(139, 92, 246, 0.06); }
+body.coding-mode .cc-ask-option-chip {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(137, 180, 250, 0.15);
+}
+body.coding-mode .cc-ask-option-chip:hover:not(:disabled) {
+  border-color: rgba(137, 180, 250, 0.5);
+  background: rgba(137, 180, 250, 0.1);
+}
+
 /* ═══════════════════════════════════════════
    Sub-agent progress chip (Aria chat)
    ═══════════════════════════════════════════ */
