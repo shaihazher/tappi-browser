@@ -108,7 +108,7 @@ export interface Teammate {
   assignedTabId?: number;        // dedicated browser tab
   // Shutdown protocol
   _shutdownRequested: boolean;
-  _shutdownAcknowledged: boolean;
+  _shutdownAcknowledged: boolean | undefined;  // undefined = no response yet, true = accepted, false = rejected
   // Internal state for turn loop
   _systemPrompt?: string;
   _tools?: Record<string, any>;
@@ -376,7 +376,7 @@ export async function createTeam(
       worktreePath,
       worktreeBranch,
       _shutdownRequested: false,
-      _shutdownAcknowledged: false,
+      _shutdownAcknowledged: undefined,
     };
 
     team.teammates.set(tc.name, teammate);
@@ -626,14 +626,47 @@ async function runTeammateLoop(
       teammate.result = fullResponse || `Used ${teammate.toolsUsed.length} tools: ${[...new Set(teammate.toolsUsed)].join(', ')}`;
 
       // ─── Check shutdown ───
-      if (teammate._shutdownRequested && teammate._shutdownAcknowledged) {
-        console.log(`[team] ${name} shutdown acknowledged — exiting loop.`);
+      // Exit if shutdown was requested (teammate had one turn to wrap up)
+      // The only way to prevent exit is to explicitly reject via shutdown_response(approve: false)
+      if (teammate._shutdownRequested && teammate._shutdownAcknowledged !== false) {
+        console.log(`[team] ${name} shutdown complete — exiting loop.`);
         teammate.status = 'done';
         teammate.finishedAt = Date.now();
         teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
         teamBroadcast('team:teammate-done', { name, status: 'done', summary: (teammate.result || '').slice(0, 300) });
         notifyUpdate(teamId);
         break;
+      }
+      // Reset rejection flag for next shutdown attempt
+      if (teammate._shutdownAcknowledged === false) {
+        teammate._shutdownRequested = false;
+        teammate._shutdownAcknowledged = undefined;
+      }
+
+      // ─── Check task completion → auto-exit ───
+      const myTasks = getTaskList(teamId).filter(t => t.owner === name && t.status !== 'deleted');
+      const allTasksDone = myTasks.length > 0 && myTasks.every(t => t.status === 'completed');
+      if (allTasksDone) {
+        console.log(`[team] ${name} all assigned tasks completed — auto-exiting.`);
+        teammate.status = 'done';
+        teammate.finishedAt = Date.now();
+        sendMessage(teamId, 'system', '@lead', `${name} completed all assigned tasks and exited.`, {
+          type: 'system',
+          summary: `${name} tasks complete`,
+        });
+        teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
+        teamBroadcast('team:teammate-done', { name, status: 'done', summary: 'All tasks completed' });
+        notifyUpdate(teamId);
+        break;
+      }
+
+      // ─── Check incomplete tasks → auto-continue ───
+      const incompleteTasks = myTasks.filter(t => t.status !== 'completed');
+      if (incompleteTasks.length > 0) {
+        console.log(`[team] ${name} has ${incompleteTasks.length} incomplete task(s) — auto-continuing.`);
+        const taskNames = incompleteTasks.map(t => t.title).join(', ');
+        addMessage(sessionId, { role: 'user', content: `[SYSTEM] You still have ${incompleteTasks.length} incomplete task(s): ${taskNames}. Continue working on them. Use task_update to mark tasks as completed when done.` });
+        continue; // Skip idle wait, go directly to next turn
       }
 
       // ─── Go idle ───
@@ -1520,11 +1553,11 @@ You operate in a turn-based loop:
 - **task_get** — Get full details of a specific task.
 
 ## Rules
-1. **ALWAYS call task_update** when you start a task (status: "in_progress") and finish (status: "completed" with result and files_touched).
+1. **ALWAYS call task_update** when you start a task (status: "in_progress") and when you finish (status: "completed" with result and files_touched). This is CRITICAL — the system uses task status to determine when you're done.
 2. If you need info from another teammate, use send_message.
-3. When you receive a shutdown_request, finish critical work, then respond with send_message (type: "shutdown_response", approve: true).
+3. When you receive a shutdown_request, finish critical work quickly and wrap up. You will be automatically exited after the turn.
 4. If blocked, update task status and message @lead.
-5. When done with ALL work, update all your tasks to "completed" and send a summary to @lead.
+5. When done with ALL work, update all your tasks to "completed" and send a summary to @lead. You will auto-exit when all your assigned tasks are completed.
 
 ## Current Task List
 ${taskList}

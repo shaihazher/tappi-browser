@@ -266,6 +266,12 @@ For EVERY request, follow this process:
 
 For straightforward factual questions or simple lookups, compress steps 2–4.
 
+## Agent Teams
+When you spawn teammates for parallel work:
+1. Create team → write contracts → create tasks → spawn teammates
+2. **CRITICAL**: After spawning all teammates, call \`wait_for_team\` to block until they finish. NEVER return without waiting for teammates to complete.
+3. After wait_for_team returns, collect results with \`team_status\`, then call \`team_delete\` to clean up.
+4. Present the combined results to the user.
 `;
 
 export const SYSTEM_PROMPT = `You are Aria 🪷, an AI agent built into a web browser. You control the browser through tools.
@@ -1365,6 +1371,82 @@ Timezone: ${tz}
       agentProgressData = { running: false, elapsed: Date.now() - runStart, toolCalls: toolCallCount, timeoutMs };
     }
     } // end retry loop
+
+    // ─── Team monitoring continuation ─────────────────────────────────────────
+    // If the agent's stream ended but teammates are still active, restart with a
+    // monitoring prompt. This ensures the agent doesn't return prematurely.
+    if (!errorSent && stopReason !== 'timeout') {
+      let teamContRounds = 0;
+      const MAX_TEAM_CONT = 10;
+      while (getActiveTeammateCount() > 0 && teamContRounds < MAX_TEAM_CONT) {
+        teamContRounds++;
+        const activeCount = getActiveTeammateCount();
+        console.log(`[agent] Team continuation round ${teamContRounds} — ${activeCount} teammate(s) still active`);
+
+        // Persist current output
+        if (fullResponse) {
+          addMessage(sessionId, { role: 'assistant' as const, content: fullResponse });
+          sendChunk(mainWindow, '', true, ariaWebContents);
+          fullResponse = '';
+        }
+
+        // Inject monitoring prompt
+        addMessage(sessionId, { role: 'user' as const, content: `[SYSTEM] ${activeCount} teammate(s) still working. Call wait_for_team to wait for their completion, or use team_status to check progress. Do NOT finalize or call team_delete until all teammates are done. Present combined results only after all teammates complete.` });
+        broadcast('agent:stream-start', {});
+
+        // New streamText call for continuation
+        const contProviderOptions = buildProviderOptions(llmConfig);
+        const contCallProviderOptions = withCodexProviderOptions(
+          llmConfig.provider,
+          { ...contProviderOptions },
+          activeSystemPrompt,
+        );
+        const contAbort = new AbortController();
+        const contTimeout = setTimeout(() => contAbort.abort(), 10 * 60 * 1000); // 10 min per round
+
+        try {
+          const contMessages = getWindow(sessionId);
+          const contResult = streamText({
+            model,
+            system: activeSystemPrompt,
+            messages: contMessages as any,
+            tools,
+            ...(llmConfig.provider !== 'openai-codex' ? { maxOutputTokens: 30000 } : {}),
+            ...(Object.keys(contCallProviderOptions).length > 0 ? { providerOptions: contCallProviderOptions } : {}),
+            stopWhen: stepCountIs(200),
+            abortSignal: contAbort.signal,
+          });
+
+          for await (const chunk of contResult.fullStream) {
+            if (contAbort.signal.aborted) break;
+            if (chunk.type === 'text-delta') {
+              const text = (chunk as any).text ?? (chunk as any).delta ?? (chunk as any).textDelta ?? '';
+              fullResponse += text;
+              if (text) sendChunk(mainWindow, text, false, ariaWebContents);
+            }
+          }
+
+          // Persist continuation response
+          try {
+            const contResp = await contResult.response;
+            const contMsgs = contResp?.messages ?? [];
+            if (contMsgs.length > 0) addMessages(sessionId, contMsgs as any);
+            else if (fullResponse) addMessage(sessionId, { role: 'assistant' as const, content: fullResponse });
+          } catch {
+            if (fullResponse) addMessage(sessionId, { role: 'assistant' as const, content: fullResponse });
+          }
+
+          console.log(`[agent] Team continuation round ${teamContRounds} done — ${fullResponse.length} chars`);
+        } catch (contErr: any) {
+          if (contErr?.name !== 'AbortError') {
+            console.error('[agent] Team continuation error:', contErr?.message);
+          }
+          break;
+        } finally {
+          clearTimeout(contTimeout);
+        }
+      }
+    }
 
     // ─── Persist structured response messages (Phase 7.9) ───────────────────
     // Instead of saving just the flat text, save the full AI SDK ResponseMessage[]

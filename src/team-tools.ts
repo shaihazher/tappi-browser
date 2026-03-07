@@ -320,24 +320,67 @@ export function createTeamCreateTool(ctx: TeamToolsContext) {
  */
 export function createTeamDeleteTool(ctx: TeamToolsContext) {
   return tool({
-    description: `Remove team and clean up resources (task list, mailboxes, worktrees). Only use after all teammates have shut down gracefully.`,
-    inputSchema: z.object({}),
-    execute: async () => {
+    description: `Remove team and clean up resources (task list, mailboxes, worktrees). If teammates are still active, automatically sends shutdown requests, waits up to 15 seconds for graceful shutdown, then force-terminates remaining teammates.`,
+    inputSchema: z.object({
+      force: z.boolean().optional().describe('Force immediate termination of all active teammates (default: true — auto-shutdown with grace period)'),
+    }),
+    execute: async ({ force }: { force?: boolean }) => {
       const tid = resolveTeamId(ctx);
       if (!tid) return 'No active team.';
       const team = teamManager.getTeam(tid);
-      if (team) {
-        // Check for active teammates
-        const active = Array.from(team.teammates.values()).filter(t =>
+      if (!team) {
+        teamManager.dissolveTeam(tid);
+        return `Team "${tid}" deleted.`;
+      }
+
+      const active = Array.from(team.teammates.values()).filter(t =>
+        t.status === 'working' || t.status === 'idle'
+      );
+
+      if (active.length > 0) {
+        // Send shutdown requests to all active teammates
+        for (const tm of active) {
+          if (!tm._shutdownRequested) {
+            tm._shutdownRequested = true;
+            mailbox.sendMessage(tid, '@lead', tm.name,
+              '[SHUTDOWN REQUEST]: Team is being dissolved. Wrap up immediately.',
+              { type: 'shutdown_request', summary: 'Team dissolving' });
+          }
+        }
+
+        if (force === false) {
+          // Non-force: just send shutdown requests and return
+          return `Shutdown requests sent to ${active.length} teammate(s): ${active.map(t => t.name).join(', ')}. Call team_delete again after they finish, or use force mode.`;
+        }
+
+        // Grace period: wait up to 15 seconds for teammates to finish
+        const graceStart = Date.now();
+        const GRACE_MS = 15_000;
+        while (Date.now() - graceStart < GRACE_MS) {
+          const stillActive = Array.from(team.teammates.values()).filter(t =>
+            t.status === 'working' || t.status === 'idle'
+          );
+          if (stillActive.length === 0) break;
+          await new Promise(r => setTimeout(r, 2000));
+        }
+
+        // Force-terminate any remaining active teammates
+        const remaining = Array.from(team.teammates.values()).filter(t =>
           t.status === 'working' || t.status === 'idle'
         );
-        if (active.length > 0) {
-          return `Cannot delete team — ${active.length} teammate(s) still active: ${active.map(t => t.name).join(', ')}. Send shutdown_request first.`;
+        for (const tm of remaining) {
+          console.log(`[team_delete] Force-terminating ${tm.name}`);
+          tm.abortController?.abort();
+          mailbox.cancelWaiter(tid, tm.name);
+          tm.status = 'done';
+          tm.result = (tm.result || '') + '\n(Force-terminated during team deletion)';
+          tm.finishedAt = Date.now();
         }
       }
-      teamManager.dissolveTeam(tid);
+
+      const result = await teamManager.dissolveTeam(tid);
       broadcastTeamUpdate(ctx);
-      return `Team "${tid}" deleted.`;
+      return result;
     },
   });
 }
@@ -422,6 +465,44 @@ export function createValidateIntegrationTool(ctx: TeamToolsContext) {
   });
 }
 
+/**
+ * WaitForTeam — Block until all teammates have finished or timeout.
+ * This keeps the main agent's streamText call alive while teammates work.
+ */
+export function createWaitForTeamTool(ctx: TeamToolsContext) {
+  return tool({
+    description: `Block and wait until all teammates have finished (status: done/failed) or timeout. Use this AFTER spawning teammates to wait for their completion. The tool polls every 5 seconds and returns the final team status when all teammates are done. IMPORTANT: Always call this after spawning teammates — do not return without waiting for them.`,
+    inputSchema: z.object({
+      timeout_seconds: z.number().optional().describe('Max seconds to wait (default: 600 = 10 min). Set higher for complex tasks.'),
+    }),
+    execute: async ({ timeout_seconds }: { timeout_seconds?: number }) => {
+      const tid = resolveTeamId(ctx);
+      if (!tid) return 'No active team.';
+      const team = teamManager.getTeam(tid);
+      if (!team) return `Team "${tid}" not found.`;
+
+      const timeoutMs = (timeout_seconds || 600) * 1000;
+      const startTime = Date.now();
+      const pollInterval = 5000;
+
+      while (Date.now() - startTime < timeoutMs) {
+        const active = Array.from(team.teammates.values()).filter(t =>
+          t.status === 'working' || t.status === 'idle'
+        );
+        if (active.length === 0) {
+          return `All teammates finished.\n\n${teamManager.getTeamStatus(tid)}`;
+        }
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        const activeNames = active.map(t => `${t.name} (${t.status})`).join(', ');
+        console.log(`[wait_for_team] ${elapsed}s — waiting for: ${activeNames}`);
+        await new Promise(r => setTimeout(r, pollInterval));
+      }
+
+      return `⏰ Wait timed out after ${timeout_seconds || 600}s. Some teammates may still be running.\n\n${teamManager.getTeamStatus(tid)}`;
+    },
+  });
+}
+
 // ─── Factory: Create All Team Tools ───
 
 /**
@@ -445,6 +526,7 @@ export function createTeamTools(ctx: TeamToolsContext): Record<string, any> {
     tools.team_create = createTeamCreateTool(ctx);
     tools.team_delete = createTeamDeleteTool(ctx);
     tools.spawn_teammate = createSpawnTeammateTool(ctx);
+    tools.wait_for_team = createWaitForTeamTool(ctx);
     tools.write_contracts = createWriteContractsTool(ctx);
     tools.validate_integration = createValidateIntegrationTool(ctx);
   }
