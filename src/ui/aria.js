@@ -3130,6 +3130,17 @@ function _renderToolInput(card, toolName, input) {
       inputEl.appendChild(container);
       return;
     }
+    case 'ExitPlanMode': {
+      const planText = input.plan || '';
+      if (planText) {
+        let planHtml = marked.parse(planText);
+        planHtml = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(planHtml) : planHtml;
+        inputEl.innerHTML = `<div class="cc-plan-content">${planHtml}</div>`;
+      } else {
+        inputEl.innerHTML = '<em>Plan content</em>';
+      }
+      return;
+    }
     default: {
       const keys = Object.keys(input).slice(0, 3);
       const pairs = keys.map(k => `<b>${_escHtml(k)}:</b> ${_escHtml(String(input[k] ?? '').slice(0, 200))}`);
