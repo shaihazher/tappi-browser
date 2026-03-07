@@ -1,28 +1,32 @@
 /**
- * shared-task-list.ts — Shared task registry for agent teams (Phase 8.38).
+ * shared-task-list.ts — Shared task registry for agent teams.
  *
- * All agents in a team share a single task list. Tasks have states, dependencies,
- * and file conflict detection. Persisted to <workspace>/teams/<team-id>/tasks.json.
+ * All agents in a team share a single task list. Tasks have states, bidirectional
+ * dependency graph (blocks/blockedBy), owner assignment, and file conflict detection.
+ * Persisted to <workspace>/teams/<team-id>/tasks.json.
+ *
+ * Status naming aligned with Claude Code: pending | in_progress | completed | deleted.
+ * "Blocked" is computed — a task is blocked if its blockedBy[] contains non-completed tasks.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { getWorkspacePath } from './workspace-resolver';
 
-export type TaskStatus = 'pending' | 'in-progress' | 'done' | 'blocked';
+export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'deleted';
 
 export interface SharedTask {
   id: string;
   title: string;
   description: string;
-  assignee?: string;              // teammate name, e.g. "@backend"
+  owner?: string;                   // teammate name, e.g. "@backend"
   status: TaskStatus;
-  dependencies: string[];         // task IDs that must complete first
-  blockedBy?: string;             // human-readable block reason
-  result?: string;                // completion summary
-  files_touched: string[];        // files this task modified
-  created_by: string;             // "@lead" or "@backend" etc.
+  blockedBy: string[];              // task IDs that must complete first
+  blocks: string[];                 // task IDs this task blocks (inverse)
+  result?: string;                  // completion summary
+  files_touched: string[];          // files this task modified
+  metadata?: Record<string, any>;   // arbitrary metadata
+  created_by: string;               // "@lead" or "@backend" etc.
   created_at: string;
   updated_at: string;
 }
@@ -47,9 +51,15 @@ let taskCounter = 0;
 
 export function initTaskList(teamId: string): void {
   if (!teamTaskLists.has(teamId)) {
-    // Try to load from disk
     const saved = loadFromDisk(teamId);
     teamTaskLists.set(teamId, saved || []);
+    // Restore counter from loaded tasks
+    if (saved) {
+      for (const t of saved) {
+        const num = parseInt(t.id.replace('task-', ''), 10);
+        if (num > taskCounter) taskCounter = num;
+      }
+    }
   }
 }
 
@@ -60,8 +70,9 @@ export function createTask(
   params: {
     title: string;
     description: string;
-    assignee?: string;
-    dependencies?: string[];
+    owner?: string;
+    blockedBy?: string[];
+    metadata?: Record<string, any>;
     created_by: string;
   }
 ): SharedTask {
@@ -70,24 +81,22 @@ export function createTask(
     id: `task-${++taskCounter}`,
     title: params.title,
     description: params.description,
-    assignee: params.assignee,
+    owner: params.owner,
     status: 'pending',
-    dependencies: params.dependencies || [],
+    blockedBy: params.blockedBy || [],
+    blocks: [],
     files_touched: [],
+    metadata: params.metadata,
     created_by: params.created_by,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
 
-  // Check if blocked by deps
-  if (task.dependencies.length > 0) {
-    const unmet = task.dependencies.filter(depId => {
-      const dep = tasks.find(t => t.id === depId);
-      return dep && dep.status !== 'done';
-    });
-    if (unmet.length > 0) {
-      task.status = 'blocked';
-      task.blockedBy = `Waiting for: ${unmet.join(', ')}`;
+  // Wire up inverse dependency: if this task is blockedBy X, then X blocks this task
+  for (const depId of task.blockedBy) {
+    const dep = tasks.find(t => t.id === depId);
+    if (dep && !dep.blocks.includes(task.id)) {
+      dep.blocks.push(task.id);
     }
   }
 
@@ -109,75 +118,137 @@ export function getTask(teamId: string, taskId: string): SharedTask | undefined 
   return getTaskList(teamId).find(t => t.id === taskId);
 }
 
-// ─── Update ───
-
-export function claimTask(teamId: string, taskId: string, agentName: string): string {
+/**
+ * Check if a task is blocked (has non-completed blockedBy dependencies).
+ */
+export function isTaskBlocked(teamId: string, taskId: string): boolean {
   const tasks = getTaskList(teamId);
   const task = tasks.find(t => t.id === taskId);
-  if (!task) return `❌ Task "${taskId}" not found.`;
-  if (task.status === 'done') return `❌ Task "${taskId}" is already done.`;
-  if (task.status === 'blocked') return `❌ Task "${taskId}" is blocked: ${task.blockedBy}`;
-  if (task.status === 'in-progress' && task.assignee && task.assignee !== agentName) {
-    return `❌ Task "${taskId}" is already claimed by ${task.assignee}.`;
-  }
-
-  task.assignee = agentName;
-  task.status = 'in-progress';
-  task.updated_at = new Date().toISOString();
-  persist(teamId, tasks);
-  return `✓ Claimed task "${task.title}".`;
+  if (!task || task.blockedBy.length === 0) return false;
+  return task.blockedBy.some(depId => {
+    const dep = tasks.find(t => t.id === depId);
+    return dep && dep.status !== 'completed';
+  });
 }
+
+/**
+ * Get the unmet blockers for a task.
+ */
+export function getUnmetBlockers(teamId: string, taskId: string): string[] {
+  const tasks = getTaskList(teamId);
+  const task = tasks.find(t => t.id === taskId);
+  if (!task) return [];
+  return task.blockedBy.filter(depId => {
+    const dep = tasks.find(t => t.id === depId);
+    return dep && dep.status !== 'completed';
+  });
+}
+
+// ─── Update ───
 
 export function updateTask(
   teamId: string,
   taskId: string,
   updates: {
     status?: TaskStatus;
+    owner?: string;
     result?: string;
     files_touched?: string[];
-    blockedBy?: string;
-    assignee?: string;
+    title?: string;
+    description?: string;
+    metadata?: Record<string, any>;
+    addBlocks?: string[];
+    addBlockedBy?: string[];
   }
 ): { message: string; conflicts: FileConflict[] } {
   const tasks = getTaskList(teamId);
   const task = tasks.find(t => t.id === taskId);
-  if (!task) return { message: `❌ Task "${taskId}" not found.`, conflicts: [] };
+  if (!task) return { message: `Task "${taskId}" not found.`, conflicts: [] };
 
   if (updates.status !== undefined) task.status = updates.status;
+  if (updates.owner !== undefined) task.owner = updates.owner;
   if (updates.result !== undefined) task.result = updates.result;
-  if (updates.assignee !== undefined) task.assignee = updates.assignee;
-  if (updates.blockedBy !== undefined) task.blockedBy = updates.blockedBy;
-  if (updates.files_touched !== undefined) {
-    task.files_touched = updates.files_touched;
+  if (updates.title !== undefined) task.title = updates.title;
+  if (updates.description !== undefined) task.description = updates.description;
+  if (updates.files_touched !== undefined) task.files_touched = updates.files_touched;
+  if (updates.metadata !== undefined) {
+    task.metadata = { ...(task.metadata || {}), ...updates.metadata };
+    // Allow null values to delete keys
+    for (const [k, v] of Object.entries(task.metadata!)) {
+      if (v === null) delete task.metadata![k];
+    }
   }
+
+  // Add new blocks
+  if (updates.addBlocks) {
+    for (const targetId of updates.addBlocks) {
+      if (!task.blocks.includes(targetId)) {
+        task.blocks.push(targetId);
+      }
+      // Wire inverse: target is now blockedBy this task
+      const target = tasks.find(t => t.id === targetId);
+      if (target && !target.blockedBy.includes(taskId)) {
+        target.blockedBy.push(taskId);
+      }
+    }
+  }
+
+  // Add new blockedBy
+  if (updates.addBlockedBy) {
+    for (const depId of updates.addBlockedBy) {
+      if (!task.blockedBy.includes(depId)) {
+        task.blockedBy.push(depId);
+      }
+      // Wire inverse: dep now blocks this task
+      const dep = tasks.find(t => t.id === depId);
+      if (dep && !dep.blocks.includes(taskId)) {
+        dep.blocks.push(taskId);
+      }
+    }
+  }
+
   task.updated_at = new Date().toISOString();
 
-  // Auto-unblock tasks that were waiting on this one (if it's now done)
-  let unblocked: string[] = [];
-  if (task.status === 'done') {
-    for (const other of tasks) {
-      if (other.status === 'blocked' && other.dependencies.includes(taskId)) {
-        // Check if all deps are now done
-        const unmetDeps = other.dependencies.filter(depId => {
-          const dep = tasks.find(t => t.id === depId);
-          return dep && dep.status !== 'done';
-        });
-        if (unmetDeps.length === 0) {
-          other.status = 'pending';
-          other.blockedBy = undefined;
-          other.updated_at = new Date().toISOString();
-          unblocked.push(other.title);
-        }
+  // Auto-unblock: when a task is completed, check tasks it blocks
+  const unblocked: string[] = [];
+  if (task.status === 'completed') {
+    for (const blockedId of task.blocks) {
+      const blocked = tasks.find(t => t.id === blockedId);
+      if (!blocked) continue;
+      // Check if all of blocked's blockedBy are now completed
+      const stillBlocked = blocked.blockedBy.some(bId => {
+        const b = tasks.find(t => t.id === bId);
+        return b && b.status !== 'completed';
+      });
+      if (!stillBlocked) {
+        unblocked.push(blocked.title);
+      }
+    }
+  }
+
+  // Handle deleted status — remove from dependency graph
+  if (task.status === 'deleted') {
+    // Remove this task from other tasks' blockedBy
+    for (const blockedId of task.blocks) {
+      const blocked = tasks.find(t => t.id === blockedId);
+      if (blocked) {
+        blocked.blockedBy = blocked.blockedBy.filter(id => id !== taskId);
+      }
+    }
+    // Remove this task from other tasks' blocks
+    for (const depId of task.blockedBy) {
+      const dep = tasks.find(t => t.id === depId);
+      if (dep) {
+        dep.blocks = dep.blocks.filter(id => id !== taskId);
       }
     }
   }
 
   persist(teamId, tasks);
 
-  // Detect file conflicts
   const conflicts = detectFileConflicts(tasks);
 
-  let message = `✓ Task "${task.title}" updated to ${task.status}.`;
+  let message = `Task "${task.title}" updated to ${task.status}.`;
   if (unblocked.length > 0) {
     message += ` Unblocked: ${unblocked.join(', ')}.`;
   }
@@ -191,7 +262,7 @@ export function detectFileConflicts(tasks: SharedTask[]): FileConflict[] {
   const fileMap = new Map<string, { taskId: string; taskTitle: string }[]>();
 
   for (const task of tasks) {
-    if (task.status === 'done') continue; // Only check active tasks
+    if (task.status === 'completed' || task.status === 'deleted') continue;
     for (const file of task.files_touched) {
       if (!fileMap.has(file)) fileMap.set(file, []);
       fileMap.get(file)!.push({ taskId: task.id, taskTitle: task.title });
@@ -215,21 +286,22 @@ export function detectFileConflicts(tasks: SharedTask[]): FileConflict[] {
 // ─── Format for Context ───
 
 export function formatTaskListForContext(teamId: string): string {
-  const tasks = getTaskList(teamId);
+  const tasks = getTaskList(teamId).filter(t => t.status !== 'deleted');
   if (tasks.length === 0) return '(No tasks yet)';
 
   const statusEmoji: Record<TaskStatus, string> = {
     'pending': '⏳',
-    'in-progress': '🔄',
-    'done': '✅',
-    'blocked': '🚫',
+    'in_progress': '🔄',
+    'completed': '✅',
+    'deleted': '🗑️',
   };
 
   const lines = tasks.map(t => {
     const emoji = statusEmoji[t.status];
-    const assignee = t.assignee ? ` [${t.assignee}]` : '';
-    const blocked = t.status === 'blocked' && t.blockedBy ? ` — ${t.blockedBy}` : '';
-    return `${emoji} [${t.id}] ${t.title}${assignee}${blocked}`;
+    const owner = t.owner ? ` [${t.owner}]` : '';
+    const blocked = isTaskBlocked(teamId, t.id);
+    const blockedStr = blocked ? ` — blocked by: ${getUnmetBlockers(teamId, t.id).join(', ')}` : '';
+    return `${emoji} [${t.id}] ${t.title}${owner}${blockedStr}`;
   });
 
   return lines.join('\n');
@@ -238,9 +310,11 @@ export function formatTaskListForContext(teamId: string): string {
 export function formatTaskListCompact(tasks: SharedTask[]): string {
   if (tasks.length === 0) return '(No tasks)';
   const statusEmoji: Record<TaskStatus, string> = {
-    'pending': '⏳', 'in-progress': '🔄', 'done': '✅', 'blocked': '🚫',
+    'pending': '⏳', 'in_progress': '🔄', 'completed': '✅', 'deleted': '🗑️',
   };
-  return tasks.map(t => `${statusEmoji[t.status]} ${t.title}`).join('\n');
+  return tasks.filter(t => t.status !== 'deleted')
+    .map(t => `${statusEmoji[t.status]} ${t.title}`)
+    .join('\n');
 }
 
 // ─── Persistence ───
@@ -279,24 +353,24 @@ export function cleanupTeamTaskList(teamId: string): void {
   teamTaskLists.delete(teamId);
 }
 
-// ─── Summary for Dissolve ───
+// ─── Summary ───
 
 export function getTeamSummary(teamId: string): string {
-  const tasks = getTaskList(teamId);
-  const done = tasks.filter(t => t.status === 'done');
-  const blocked = tasks.filter(t => t.status === 'blocked');
-  const pending = tasks.filter(t => t.status === 'pending' || t.status === 'in-progress');
+  const tasks = getTaskList(teamId).filter(t => t.status !== 'deleted');
+  const completed = tasks.filter(t => t.status === 'completed');
+  const blocked = tasks.filter(t => isTaskBlocked(teamId, t.id));
+  const active = tasks.filter(t => t.status === 'pending' || t.status === 'in_progress');
 
   const lines = [
-    `Tasks: ${tasks.length} total, ${done.length} done, ${blocked.length} blocked, ${pending.length} pending/in-progress`,
+    `Tasks: ${tasks.length} total, ${completed.length} completed, ${blocked.length} blocked, ${active.length} pending/in-progress`,
     '',
     '**Completed tasks:**',
-    ...done.map(t => `✅ ${t.title}${t.result ? ': ' + t.result.slice(0, 100) : ''}`),
+    ...completed.map(t => `✅ ${t.title}${t.result ? ': ' + t.result.slice(0, 100) : ''}`),
   ];
 
   if (blocked.length > 0) {
     lines.push('', '**Blocked tasks:**');
-    lines.push(...blocked.map(t => `🚫 ${t.title}: ${t.blockedBy || 'unknown reason'}`));
+    lines.push(...blocked.map(t => `🚫 ${t.title}: blocked by ${getUnmetBlockers(teamId, t.id).join(', ')}`));
   }
 
   return lines.join('\n');

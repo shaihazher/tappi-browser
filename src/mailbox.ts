@@ -1,10 +1,12 @@
 /**
- * mailbox.ts — Inter-agent messaging system (Phase 8.38).
+ * mailbox.ts — Inter-agent messaging system with turn-based wake support.
  *
- * Each teammate has an inbox. Unread messages are injected into context
- * on each agent turn. The lead can read all mailboxes; teammates only their own.
- * Messages are lightweight text only.
+ * Each teammate has an inbox. Messages are delivered between turns as user-role
+ * conversation messages. When a teammate is idle (has an active MessageWaiter),
+ * sending a message wakes them immediately.
  */
+
+import { MessageWaiter } from './message-waiter';
 
 export interface MailboxMessage {
   id: string;
@@ -13,6 +15,8 @@ export interface MailboxMessage {
   content: string;
   timestamp: string;
   read: boolean;
+  type?: 'message' | 'broadcast' | 'shutdown_request' | 'shutdown_response' | 'system';
+  summary?: string;   // short preview for UI
 }
 
 export interface Mailbox {
@@ -23,7 +27,14 @@ export interface Mailbox {
 // Global mailbox registry per team
 const teamMailboxes = new Map<string, Map<string, Mailbox>>();
 
+// Per-agent message waiters for turn-based idle/wake
+const agentWaiters = new Map<string, MessageWaiter>();
+
 let messageCounter = 0;
+
+function waiterKey(teamId: string, agentName: string): string {
+  return `${teamId}:${agentName}`;
+}
 
 // ─── Init ───
 
@@ -44,9 +55,10 @@ export function sendMessage(
   from: string,
   to: string,
   content: string,
+  options?: { type?: MailboxMessage['type']; summary?: string },
 ): string {
   const boxes = teamMailboxes.get(teamId);
-  if (!boxes) return `❌ Team "${teamId}" not found.`;
+  if (!boxes) return `Team "${teamId}" not found.`;
 
   const msg: MailboxMessage = {
     id: `msg-${++messageCounter}`,
@@ -55,6 +67,8 @@ export function sendMessage(
     content,
     timestamp: new Date().toISOString(),
     read: false,
+    type: options?.type || 'message',
+    summary: options?.summary,
   };
 
   if (to === '@all') {
@@ -62,15 +76,88 @@ export function sendMessage(
     for (const [name, box] of boxes) {
       if (name !== from) {
         box.messages.push({ ...msg });
+        // Wake idle agent
+        wakeAgent(teamId, name);
       }
     }
-    return `✓ Broadcast to all teammates.`;
+    return `Broadcast to all teammates.`;
   } else {
     const box = boxes.get(to);
-    if (!box) return `❌ Teammate "${to}" not found.`;
+    if (!box) return `Teammate "${to}" not found.`;
     box.messages.push(msg);
-    return `✓ Message sent to ${to}.`;
+    // Wake idle agent
+    wakeAgent(teamId, to);
+    return `Message sent to ${to}.`;
   }
+}
+
+/**
+ * Wake an idle agent by delivering their unread messages via their MessageWaiter.
+ */
+function wakeAgent(teamId: string, agentName: string): void {
+  const key = waiterKey(teamId, agentName);
+  const waiter = agentWaiters.get(key);
+  if (waiter && waiter.isWaiting) {
+    const unread = getUnreadMessages(teamId, agentName);
+    if (unread.length > 0) {
+      waiter.deliver(unread);
+      agentWaiters.delete(key);
+    }
+  }
+}
+
+// ─── Wait (Turn-Based Idle/Wake) ───
+
+/**
+ * Block until messages arrive for this agent or timeout expires.
+ * Used by the teammate turn loop to idle between turns.
+ *
+ * If there are already unread messages, returns them immediately.
+ * Otherwise, registers a waiter and blocks.
+ */
+export async function waitForMessages(
+  teamId: string,
+  agentName: string,
+  timeoutMs: number,
+): Promise<MailboxMessage[] | null> {
+  // Check for already-queued unread messages first
+  const existing = getUnreadMessages(teamId, agentName);
+  if (existing.length > 0) {
+    return existing;
+  }
+
+  // Register a waiter and block
+  const key = waiterKey(teamId, agentName);
+  const waiter = new MessageWaiter();
+  agentWaiters.set(key, waiter);
+
+  try {
+    return await waiter.wait(timeoutMs);
+  } finally {
+    // Clean up waiter regardless of outcome
+    agentWaiters.delete(key);
+  }
+}
+
+/**
+ * Cancel any active waiter for an agent (e.g. on abort/interrupt).
+ */
+export function cancelWaiter(teamId: string, agentName: string): void {
+  const key = waiterKey(teamId, agentName);
+  const waiter = agentWaiters.get(key);
+  if (waiter) {
+    waiter.cancel();
+    agentWaiters.delete(key);
+  }
+}
+
+/**
+ * Check if an agent is currently idle (waiting for messages).
+ */
+export function isAgentIdle(teamId: string, agentName: string): boolean {
+  const key = waiterKey(teamId, agentName);
+  const waiter = agentWaiters.get(key);
+  return waiter?.isWaiting ?? false;
 }
 
 // ─── Read ───
@@ -115,17 +202,34 @@ export function getAllTeamMessages(teamId: string): Record<string, MailboxMessag
 
 /**
  * Format unread messages as a context injection string.
+ * Used for initial turn setup / system prompt context.
  */
 export function formatInboxForContext(messages: MailboxMessage[]): string {
   if (messages.length === 0) return '';
   const lines = messages.map(m =>
     `[${new Date(m.timestamp).toLocaleTimeString()}] ${m.from}: ${m.content}`
   );
-  return `\n\n📬 **Inbox (${messages.length} new message${messages.length > 1 ? 's' : ''}):**\n${lines.join('\n')}`;
+  return `\n\nInbox (${messages.length} new message${messages.length > 1 ? 's' : ''}):\n${lines.join('\n')}`;
+}
+
+/**
+ * Format messages for delivery as user-role conversation content.
+ * Each message becomes a line in a single user message.
+ */
+export function formatMessagesForDelivery(messages: MailboxMessage[]): string {
+  if (messages.length === 0) return '';
+  return messages.map(m => `[Message from ${m.from}]: ${m.content}`).join('\n\n');
 }
 
 // ─── Cleanup ───
 
 export function cleanupTeamMailbox(teamId: string): void {
+  // Cancel all active waiters for this team
+  const boxes = teamMailboxes.get(teamId);
+  if (boxes) {
+    for (const [name] of boxes) {
+      cancelWaiter(teamId, name);
+    }
+  }
   teamMailboxes.delete(teamId);
 }

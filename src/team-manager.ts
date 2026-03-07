@@ -1,8 +1,12 @@
 /**
- * team-manager.ts — Central orchestration engine for agent teams (Phase 8.38).
+ * team-manager.ts — Central orchestration engine for agent teams.
  *
- * Lead = main Aria session. Decomposes tasks, spawns teammates, monitors progress,
- * synthesizes results. Teammates = independent agent sessions with their own context.
+ * Turn-based idle/wake model inspired by Claude Code's agent teams:
+ * - Lead creates team, defines tasks, spawns teammates
+ * - Teammates run in a turn loop: streamText → idle → wake on message → repeat
+ * - Messages delivered as user-role conversation turns between streamText calls
+ * - Graceful shutdown via shutdown_request/response protocol
+ * - Each teammate gets a dedicated browser tab
  */
 
 import { streamText, stepCountIs } from 'ai';
@@ -27,6 +31,9 @@ import {
   sendMessage,
   getUnreadMessages,
   formatInboxForContext,
+  formatMessagesForDelivery,
+  waitForMessages,
+  cancelWaiter,
   cleanupTeamMailbox,
 } from './mailbox';
 import {
@@ -35,7 +42,6 @@ import {
   getTaskList,
   getTask,
   updateTask,
-  claimTask,
   formatTaskListForContext,
   getTeamSummary,
   cleanupTeamTaskList,
@@ -58,60 +64,57 @@ import {
 // ─── Types ───
 
 export interface ContractFile {
-  path: string;          // relative path from workingDir (e.g. "contracts/types.ts")
-  absolutePath: string;  // resolved absolute path
-  description: string;   // what this contract defines
-  phase: number;         // which spawn round this contract belongs to (1-based)
+  path: string;          // relative path from workingDir
+  absolutePath: string;
+  description: string;
+  phase: number;
   createdAt: string;
 }
 
 export interface TeamSession {
   id: string;
-  lead: string;                   // session ID of lead (always "default")
+  lead: string;
   teammates: Map<string, Teammate>;
   workingDir: string;
   status: 'planning' | 'active' | 'completing' | 'done';
   created_at: string;
   taskDescription: string;
-  worktreeIsolation?: boolean;    // Phase 8.39: git worktree per teammate
-  worktreeManager?: WorktreeManager; // Phase 8.39: manages worktree lifecycle
-  ariaWebContents?: WebContents | null; // Live UI broadcasting
-  // Phase 9.096: Contract-first parallel work
-  contracts: ContractFile[];      // shared contract/interface files written by lead
-  currentPhase: number;           // current spawn round (1-based)
-  validationResults?: string;     // post-merge validation output
-  _autoDissolveScheduled?: boolean; // Phase 9.096e: prevents double auto-dissolve
+  worktreeIsolation?: boolean;
+  worktreeManager?: WorktreeManager;
+  ariaWebContents?: WebContents | null;
+  contracts: ContractFile[];
+  currentPhase: number;
+  validationResults?: string;
+  _autoDissolveScheduled?: boolean;
 }
 
 export interface Teammate {
   id: string;
-  name: string;                   // e.g. "@backend"
+  name: string;
   role: string;
   sessionId: string;
-  status: 'idle' | 'working' | 'blocked' | 'done' | 'failed' | 'interrupted';
+  status: 'idle' | 'working' | 'done' | 'failed' | 'interrupted';
   currentTaskId?: string;
-  currentTaskText?: string;       // human-readable task description from team_run_teammate
-  model?: string;                 // can use different model than lead
+  model?: string;
   toolsUsed: string[];
-  filesWritten?: string[];        // passive tracking: files created/modified by this teammate
+  filesWritten?: string[];
   result?: string;
   error?: string;
   startedAt: number;
   finishedAt?: number;
-  // Phase 8.39: Git worktree isolation
-  worktreePath?: string;          // absolute path to isolated worktree
-  worktreeBranch?: string;        // e.g. "wt-backend"
-  // Phase 9.096d: Interrupt support
-  abortController?: AbortController;   // for on-demand abort
-  conversationHistory?: any[];         // accumulated messages for surgical resume
-  partialResponse?: string;            // text accumulated before interrupt
-  _systemPrompt?: string;              // frozen at first invocation for resume
-  _tools?: Record<string, any>;        // frozen at first invocation for resume
-  _model?: any;                        // frozen at first invocation for resume
-  _provider?: string;                  // frozen provider id for resume
-  // Phase 9.096d: Pulse
-  lastPulse?: string;                  // latest ~20-token activity snippet
-  _activityLog?: string[];             // plain text log of tool calls + results for interrupt resume
+  worktreePath?: string;
+  worktreeBranch?: string;
+  abortController?: AbortController;
+  assignedTabId?: number;        // dedicated browser tab
+  // Shutdown protocol
+  _shutdownRequested: boolean;
+  _shutdownAcknowledged: boolean;
+  // Internal state for turn loop
+  _systemPrompt?: string;
+  _tools?: Record<string, any>;
+  _model?: any;
+  _provider?: string;
+  _activityLog?: string[];
 }
 
 export interface TeammateRunOptions {
@@ -123,9 +126,8 @@ export interface TeammateRunOptions {
   ariaWebContents?: WebContents | null;
 }
 
-// ─── Pulse Helpers ───
+// ─── Helpers ───
 
-/** Build a human-readable activity description from a tool call */
 function describeToolActivity(toolName: string, args: Record<string, any>): string {
   const p = args.path || args.file_path || '';
   const basename = p ? p.split('/').pop() || p : '';
@@ -157,34 +159,10 @@ function describeToolActivity(toolName: string, args: Record<string, any>): stri
     case 'scroll':       return `scrolling ${args.direction || 'down'}`;
     case 'keys':         return `pressing ${args.sequence || 'keys'}`;
     case 'http_request':  return `${args.method || 'GET'} ${(args.url || '').slice(0, 50)}`;
-    case 'team_task_update': return `updating task ${args.task_id || ''}`;
-    case 'team_message': return `messaging ${args.to || ''}`;
+    case 'task_update':  return `updating task ${args.taskId || ''}`;
+    case 'send_message': return `messaging ${args.recipient || ''}`;
     default:             return toolName;
   }
-}
-
-/** Extract a meaningful phrase from LLM text output for pulse display */
-function extractMeaningfulPhrase(text: string): string {
-  // Look for sentences starting with action verbs in the last ~200 chars
-  const fragment = text.slice(-300);
-  // Try to find "I'll/I will/Now I/Let me/Going to/Creating/Building/Writing/Implementing..."
-  const patterns = [
-    /(?:I'll|I will|Now I'll|Let me|Going to)\s+(.{10,70}?)(?:\.|$)/i,
-    /(?:Creating|Building|Writing|Implementing|Adding|Setting up|Configuring|Reading|Checking)\s+(.{5,60}?)(?:\.|,|$)/i,
-    /(?:Now|Next)[,:]\s+(.{10,60}?)(?:\.|$)/i,
-  ];
-  for (const pat of patterns) {
-    const m = fragment.match(pat);
-    if (m) {
-      const phrase = (m[0] || '').replace(/\n/g, ' ').trim().slice(0, 80);
-      if (phrase.length > 15) return phrase;
-    }
-  }
-  // Fallback: last complete sentence fragment
-  const sentences = fragment.split(/[.!]\s+/);
-  const last = (sentences[sentences.length - 1] || '').replace(/\n/g, ' ').trim();
-  if (last.length > 15 && last.length < 80) return last;
-  return '';
 }
 
 async function persistTeammateStructuredHistory(
@@ -221,7 +199,6 @@ const activeTeams = new Map<string, TeamSession>();
 let teamCounter = 0;
 let teamDevMode = false;
 
-/** Update teammate developer mode — called when config changes. */
 export function setTeamDevMode(enabled: boolean): void {
   teamDevMode = enabled;
 }
@@ -252,14 +229,12 @@ function notifyUpdate(teamId: string): void {
   const team = activeTeams.get(teamId);
   if (team && onTeamUpdate) onTeamUpdate(teamId, team);
 
-  // Auto-finalize when all teammates reach terminal state.
-  // Tool-level enforcement: do not dissolve while unmerged worktrees remain.
+  // Auto-finalize when all teammates reach terminal state
   if (team && team.status === 'active') {
     const allTerminal = team.teammates.size > 0 &&
       Array.from(team.teammates.values()).every(t => t.status === 'done' || t.status === 'failed');
     if (allTerminal && !team._autoDissolveScheduled) {
       team._autoDissolveScheduled = true;
-      // Small delay to let final UI updates land before cleanup
       setTimeout(async () => {
         try {
           console.log(`[team] Auto-finalizing ${teamId} — all teammates finished.`);
@@ -274,6 +249,47 @@ function notifyUpdate(teamId: string): void {
   }
 }
 
+// ─── Persist Team Config ───
+
+function persistTeamConfig(teamId: string): void {
+  const team = activeTeams.get(teamId);
+  if (!team) return;
+
+  try {
+    const resolvedDir = team.workingDir.replace(/^~/, process.env.HOME || process.env.USERPROFILE || '.');
+    const configDir = path.join(resolvedDir, 'teams', teamId);
+    fs.mkdirSync(configDir, { recursive: true });
+
+    const config = {
+      name: teamId,
+      created_at: team.created_at,
+      working_dir: team.workingDir,
+      status: team.status,
+      taskDescription: team.taskDescription,
+      currentPhase: team.currentPhase,
+      members: Array.from(team.teammates.values()).map(tm => ({
+        name: tm.name,
+        role: tm.role,
+        status: tm.status,
+        tabId: tm.assignedTabId,
+        worktreeBranch: tm.worktreeBranch,
+      })),
+      contracts: team.contracts.map(c => ({
+        path: c.path,
+        description: c.description,
+        phase: c.phase,
+      })),
+    };
+
+    fs.writeFileSync(
+      path.join(configDir, 'config.json'),
+      JSON.stringify(config, null, 2),
+    );
+  } catch (e: any) {
+    console.error('[team] persistTeamConfig failed:', e?.message);
+  }
+}
+
 // ─── Create Team ───
 
 export async function createTeam(
@@ -285,11 +301,11 @@ export async function createTeam(
   worktreeIsolation?: boolean,
   ariaWebContents?: WebContents | null,
 ): Promise<{ teamId: string; summary: string }> {
-  // F16: Max 10 teammates across all teams
+  // Max 10 teammates across all teams
   const totalTeammates = Array.from(activeTeams.values()).reduce((sum, t) => sum + t.teammates.size, 0);
-  const requestedCount = teammateConfigs?.length || 3; // defaultTeammates returns ~3
+  const requestedCount = teammateConfigs?.length || 3;
   if (totalTeammates + requestedCount > 10) {
-    return { teamId: '', summary: `❌ Cannot create team: would exceed max 10 teammates (currently ${totalTeammates} active). Dissolve existing teams first.` };
+    return { teamId: '', summary: `Cannot create team: would exceed max 10 teammates (currently ${totalTeammates} active).` };
   }
 
   const teamId = `team-${++teamCounter}`;
@@ -298,7 +314,7 @@ export async function createTeam(
   initMailbox(teamId, '@lead');
   initTaskList(teamId);
 
-  // Phase 8.39: Set up worktree manager if isolation enabled and in a git repo
+  // Set up worktree manager
   const resolvedDir = workingDir.replace(/^~/, process.env.HOME || process.env.USERPROFILE || '.');
   const wtManager = (worktreeIsolation !== false) ? createWorktreeManager(resolvedDir) : null;
   const worktreesEnabled = !!wtManager;
@@ -314,22 +330,17 @@ export async function createTeam(
     worktreeIsolation: worktreesEnabled,
     worktreeManager: wtManager || undefined,
     ariaWebContents: ariaWebContents ?? null,
-    // Phase 9.096: Contract-first parallel work
     contracts: [],
     currentPhase: 1,
   };
 
   activeTeams.set(teamId, team);
-
-  // Phase 9.096b: Protect the working directory from destructive shell commands while team is active
   addProtectedPath(resolvedDir);
-
   notifyUpdate(teamId);
 
   // Auto-configure teammates if not provided
   const teammates = teammateConfigs || defaultTeammates(taskDescription);
 
-  // Register each teammate in mailbox + team; create worktrees if enabled
   const worktreeWarnings: string[] = [];
   for (const tc of teammates) {
     const sessionId = `${teamId}:${tc.name}`;
@@ -338,7 +349,6 @@ export async function createTeam(
     let worktreePath: string | undefined;
     let worktreeBranch: string | undefined;
 
-    // Phase 8.39: Create worktree for each teammate
     if (worktreesEnabled && wtManager) {
       try {
         const wt = await wtManager.createWorktree({
@@ -349,7 +359,7 @@ export async function createTeam(
         worktreeBranch = wt.branch;
         console.log(`[team] Worktree for ${tc.name}: ${wt.path} (branch: ${wt.branch})`);
       } catch (e: any) {
-        worktreeWarnings.push(`⚠️ Worktree creation failed for ${tc.name}: ${e?.message || e}`);
+        worktreeWarnings.push(`Worktree creation failed for ${tc.name}: ${e?.message || e}`);
         console.error(`[team] Worktree creation failed for ${tc.name}:`, e);
       }
     }
@@ -365,12 +375,15 @@ export async function createTeam(
       startedAt: Date.now(),
       worktreePath,
       worktreeBranch,
+      _shutdownRequested: false,
+      _shutdownAcknowledged: false,
     };
 
     team.teammates.set(tc.name, teammate);
   }
 
   team.status = 'active';
+  persistTeamConfig(teamId);
   notifyUpdate(teamId);
 
   const teammateList = teammates.map(t => {
@@ -379,55 +392,53 @@ export async function createTeam(
     return `- ${t.name}${wtInfo}: ${t.role}`;
   }).join('\n');
 
-  let summary = `✓ Team "${teamId}" created with ${teammates.length} teammate(s):\n${teammateList}\n\nTask: ${taskDescription}\nWorking dir: ${workingDir}`;
+  let summary = `Team "${teamId}" created with ${teammates.length} teammate(s):\n${teammateList}\n\nTask: ${taskDescription}\nWorking dir: ${workingDir}`;
 
   if (worktreesEnabled) {
-    summary += `\n🔀 Worktree isolation: ENABLED — each teammate has an isolated copy of the codebase.`;
+    summary += `\nWorktree isolation: ENABLED — each teammate has an isolated copy of the codebase.`;
   } else if (worktreeIsolation !== false) {
-    summary += `\nℹ️ Worktree isolation: UNAVAILABLE — working directory is not a git repository. Teammates share the working directory.`;
+    summary += `\nWorktree isolation: UNAVAILABLE — not a git repository. Teammates share the working directory.`;
   }
 
   if (worktreeWarnings.length > 0) {
     summary += '\n' + worktreeWarnings.join('\n');
   }
 
-  summary += `\n\n**Contract-First Protocol (Phase 9.096):**
-1. Write shared contracts FIRST with \`team_write_contracts\` — type definitions, interfaces, function signatures that teammates must import/reference.
-2. Then \`team_task_add\` to define tasks referencing those contracts.
-3. Then \`team_run_teammate\` to spawn teammates — they receive contracts in their system prompt.
-4. After teammates finish, call \`team_validate\` to verify integration before dissolving.
-
-Max ~5 contract files per phase. Later phases build on real merged code, not more stubs.`;
+  summary += `\n\n**Workflow:**
+1. Write shared contracts with \`write_contracts\` — type definitions, interfaces, function signatures.
+2. Create tasks with \`task_create\` — define work for teammates.
+3. Spawn teammates with \`spawn_teammate\` — each runs in a turn-based idle/wake loop.
+4. Send guidance with \`send_message\` — messages delivered between turns.
+5. Monitor with \`team_status\` — check progress, see idle/working status.
+6. Shutdown with \`send_message\` (type: shutdown_request) — graceful teardown.
+7. Validate with \`validate_integration\` — run build/tests after teammates finish.`;
 
   return { teamId, summary };
 }
 
-// ─── Run a Teammate ───
+// ─── Run a Teammate (Turn-Based Loop) ───
 
 export async function runTeammate(opts: TeammateRunOptions): Promise<string> {
   const { teammate, teamId, task, browserCtx, llmConfig, ariaWebContents } = opts;
   const team = activeTeams.get(teamId);
-  if (!team) return `❌ Team "${teamId}" not found.`;
+  if (!team) return `Team "${teamId}" not found.`;
 
-  // Phase 9.096: Hard gate — contracts MUST be written before spawning any teammate.
-  // LLMs skip "MANDATORY" prompt instructions. Code gates are deterministic.
+  // Contracts must be written before spawning
   if (team.contracts.length === 0) {
-    return `❌ No contracts written. Call team_write_contracts first — define shared interfaces/types that teammates must reference. This prevents incompatible code.\n\nExample: team_write_contracts({ path: "contracts/types.ts", content: "export interface ...", description: "Shared data types" })`;
+    return `No contracts written. Call write_contracts first — define shared interfaces/types that teammates must reference.`;
   }
 
-  // Store ariaWebContents on the team session for future reference
   if (ariaWebContents && !team.ariaWebContents) {
     team.ariaWebContents = ariaWebContents;
   }
 
   teammate.status = 'working';
-  teammate.currentTaskText = task;
   teammate.startedAt = Date.now();
   notifyUpdate(teamId);
 
-  // Run in background
-  console.log(`[team] Spawning ${teammate.name}...`);
-  runTeammateSession(teammate, teamId, task, browserCtx, llmConfig, ariaWebContents ?? team.ariaWebContents).catch(err => {
+  // Run turn loop in background
+  console.log(`[team] Spawning ${teammate.name} (turn-based loop)...`);
+  runTeammateLoop(teammate, teamId, task, browserCtx, llmConfig, ariaWebContents ?? team.ariaWebContents).catch(err => {
     console.error(`[team] ${teammate.name} unhandled rejection:`, err?.message, err?.stack?.slice(0, 200));
     teammate.status = 'failed';
     teammate.error = err?.message || 'Unknown error';
@@ -435,10 +446,16 @@ export async function runTeammate(opts: TeammateRunOptions): Promise<string> {
     notifyUpdate(teamId);
   });
 
-  return `✓ Teammate ${teammate.name} started on: ${task}`;
+  return `Teammate ${teammate.name} started on: ${task}`;
 }
 
-async function runTeammateSession(
+// ─── Core: Turn-Based Teammate Loop ───
+
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes idle → auto-shutdown
+const STEPS_PER_TURN = 50;             // Max steps per streamText turn
+const MAX_RETRIES = 2;
+
+async function runTeammateLoop(
   teammate: Teammate,
   teamId: string,
   task: string,
@@ -447,43 +464,28 @@ async function runTeammateSession(
   ariaWebContents?: WebContents | null,
 ): Promise<void> {
   const { sessionId, name, role } = teammate;
-  console.log(`[team] ${name} session starting — teamId: ${teamId}, task: ${task.slice(0, 60)}`);
+  console.log(`[team] ${name} turn loop starting — teamId: ${teamId}, task: ${task.slice(0, 60)}`);
 
-  // ─── Mailbox throttle (max 1 file message per 5s per teammate) ───
-  let lastFileMailTs = 0;
-  let pendingFileCount = 0;
-
-  // ─── Broadcast helper ───
+  // Broadcast helper
   function teamBroadcast(channel: string, data: any): void {
     try {
       if (ariaWebContents && !ariaWebContents.isDestroyed()) {
         ariaWebContents.send(channel, data);
-      } else {
-        console.warn(`[team] ${name} broadcast SKIPPED (ariaWebContents ${ariaWebContents ? 'destroyed' : 'null'}): ${channel}`);
       }
-    } catch (e: any) {
-      console.warn(`[team] ${name} broadcast FAILED: ${channel} — ${e?.message}`);
-    }
+    } catch {}
   }
 
-  // Announce teammate start
-  teamBroadcast('team:teammate-start', {
-    id: teammate.id,
-    name,
-    role,
-    task,
-  });
+  teamBroadcast('team:teammate-start', { id: teammate.id, name, role, task });
 
-  let teammateProviderForLogging = llmConfig.provider;
+  let teammateProvider = llmConfig.provider;
 
   try {
-    // Use teammate's explicit model if specified; otherwise use secondary model (Phase 8.85).
-    // Teammates are parallel workers — secondary is cheaper/faster and sufficient.
+    // Setup model and tools (once, reused across turns)
     const baseConfig = getModelConfig('secondary', llmConfig);
     const tmConfig: LLMConfig = teammate.model
       ? { ...baseConfig, model: teammate.model }
       : baseConfig;
-    teammateProviderForLogging = tmConfig.provider;
+    teammateProvider = tmConfig.provider;
 
     const model = createModel(tmConfig);
     const team = activeTeams.get(teamId);
@@ -494,345 +496,212 @@ async function runTeammateSession(
       agentName: name,
       worktreeIsolation: team?.worktreeIsolation,
       projectWorkingDir: teammate.worktreePath || team?.workingDir || process.cwd(),
+      lockedTabId: teammate.assignedTabId ? String(teammate.assignedTabId) : undefined,
     });
 
-    // Get unread messages for this teammate
-    const unread = getUnreadMessages(teamId, name);
-    const inboxContext = formatInboxForContext(unread);
-
-    // Get task list context
-    const taskListContext = formatTaskListForContext(teamId);
-
-    // Phase 8.39: Use worktree path as the default cwd if available
-    const worktreeCwd = teammate.worktreePath;
-    const systemPrompt = buildTeammateSystemPrompt(name, role, teamId, taskListContext, worktreeCwd);
-
-    const userContent = `${task}${inboxContext}`;
-
-    addMessage(sessionId, { role: 'user', content: userContent });
-    const teammateMessages = getWindow(sessionId);
-
-    // Phase 9.096d: Freeze invocation config for surgical resume
-    teammate._systemPrompt = systemPrompt;
+    // Store frozen config
+    teammate._systemPrompt = buildTeammateSystemPrompt(name, role, teamId, formatTaskListForContext(teamId), teammate.worktreePath);
     teammate._tools = tools;
     teammate._model = model;
     teammate._provider = tmConfig.provider;
 
-    // Phase 9.096d: Initialize conversation history for interrupt/resume
-    teammate.conversationHistory = teammateMessages;
-    teammate.partialResponse = '';
+    // Get any pre-existing unread messages
+    const unread = getUnreadMessages(teamId, name);
+    const inboxContext = formatInboxForContext(unread);
 
-    // Phase 8.40: Timeout-based execution — no step limit
-    const teammateTimeoutMs = llmConfig.teammateTimeoutMs ?? 1_800_000; // Phase 9.096f: 30 min default
-    const tmRunStart = Date.now();
-    let tmTimedOut = false;
-    const tmAbortController = new AbortController();
-    // Phase 9.096d: Store AbortController on teammate for interrupt support
-    teammate.abortController = tmAbortController;
-    const tmTimeoutHandle = setTimeout(() => {
-      tmTimedOut = true;
-      tmAbortController.abort();
-    }, teammateTimeoutMs);
+    // Add initial task as user message
+    const userContent = `${task}${inboxContext}`;
+    addMessage(sessionId, { role: 'user', content: userContent });
 
-    console.log(`[team] ${name} calling LLM (model: ${tmConfig.model}, provider: ${tmConfig.provider})...`);
-    const tmProviderOptions = buildProviderOptions(tmConfig);
-    const tmCallProviderOptions: Record<string, any> = withCodexProviderOptions(
+    const abortController = new AbortController();
+    teammate.abortController = abortController;
+
+    const providerOptions = buildProviderOptions(tmConfig);
+    const callProviderOptions = withCodexProviderOptions(
       tmConfig.provider,
-      { ...tmProviderOptions },
-      systemPrompt,
-      systemPrompt,
+      { ...providerOptions },
+      teammate._systemPrompt,
+      teammate._systemPrompt,
     );
 
-    let result: any;
-    const TEAMMATE_MAX_RETRIES = 2;
-    for (let tmAttempt = 0; tmAttempt <= TEAMMATE_MAX_RETRIES; tmAttempt++) {
-    try {
-    result = await streamText({
-      model,
-      system: systemPrompt,
-      messages: teammateMessages as any,
-      tools,
-      ...(tmConfig.provider !== 'openai-codex' ? { maxOutputTokens: 30000 } : {}),
-      ...(Object.keys(tmCallProviderOptions).length > 0 ? { providerOptions: tmCallProviderOptions } : {}),
-      // Phase 9.096f: Match main agent step limit (200). 100 was cutting teammates short.
-      stopWhen: stepCountIs(200),
-      abortSignal: tmAbortController.signal,
-      onStepFinish: async (event: any) => {
+    let turnNumber = 0;
+
+    // ─── Turn Loop ───
+    while (true) {
+      turnNumber++;
+      teammate.status = 'working';
+      notifyUpdate(teamId);
+      persistTeamConfig(teamId);
+
+      console.log(`[team] ${name} turn ${turnNumber} starting...`);
+
+      const messages = getWindow(sessionId);
+      let fullResponse = '';
+
+      // ─── Execute one turn (streamText) ───
+      let result: any;
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
-          const toolResults = event.toolResults || [];
-          const isFirstTool = teammate.toolsUsed.length === 0 && toolResults.length > 0;
-          for (const tr of toolResults) {
-            const toolName = tr.toolName || 'unknown';
-            teammate.toolsUsed.push(toolName);
+          result = await streamText({
+            model,
+            system: teammate._systemPrompt!,
+            messages: messages as any,
+            tools,
+            ...(tmConfig.provider !== 'openai-codex' ? { maxOutputTokens: 30000 } : {}),
+            ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
+            stopWhen: stepCountIs(STEPS_PER_TURN),
+            abortSignal: abortController.signal,
+            onStepFinish: async (event: any) => {
+              try {
+                const toolResults = event.toolResults || [];
+                for (const tr of toolResults) {
+                  const toolName = tr.toolName || 'unknown';
+                  teammate.toolsUsed.push(toolName);
 
-            const rawResult = (tr as any).result ?? (tr as any).output ?? '';
-            const resultStr = typeof rawResult === 'string'
-              ? rawResult
-              : JSON.stringify(rawResult ?? '');
+                  const rawResult = (tr as any).result ?? (tr as any).output ?? '';
+                  const resultStr = typeof rawResult === 'string'
+                    ? rawResult : JSON.stringify(rawResult ?? '');
 
-            // Broadcast tool activity to in-chat panel
-            teamBroadcast('team:teammate-tool', {
-              name,
-              toolName,
-              display: `🔧 ${toolName} → ${resultStr.slice(0, 120)}`,
-            });
+                  teamBroadcast('team:teammate-tool', {
+                    name, toolName,
+                    display: `${toolName} → ${resultStr.slice(0, 120)}`,
+                  });
 
-            // Passive file tracking + auto mailbox on file writes (throttled)
-            if (toolName === 'file_write' || toolName === 'file_append') {
-              const inputArgs = (tr as any).args || (tr as any).input || {};
-              let filePath = inputArgs.path || inputArgs.file_path || '';
-              // Fallback: parse from result string (e.g. "✅ Written: /path/to/file (123 bytes)")
-              if (!filePath) {
-                const writtenMatch = resultStr.match(/Written:\s*([^\s(]+)/);
-                if (writtenMatch) {
-                  filePath = writtenMatch[1];
+                  // Passive file tracking
+                  trackFileWrites(teammate, toolName, tr, resultStr);
                 }
-              }
-              if (filePath) {
-                if (!teammate.filesWritten) teammate.filesWritten = [];
-                teammate.filesWritten.push(filePath);
-                pendingFileCount++;
-                const now = Date.now();
-                if (now - lastFileMailTs >= 5000) {
-                  lastFileMailTs = now;
-                  const shortPath = filePath.split('/').slice(-2).join('/');
-                  const sizeMatch = resultStr.match(/\(([^)]+)\)/);
-                  const sizeStr = sizeMatch ? ` (${sizeMatch[1]})` : '';
-                  const batchNote = pendingFileCount > 1 ? ` (+${pendingFileCount - 1} more)` : '';
-                  const mailText = `📄 Created ${shortPath}${sizeStr}${batchNote}`;
-                  sendMessage(teamId, name, '@lead', mailText);
-                  teamBroadcast('team:mailbox-message', { from: name, to: '@lead', text: mailText });
-                  pendingFileCount = 0;
-                }
-              }
-            }
 
-            // Phase 9.096e: Broaden passive file detection for eval_js and exec
-            if (toolName === 'eval_js') {
-              const js = (tr as any).args?.js || (tr as any).args?.code || '';
-              const writeMatch = js.match(/writeFileSync?\s*\(\s*['"`]([^'"`]+)['"`]/);
-              if (writeMatch) {
-                if (!teammate.filesWritten) teammate.filesWritten = [];
-                teammate.filesWritten.push(writeMatch[1]);
-              }
-            }
-            if (toolName === 'exec') {
-              const cmd = (tr as any).args?.command || '';
-              const redirectMatch = cmd.match(/(?:>>?|tee\s+)([^\s;|&>]+)/);
-              if (redirectMatch && redirectMatch[1] && !redirectMatch[1].startsWith('-')) {
-                if (!teammate.filesWritten) teammate.filesWritten = [];
-                teammate.filesWritten.push(redirectMatch[1]);
-              }
-            }
+                // Activity log
+                try {
+                  if (!teammate._activityLog) teammate._activityLog = [];
+                  for (const tr of toolResults) {
+                    const toolName = (tr as any).toolName || 'unknown';
+                    const args = (tr as any).args || (tr as any).input || {};
+                    const desc = describeToolActivity(toolName, args);
+                    const rawResult = (tr as any).result ?? (tr as any).output ?? '';
+                    const resultStr = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult ?? '');
+                    teammate._activityLog.push(`${desc} → ${resultStr.slice(0, 200)}`);
+                  }
+                  if (event.text) {
+                    teammate._activityLog.push(`Response: ${event.text.slice(0, 200)}`);
+                  }
+                } catch {}
 
-            // Auto-generate mailbox for exec results (build/test outcomes)
-            if (toolName === 'exec' && resultStr.length > 0) {
-              const exitMatch = resultStr.match(/exit(?:Code)?[:\s]+(\d+)/i);
-              const exitCode = exitMatch ? parseInt(exitMatch[1]) : null;
-              if (exitCode !== null && exitCode !== 0) {
-                const mailText = `⚠️ Command failed (exit ${exitCode}): ${resultStr.slice(0, 80)}`;
-                sendMessage(teamId, name, '@lead', mailText);
-                teamBroadcast('team:mailbox-message', { from: name, to: '@lead', text: mailText });
-              }
-            }
-          }
-
-          // Auto mailbox: announce start on first tool call
-          if (isFirstTool) {
-            const startMail = `🚀 Started working — ${task.slice(0, 60)}`;
-            sendMessage(teamId, name, '@lead', startMail);
-            teamBroadcast('team:mailbox-message', { from: name, to: '@lead', text: startMail });
-          }
-
-          // Phase 9.096d: Capture step as plain text log for interrupt/resume.
-          // Plain text can never fail SDK validation — no structured tool messages.
-          try {
-            if (!teammate._activityLog) teammate._activityLog = [];
-            for (const tr of toolResults) {
-              const toolName = (tr as any).toolName || 'unknown';
-              const args = (tr as any).args || (tr as any).input || {};
-              const desc = describeToolActivity(toolName, args);
-              const rawResult = (tr as any).result ?? (tr as any).output ?? '';
-              const resultStr = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult ?? '');
-              const resultPreview = resultStr.slice(0, 200);
-              teammate._activityLog.push(`${desc} → ${resultPreview}`);
-            }
-            if (event.text) {
-              teammate._activityLog.push(`Response: ${event.text.slice(0, 200)}`);
-            }
-          } catch {}
-
-          // Passive top card update — every tool step, not just when teammate explicitly reports
-          notifyUpdate(teamId);
-        } catch {}
-      },
-    });
-    break; // Success — exit retry loop
-    } catch (initErr: any) {
-      // Catch InvalidPromptError / TypeValidationError on initial teammate invocation
-      const errName = initErr?.name || initErr?.constructor?.name || '';
-      if (tmConfig.provider === 'openai-codex') {
-        logProviderRequestError(`team.${name}.init`, initErr);
-      }
-      console.error(`[team] ${name} INITIAL streamText failed (${errName}):`, initErr?.message?.slice?.(0, 200));
-
-      // Retry on transient errors (rate limit, network, server errors)
-      if (initErr?.name === 'AbortError' || tmAttempt >= TEAMMATE_MAX_RETRIES) throw initErr;
-      const classified = classifyError(initErr);
-      if (!classified.retryable) throw initErr;
-
-      const delayMs = classified.suggestedDelayMs * (tmAttempt + 1);
-      console.warn(`[team] ${name} retrying after ${classified.category} (attempt ${tmAttempt + 1}/${TEAMMATE_MAX_RETRIES + 1}) in ${delayMs}ms`);
-      await new Promise(r => setTimeout(r, delayMs));
-      continue; // Retry
-    }
-    } // end retry loop
-
-    let fullResponse = '';
-    let tmChunkCount = 0;
-    // Phase 9.096d: Pulse system — emit activity snippet every 30s
-    let currentActivity = '';
-    let textSincePulse = '';
-    const pulseIntervalMs = 30_000;
-    const pulseInterval = setInterval(() => {
-      const pulseText = (currentActivity || textSincePulse).slice(0, 80);
-      if (pulseText && teammate.status === 'working') {
-        teammate.lastPulse = pulseText;
-        sendMessage(teamId, name, '@lead', '🫀 ' + pulseText);
-        teamBroadcast('team:teammate-pulse', { name, text: pulseText });
-        teamBroadcast('team:mailbox-message', { from: name, to: '@lead', text: '🫀 ' + pulseText });
-      }
-      textSincePulse = '';
-    }, pulseIntervalMs);
-
-    console.log(`[team] ${name} starting stream...`);
-    try {
-      // Use fullStream to capture text-delta chunks for live UI broadcasting
-      for await (const chunk of result.fullStream) {
-        tmChunkCount++;
-        if (tmChunkCount === 1) console.log(`[team] ${name} first chunk: type=${(chunk as any).type}`);
-        if (chunk.type === 'text-delta') {
-          // AI SDK v6: field is 'text' on text-delta chunks (not 'textDelta' or 'delta')
-          const textDelta = (chunk as any).text ?? (chunk as any).delta ?? (chunk as any).textDelta ?? '';
-          fullResponse += textDelta;
-          // Phase 9.096d: Track partial response for interrupt support
-          teammate.partialResponse = fullResponse;
-          if (textDelta) {
-            textSincePulse += textDelta;
-            // Extract meaningful activity from accumulated text (not raw fragments)
-            if (fullResponse.length > 20) {
-              const meaningful = extractMeaningfulPhrase(fullResponse.slice(-200));
-              if (meaningful) currentActivity = meaningful;
-            }
-            teamBroadcast('team:teammate-chunk', {
-              name,
-              text: textDelta,
-              done: false,
-            });
-          }
-        } else if (chunk.type === 'tool-call') {
-          // Phase 9.096d: Track tool call activity for pulse — human-readable descriptions
-          const toolName = (chunk as any).toolName || 'tool';
-          const args = (chunk as any).args || {};
-          currentActivity = describeToolActivity(toolName, args);
-          textSincePulse += currentActivity;
-        } else if ((chunk as any).type === 'reasoning' || (chunk as any).type === 'reasoning-start' || (chunk as any).type === 'reasoning-end') {
-          // Phase 9.096d: Capture reasoning for pulse + broadcast
-          const reasoningText = (chunk as any).text ?? (chunk as any).textDelta ?? '';
-          if (reasoningText) {
-            textSincePulse += reasoningText;
-            // Extract meaningful phrase from reasoning for pulse
-            const meaningful = extractMeaningfulPhrase(reasoningText);
-            if (meaningful) currentActivity = meaningful;
-            teamBroadcast('team:teammate-reasoning', { name, text: reasoningText });
-          }
+                notifyUpdate(teamId);
+              } catch {}
+            },
+          });
+          break; // Success
+        } catch (err: any) {
+          if (err?.name === 'AbortError' || attempt >= MAX_RETRIES) throw err;
+          const classified = classifyError(err);
+          if (!classified.retryable) throw err;
+          const delayMs = classified.suggestedDelayMs * (attempt + 1);
+          console.warn(`[team] ${name} turn ${turnNumber} retrying (${classified.category}, attempt ${attempt + 1}) in ${delayMs}ms`);
+          await new Promise(r => setTimeout(r, delayMs));
         }
       }
-      console.log(`[team] ${name} stream done — ${fullResponse.length} chars, ${tmChunkCount} chunks, ${teammate.toolsUsed.length} tools`);
-    } catch (streamErr: any) {
-      if (streamErr?.name === 'AbortError' && tmTimedOut) {
-        // Timeout: mark task as blocked, notify lead
-        const elapsed = Date.now() - tmRunStart;
-        const min = Math.floor(elapsed / 60000);
-        const sec = Math.floor((elapsed % 60000) / 1000);
-        const durStr = min > 0 ? `${min}m ${sec}s` : `${sec}s`;
-        const timeoutMsg = `Timed out after ${durStr}. ${teammate.toolsUsed.length} tool calls completed.`;
 
-        // Update any in-progress task to blocked
-        if (teammate.currentTaskId) {
-          const team = activeTeams.get(teamId);
-          if (team) {
-            updateTask(teamId, teammate.currentTaskId, { status: 'blocked', blockedBy: `Teammate timed out: ${timeoutMsg}` });
+      // ─── Consume stream ───
+      try {
+        for await (const chunk of result.fullStream) {
+          if (chunk.type === 'text-delta') {
+            const textDelta = (chunk as any).text ?? (chunk as any).delta ?? (chunk as any).textDelta ?? '';
+            fullResponse += textDelta;
+            if (textDelta) {
+              teamBroadcast('team:teammate-chunk', { name, text: textDelta, done: false });
+            }
+          } else if (chunk.type === 'tool-call') {
+            // Already handled in onStepFinish
           }
         }
+      } catch (streamErr: any) {
+        if (streamErr?.name !== 'AbortError') throw streamErr;
+      }
 
-        // Notify lead and broadcast mailbox event
-        const timeoutContent = `⏰ Timeout: ${name} timed out after ${durStr}. ${teammate.toolsUsed.length} tool calls completed.\n` +
-          (fullResponse ? `Partial output:\n${fullResponse.slice(0, 500)}` : 'No output produced.');
-        sendMessage(teamId, name, '@lead', timeoutContent);
-        teamBroadcast('team:mailbox-message', {
-          from: name,
-          to: '@lead',
-          text: timeoutContent.slice(0, 200),
-        });
+      console.log(`[team] ${name} turn ${turnNumber} done — ${fullResponse.length} chars, ${teammate.toolsUsed.length} total tools`);
 
-        // Signal stream done
-        teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
-        teamBroadcast('team:teammate-done', { name, status: 'blocked', summary: timeoutMsg });
+      // Persist conversation history
+      await persistTeammateStructuredHistory(sessionId, result, fullResponse, `${name}.turn${turnNumber}`);
+      teammate.result = fullResponse || `Used ${teammate.toolsUsed.length} tools: ${[...new Set(teammate.toolsUsed)].join(', ')}`;
 
-        teammate.result = fullResponse
-          ? `${fullResponse}\n\n---\n⏰ Timed out after ${durStr}.`
-          : `⏰ Timed out after ${durStr}. ${teammate.toolsUsed.length} tool calls: ${[...new Set(teammate.toolsUsed)].join(', ')}`;
-        teammate.status = 'blocked';
-        teammate.error = timeoutMsg;
+      // ─── Check shutdown ───
+      if (teammate._shutdownRequested && teammate._shutdownAcknowledged) {
+        console.log(`[team] ${name} shutdown acknowledged — exiting loop.`);
+        teammate.status = 'done';
         teammate.finishedAt = Date.now();
-        if (fullResponse && fullResponse.trim().length > 0) {
-          addMessage(sessionId, { role: 'assistant', content: fullResponse });
-        }
-        teammate.conversationHistory = getWindow(sessionId);
+        teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
+        teamBroadcast('team:teammate-done', { name, status: 'done', summary: (teammate.result || '').slice(0, 300) });
         notifyUpdate(teamId);
-        return;
-      } else if (streamErr?.name !== 'AbortError') {
-        throw streamErr;
+        break;
       }
-    } finally {
-      clearTimeout(tmTimeoutHandle);
-      clearInterval(pulseInterval);
+
+      // ─── Go idle ───
+      teammate.status = 'idle';
+      notifyUpdate(teamId);
+      persistTeamConfig(teamId);
+
+      // Notify lead that teammate is idle
+      const idleSummary = buildIdleSummary(teammate, turnNumber);
+      sendMessage(teamId, 'system', '@lead', `${name} completed turn ${turnNumber} and is now idle.\n${idleSummary}`, {
+        type: 'system',
+        summary: `${name} idle after turn ${turnNumber}`,
+      });
+      teamBroadcast('team:teammate-idle', { name, turn: turnNumber, summary: idleSummary });
+
+      console.log(`[team] ${name} going idle — waiting for messages (timeout: ${IDLE_TIMEOUT_MS / 1000}s)...`);
+
+      // ─── Wait for messages ───
+      let incomingMessages;
+      try {
+        incomingMessages = await waitForMessages(teamId, name, IDLE_TIMEOUT_MS);
+      } catch (waitErr: any) {
+        // Cancelled (abort/interrupt)
+        if (waitErr?.message?.includes('cancelled')) {
+          console.log(`[team] ${name} wait cancelled — checking for interrupt.`);
+          // If aborted, exit loop
+          if (abortController.signal.aborted) {
+            teammate.status = 'interrupted';
+            teammate.finishedAt = Date.now();
+            notifyUpdate(teamId);
+            break;
+          }
+          continue; // Retry wait
+        }
+        throw waitErr;
+      }
+
+      // Idle timeout — no messages received
+      if (!incomingMessages || incomingMessages.length === 0) {
+        console.log(`[team] ${name} idle timeout — auto-shutting down.`);
+        teammate.status = 'done';
+        teammate.result = (teammate.result || '') + '\n\n(Idle timeout — no further messages received)';
+        teammate.finishedAt = Date.now();
+        teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
+        teamBroadcast('team:teammate-done', { name, status: 'done', summary: 'Idle timeout' });
+        sendMessage(teamId, 'system', '@lead', `${name} auto-shutdown after idle timeout.`, {
+          type: 'system',
+          summary: `${name} idle timeout`,
+        });
+        notifyUpdate(teamId);
+        break;
+      }
+
+      // ─── Deliver messages as user-role conversation turns ───
+      const deliveredContent = formatMessagesForDelivery(incomingMessages);
+      addMessage(sessionId, { role: 'user', content: deliveredContent });
+      console.log(`[team] ${name} woke up — ${incomingMessages.length} message(s) delivered.`);
+
+      // Loop back to next turn
     }
-
-    await persistTeammateStructuredHistory(sessionId, result, fullResponse, `${name}.session`);
-    teammate.conversationHistory = getWindow(sessionId);
-
-    teammate.result = fullResponse || `Used ${teammate.toolsUsed.length} tools: ${[...new Set(teammate.toolsUsed)].join(', ')}`;
-    teammate.status = 'done';
-    teammate.finishedAt = Date.now();
-
-    // Notify lead via mailbox and broadcast mailbox event
-    const completeContent = `Task complete: ${task.slice(0, 100)}\n\nResult: ${(teammate.result || '').slice(0, 300)}`;
-    sendMessage(teamId, name, '@lead', completeContent);
-    teamBroadcast('team:mailbox-message', {
-      from: name,
-      to: '@lead',
-      text: completeContent.slice(0, 200),
-    });
-
-    // Signal stream done
-    teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
-    teamBroadcast('team:teammate-done', {
-      name,
-      status: 'done',
-      summary: (teammate.result || '').slice(0, 300),
-    });
-
-    notifyUpdate(teamId);
 
   } catch (err: any) {
     const details = extractRequestErrorDetails(err, 1600);
-    if (teammateProviderForLogging === 'openai-codex') {
-      logProviderRequestError(`team.${name}.session`, err);
+    if (teammateProvider === 'openai-codex') {
+      logProviderRequestError(`team.${name}.loop`, err);
     }
     const errMsg = details.responseBody || details.message || 'Unknown error';
-    console.error(`[team] ${name} session error:`, errMsg, err?.stack?.slice?.(0, 300));
+    console.error(`[team] ${name} loop error:`, errMsg, err?.stack?.slice?.(0, 300));
     teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
     teamBroadcast('team:teammate-done', { name, status: 'failed', summary: errMsg });
     teammate.status = 'failed';
@@ -845,324 +714,55 @@ async function runTeammateSession(
   }
 }
 
-// ─── Phase 9.096d: Interrupt & Resume ───
+// ─── Helpers for Turn Loop ───
 
-/**
- * Interrupt a running teammate and redirect them with new instructions.
- * Preserves conversation history — they resume with full context + redirect message.
- */
-export async function interruptTeammate(teamId: string, name: string, message: string): Promise<string> {
-  const team = activeTeams.get(teamId);
-  if (!team) return `❌ Team "${teamId}" not found.`;
-
-  const teammate = team.teammates.get(name);
-  if (!teammate) return `❌ Teammate "${name}" not found in team "${teamId}".`;
-  if (teammate.status !== 'working') return `❌ ${name} is not currently working (status: ${teammate.status}). Can only interrupt working teammates.`;
-
-  // Step 1: Abort current stream
-  teammate.abortController?.abort();
-
-  // Step 2: Wait for abort to propagate
-  await new Promise<void>(resolve => setTimeout(resolve, 500));
-
-  // Step 3: Mark as interrupted
-  teammate.status = 'interrupted';
-  notifyUpdate(teamId);
-
-  // Step 4: Build resume as plain text — can never fail SDK validation
-  const activityLog = teammate._activityLog || [];
-  const logText = activityLog.length > 0
-    ? `\n\nWhat you did before being interrupted (${activityLog.length} steps):\n${activityLog.map((l, i) => `${i + 1}. ${l}`).join('\n')}`
-    : '';
-  const filesText = teammate.filesWritten && teammate.filesWritten.length > 0
-    ? `\n\nFiles you wrote: ${teammate.filesWritten.join(', ')}`
-    : '';
-  const partialText = teammate.partialResponse;
-  const partialNote = (partialText && partialText.trim())
-    ? `\n\nYour last thought before interrupt: "${partialText.slice(-200)}"`
-    : '';
-
-  const resumeHistory: any[] = [{
-    role: 'user',
-    content: `[INTERRUPT from @lead]: ${message}${logText}${filesText}${partialNote}\n\nContinue with the redirect instructions above. Check what files exist in your worktree and proceed from where you left off.`,
-  }];
-
-  // Step 5: Notify lead + broadcast
-  const interruptMsg = `⚡ ${name} interrupted and redirected: "${message.slice(0, 80)}"`;
-  sendMessage(teamId, '@lead', '@lead', interruptMsg);
-
-  const ariaWC = team.ariaWebContents;
-  function teamBroadcastInterrupt(channel: string, data: any): void {
-    try {
-      if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send(channel, data);
-    } catch {}
+function trackFileWrites(teammate: Teammate, toolName: string, tr: any, resultStr: string): void {
+  if (toolName === 'file_write' || toolName === 'file_append') {
+    const inputArgs = (tr as any).args || (tr as any).input || {};
+    let filePath = inputArgs.path || inputArgs.file_path || '';
+    if (!filePath) {
+      const writtenMatch = resultStr.match(/Written:\s*([^\s(]+)/);
+      if (writtenMatch) filePath = writtenMatch[1];
+    }
+    if (filePath) {
+      if (!teammate.filesWritten) teammate.filesWritten = [];
+      teammate.filesWritten.push(filePath);
+    }
   }
-  teamBroadcastInterrupt('team:teammate-interrupt', { name, message });
-  teamBroadcastInterrupt('team:mailbox-message', { from: '@lead', to: name, text: interruptMsg });
-
-  // Step 6: Resume with frozen config + new AbortController
-  const newAbortController = new AbortController();
-  teammate.abortController = newAbortController;
-  teammate.status = 'working';
-  teammate.partialResponse = '';
-  notifyUpdate(teamId);
-
-  // Retrieve frozen invocation config
-  const frozenSystemPrompt = teammate._systemPrompt || '';
-  const frozenTools = teammate._tools || {};
-  const frozenModel = teammate._model;
-  const frozenProvider = teammate._provider;
-  const worktreePath = teammate.worktreePath;
-
-  // Run with history in background
-  runTeammateWithHistory({
-    teammate,
-    teamId,
-    resumeHistory,
-    systemPrompt: frozenSystemPrompt,
-    tools: frozenTools,
-    model: frozenModel,
-    provider: frozenProvider,
-    abortController: newAbortController,
-    ariaWebContents: ariaWC,
-  }).catch(err => {
-    console.error(`[team] ${name} resume after interrupt error:`, err?.message);
-    teammate.status = 'failed';
-    teammate.error = err?.message || 'Resume failed';
-    teammate.finishedAt = Date.now();
-    notifyUpdate(teamId);
-  });
-
-  return `⚡ ${name} interrupted. Resuming with: "${message.slice(0, 80)}"\n⏳ Wait 30-60s, then call team_status to check progress.`;
-}
-
-interface TeammateResumeOptions {
-  teammate: Teammate;
-  teamId: string;
-  resumeHistory: any[];
-  systemPrompt: string;
-  tools: Record<string, any>;
-  model: any;
-  provider?: string;
-  abortController: AbortController;
-  ariaWebContents?: WebContents | null;
-}
-
-/**
- * Run a teammate from an existing conversation history (surgical resume after interrupt).
- * Shares core logic with runTeammateSession but skips initial message construction.
- */
-async function runTeammateWithHistory(opts: TeammateResumeOptions): Promise<void> {
-  const { teammate, teamId, resumeHistory, systemPrompt, tools, model, provider, abortController, ariaWebContents } = opts;
-  const { sessionId, name } = teammate;
-
-  function teamBroadcast(channel: string, data: any): void {
-    try {
-      if (ariaWebContents && !ariaWebContents.isDestroyed()) {
-        ariaWebContents.send(channel, data);
-      }
-    } catch {}
+  if (toolName === 'eval_js') {
+    const js = (tr as any).args?.js || (tr as any).args?.code || '';
+    const writeMatch = js.match(/writeFileSync?\s*\(\s*['"`]([^'"`]+)['"`]/);
+    if (writeMatch) {
+      if (!teammate.filesWritten) teammate.filesWritten = [];
+      teammate.filesWritten.push(writeMatch[1]);
+    }
   }
-
-  teamBroadcast('team:teammate-start', { id: teammate.id, name, role: teammate.role, task: '(resuming after interrupt)' });
-
-  try {
-    // Append redirect turn into teammate history and continue from full context
-    for (const msg of resumeHistory) {
-      if (msg && (msg.role === 'user' || msg.role === 'assistant' || msg.role === 'system')) {
-        addMessage(sessionId, msg as ChatMessage);
-      }
+  if (toolName === 'exec') {
+    const cmd = (tr as any).args?.command || '';
+    const redirectMatch = cmd.match(/(?:>>?|tee\s+)([^\s;|&>]+)/);
+    if (redirectMatch && redirectMatch[1] && !redirectMatch[1].startsWith('-')) {
+      if (!teammate.filesWritten) teammate.filesWritten = [];
+      teammate.filesWritten.push(redirectMatch[1]);
     }
-    const resumedMessages = getWindow(sessionId);
-    teammate.conversationHistory = resumedMessages;
-    teammate.partialResponse = '';
-
-    // Pulse system
-    let currentActivity = '';
-    let textSincePulse = '';
-    const pulseInterval = setInterval(() => {
-      const pulseText = (currentActivity || textSincePulse).slice(0, 80);
-      if (pulseText && teammate.status === 'working') {
-        teammate.lastPulse = pulseText;
-        sendMessage(teamId, name, '@lead', '🫀 ' + pulseText);
-        teamBroadcast('team:teammate-pulse', { name, text: pulseText });
-        teamBroadcast('team:mailbox-message', { from: name, to: '@lead', text: '🫀 ' + pulseText });
-      }
-      textSincePulse = '';
-    }, 30_000);
-
-    const resumeCallProviderOptions: Record<string, any> = withCodexProviderOptions(
-      provider || '',
-      {},
-      systemPrompt,
-      systemPrompt,
-    );
-
-    let result: any;
-    const RESUME_MAX_RETRIES = 2;
-    for (let resumeAttempt = 0; resumeAttempt <= RESUME_MAX_RETRIES; resumeAttempt++) {
-    try {
-    result = await streamText({
-      model,
-      system: systemPrompt,
-      messages: resumedMessages as any,
-      tools,
-      ...(provider !== 'openai-codex' ? { maxOutputTokens: 30000 } : {}), // universal cap
-      ...(Object.keys(resumeCallProviderOptions).length > 0 ? { providerOptions: resumeCallProviderOptions } : {}),
-      stopWhen: stepCountIs(200), // Phase 9.096f: match main agent
-      abortSignal: abortController.signal,
-      onStepFinish: async (event: any) => {
-        try {
-          const toolResults = event.toolResults || [];
-          for (const tr of toolResults) {
-            const toolName = tr.toolName || 'unknown';
-            teammate.toolsUsed.push(toolName);
-            const rawResult = (tr as any).result ?? (tr as any).output ?? '';
-            const resultStr = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult ?? '');
-            teamBroadcast('team:teammate-tool', { name, toolName, display: `🔧 ${toolName} → ${resultStr.slice(0, 120)}` });
-
-            // Passive file tracking
-            if (toolName === 'file_write' || toolName === 'file_append') {
-              const inputArgs = (tr as any).args || (tr as any).input || {};
-              let filePath = inputArgs.path || inputArgs.file_path || '';
-              // Fallback: parse from result string (e.g. "✅ Written: /path/to/file (123 bytes)")
-              if (!filePath) {
-                const writtenMatch = resultStr.match(/Written:\s*([^\s(]+)/);
-                if (writtenMatch) {
-                  filePath = writtenMatch[1];
-                }
-              }
-              if (filePath) {
-                if (!teammate.filesWritten) teammate.filesWritten = [];
-                teammate.filesWritten.push(filePath);
-              }
-            }
-
-            // Phase 9.096e: Broaden passive file detection for eval_js and exec
-            if (toolName === 'eval_js') {
-              const js = (tr as any).args?.js || (tr as any).args?.code || '';
-              const writeMatch = js.match(/writeFileSync?\s*\(\s*['"`]([^'"`]+)['"`]/);
-              if (writeMatch) {
-                if (!teammate.filesWritten) teammate.filesWritten = [];
-                teammate.filesWritten.push(writeMatch[1]);
-              }
-            }
-            if (toolName === 'exec') {
-              const cmd = (tr as any).args?.command || '';
-              const redirectMatch = cmd.match(/(?:>>?|tee\s+)([^\s;|&>]+)/);
-              if (redirectMatch && redirectMatch[1] && !redirectMatch[1].startsWith('-')) {
-                if (!teammate.filesWritten) teammate.filesWritten = [];
-                teammate.filesWritten.push(redirectMatch[1]);
-              }
-            }
-          }
-
-          // Capture step as plain text activity log (same as runTeammateSession)
-          try {
-            if (!teammate._activityLog) teammate._activityLog = [];
-            for (const tr of toolResults) {
-              const toolName = (tr as any).toolName || 'unknown';
-              const args = (tr as any).args || (tr as any).input || {};
-              const desc = describeToolActivity(toolName, args);
-              const rawResult = (tr as any).result ?? (tr as any).output ?? '';
-              const resultStr = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult ?? '');
-              teammate._activityLog.push(`${desc} → ${resultStr.slice(0, 200)}`);
-            }
-            if (event.text) {
-              teammate._activityLog.push(`Response: ${event.text.slice(0, 200)}`);
-            }
-          } catch {}
-
-          notifyUpdate(teamId);
-        } catch {}
-      },
-    });
-    break; // Success — exit retry loop
-    } catch (resumeInitErr: any) {
-      if (resumeInitErr?.name === 'AbortError' || resumeAttempt >= RESUME_MAX_RETRIES) throw resumeInitErr;
-      const classified = classifyError(resumeInitErr);
-      if (!classified.retryable) throw resumeInitErr;
-      const delayMs = classified.suggestedDelayMs * (resumeAttempt + 1);
-      console.warn(`[team] ${name} resume retrying after ${classified.category} (attempt ${resumeAttempt + 1}/${RESUME_MAX_RETRIES + 1}) in ${delayMs}ms`);
-      await new Promise(r => setTimeout(r, delayMs));
-      continue;
-    }
-    } // end resume retry loop
-    let fullResponse = '';
-    let chunksReceived = 0;
-    try {
-      for await (const chunk of result.fullStream) {
-        chunksReceived++;
-        if (chunk.type === 'text-delta') {
-          const textDelta = (chunk as any).text ?? (chunk as any).delta ?? (chunk as any).textDelta ?? '';
-          fullResponse += textDelta;
-          teammate.partialResponse = fullResponse;
-          if (textDelta) {
-            textSincePulse += textDelta;
-            if (fullResponse.length > 20) {
-              const meaningful = extractMeaningfulPhrase(fullResponse.slice(-200));
-              if (meaningful) currentActivity = meaningful;
-            }
-            teamBroadcast('team:teammate-chunk', { name, text: textDelta, done: false });
-          }
-        } else if (chunk.type === 'tool-call') {
-          const toolName = (chunk as any).toolName || 'tool';
-          const args = (chunk as any).args || {};
-          currentActivity = describeToolActivity(toolName, args);
-          textSincePulse += currentActivity;
-        } else if ((chunk as any).type === 'reasoning' || (chunk as any).type === 'reasoning-start' || (chunk as any).type === 'reasoning-end') {
-          const reasoningText = (chunk as any).text ?? (chunk as any).textDelta ?? '';
-          if (reasoningText) {
-            textSincePulse += reasoningText;
-            const meaningful = extractMeaningfulPhrase(reasoningText);
-            if (meaningful) currentActivity = meaningful;
-            teamBroadcast('team:teammate-reasoning', { name, text: reasoningText });
-          }
-        }
-      }
-    } catch (streamErr: any) {
-      if (streamErr?.name !== 'AbortError') throw streamErr;
-    } finally {
-      clearInterval(pulseInterval);
-    }
-
-    await persistTeammateStructuredHistory(sessionId, result, fullResponse, `${name}.resume`);
-    teammate.conversationHistory = getWindow(sessionId);
-
-    teammate.result = fullResponse || `Resumed — ${teammate.toolsUsed.length} tools used`;
-    teammate.status = 'done';
-    teammate.finishedAt = Date.now();
-
-    const completeContent = `Task complete (after redirect): ${(teammate.result || '').slice(0, 300)}`;
-    sendMessage(teamId, name, '@lead', completeContent);
-    teamBroadcast('team:mailbox-message', { from: name, to: '@lead', text: completeContent.slice(0, 200) });
-    teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
-    teamBroadcast('team:teammate-done', { name, status: 'done', summary: (teammate.result || '').slice(0, 300) });
-
-    notifyUpdate(teamId);
-  } catch (err: any) {
-    const details = extractRequestErrorDetails(err, 1600);
-    if (provider === 'openai-codex') {
-      logProviderRequestError(`team.${name}.resume`, err);
-    }
-    const errMsg = details.responseBody || details.message || 'Unknown error';
-    console.error(`[team] ${name} resume error:`, errMsg);
-    teamBroadcast('team:teammate-chunk', { name, text: '', done: true });
-    teamBroadcast('team:teammate-done', { name, status: 'failed', summary: errMsg });
-    teammate.status = 'failed';
-    teammate.error = errMsg;
-    teammate.finishedAt = Date.now();
-    notifyUpdate(teamId);
   }
 }
 
-// ─── Phase 9.096: Contract Management ───
+function buildIdleSummary(teammate: Teammate, turnNumber: number): string {
+  const parts: string[] = [];
+  parts.push(`Turn ${turnNumber}: ${teammate.toolsUsed.length} total tool calls`);
+  if (teammate.filesWritten && teammate.filesWritten.length > 0) {
+    const recent = teammate.filesWritten.slice(-3).map(f => f.split('/').pop() || f);
+    parts.push(`Files: ${recent.join(', ')}${teammate.filesWritten.length > 3 ? ` (+${teammate.filesWritten.length - 3} more)` : ''}`);
+  }
+  if (teammate._activityLog && teammate._activityLog.length > 0) {
+    const last = teammate._activityLog[teammate._activityLog.length - 1];
+    parts.push(`Last: ${last.slice(0, 80)}`);
+  }
+  return parts.join(' | ');
+}
 
-/**
- * Write a contract/interface stub file to the project's contracts directory.
- * These files define the shared API surface that teammates must reference.
- * Lead writes contracts BEFORE spawning teammates.
- */
+// ─── Contract Management ───
+
 export function writeContract(
   teamId: string,
   relativePath: string,
@@ -1170,27 +770,21 @@ export function writeContract(
   description: string,
 ): string {
   const team = activeTeams.get(teamId);
-  if (!team) return `❌ Team "${teamId}" not found.`;
+  if (!team) return `Team "${teamId}" not found.`;
 
-  // Enforce max 5 contracts per phase
   const phaseContracts = team.contracts.filter(c => c.phase === team.currentPhase);
   if (phaseContracts.length >= 5) {
-    return `❌ Max 5 contract files per phase (current phase ${team.currentPhase} has ${phaseContracts.length}). Merge current phase results first, then start a new phase for more contracts.`;
+    return `Max 5 contract files per phase (current phase ${team.currentPhase} has ${phaseContracts.length}).`;
   }
 
-  // Resolve paths
   const resolvedDir = team.workingDir.replace(/^~/, process.env.HOME || process.env.USERPROFILE || '.');
   const absolutePath = path.resolve(resolvedDir, relativePath);
 
-  // Ensure parent directory exists
   const parentDir = path.dirname(absolutePath);
   fs.mkdirSync(parentDir, { recursive: true });
-
-  // Write the contract file
   fs.writeFileSync(absolutePath, content, 'utf-8');
 
-  // Tool-level merge safety: if using worktrees in a git repo, auto-commit contract updates
-  // so worktree_merge won't fail with "untracked files would be overwritten".
+  // Auto-commit in git repos for worktree merge safety
   if (team.worktreeIsolation && team.worktreeManager) {
     try {
       const relForGit = path.relative(resolvedDir, absolutePath);
@@ -1199,12 +793,9 @@ export function writeContract(
       if (staged.trim().length > 0) {
         execSync(`git commit -m "[tappi] Update contract ${relativePath.replace(/"/g, '\\"')}"`, { cwd: resolvedDir, stdio: ['pipe', 'pipe', 'pipe'] });
       }
-    } catch {
-      // Non-fatal: contract write still succeeded
-    }
+    } catch {}
   }
 
-  // Track the contract
   const contract: ContractFile = {
     path: relativePath,
     absolutePath,
@@ -1213,7 +804,6 @@ export function writeContract(
     createdAt: new Date().toISOString(),
   };
 
-  // Upsert — replace if same relative path exists
   const existingIdx = team.contracts.findIndex(c => c.path === relativePath);
   if (existingIdx >= 0) {
     team.contracts[existingIdx] = contract;
@@ -1223,33 +813,29 @@ export function writeContract(
 
   notifyUpdate(teamId);
 
-  // If worktrees exist, copy contracts into each worktree
+  // Copy contracts into worktrees
   if (team.worktreeIsolation && team.worktreeManager) {
     const copyResults: string[] = [];
     for (const [, tm] of team.teammates) {
       if (tm.worktreePath) {
         try {
           const wtContractPath = path.resolve(tm.worktreePath, relativePath);
-          const wtParentDir = path.dirname(wtContractPath);
-          fs.mkdirSync(wtParentDir, { recursive: true });
+          fs.mkdirSync(path.dirname(wtContractPath), { recursive: true });
           fs.writeFileSync(wtContractPath, content, 'utf-8');
-          copyResults.push(`✓ ${tm.name}`);
+          copyResults.push(`${tm.name}`);
         } catch (e: any) {
-          copyResults.push(`⚠️ ${tm.name}: ${e?.message}`);
+          copyResults.push(`${tm.name}: ${e?.message}`);
         }
       }
     }
     if (copyResults.length > 0) {
-      return `✓ Contract written: ${relativePath}\n  ${description}\n  Phase ${team.currentPhase} (${phaseContracts.length + 1}/5)\n  Copied to worktrees: ${copyResults.join(', ')}`;
+      return `Contract written: ${relativePath}\n  ${description}\n  Phase ${team.currentPhase} (${phaseContracts.length + 1}/5)\n  Copied to worktrees: ${copyResults.join(', ')}`;
     }
   }
 
-  return `✓ Contract written: ${relativePath}\n  ${description}\n  Phase ${team.currentPhase} (${phaseContracts.length + 1}/5)`;
+  return `Contract written: ${relativePath}\n  ${description}\n  Phase ${team.currentPhase} (${phaseContracts.length + 1}/5)`;
 }
 
-/**
- * Get all contract files for a team, formatted for teammate context injection.
- */
 export function getContractsContext(teamId: string): string {
   const team = activeTeams.get(teamId);
   if (!team || team.contracts.length === 0) return '';
@@ -1259,12 +845,11 @@ export function getContractsContext(teamId: string): string {
     lines.push(`### ${c.path} — ${c.description} (phase ${c.phase})`);
     try {
       const content = fs.readFileSync(c.absolutePath, 'utf-8');
-      // Cap each contract display at 100 lines to keep context manageable
       const contentLines = content.split('\n');
       if (contentLines.length > 100) {
         lines.push('```');
         lines.push(contentLines.slice(0, 100).join('\n'));
-        lines.push(`... (${contentLines.length - 100} more lines — read the file for full content)`);
+        lines.push(`... (${contentLines.length - 100} more lines)`);
         lines.push('```');
       } else {
         lines.push('```');
@@ -1280,45 +865,36 @@ export function getContractsContext(teamId: string): string {
   return lines.join('\n');
 }
 
-/**
- * Advance to the next phase. Called after merging phase results.
- */
 export function advancePhase(teamId: string): string {
   const team = activeTeams.get(teamId);
-  if (!team) return `❌ Team "${teamId}" not found.`;
+  if (!team) return `Team "${teamId}" not found.`;
 
   const prevPhase = team.currentPhase;
   team.currentPhase += 1;
   notifyUpdate(teamId);
 
-  return `✓ Advanced from phase ${prevPhase} to phase ${team.currentPhase}. You can now write new contracts for this phase.`;
+  return `Advanced from phase ${prevPhase} to phase ${team.currentPhase}. You can now write new contracts for this phase.`;
 }
 
-/**
- * Post-merge validation — run the project (build/lint/test) and report issues.
- * Returns a structured validation report.
- */
 export async function validateIntegration(
   teamId: string,
   command?: string,
 ): Promise<string> {
   const team = activeTeams.get(teamId);
-  if (!team) return `❌ Team "${teamId}" not found.`;
+  if (!team) return `Team "${teamId}" not found.`;
 
   const resolvedDir = team.workingDir.replace(/^~/, process.env.HOME || process.env.USERPROFILE || '.');
 
-  // Collect all files touched by teammates
   const allFiles: string[] = [];
   for (const [, tm] of team.teammates) {
     if (tm.filesWritten) allFiles.push(...tm.filesWritten);
   }
   const uniqueFiles = [...new Set(allFiles)];
 
-  // Check for import/reference consistency in contract consumers
+  // Check contract references
   const contractIssues: string[] = [];
   for (const contract of team.contracts) {
     const contractBasename = path.basename(contract.path, path.extname(contract.path));
-    // Simple heuristic: check if any teammate file imports/references the contract
     let referenced = false;
     for (const file of uniqueFiles) {
       try {
@@ -1333,30 +909,27 @@ export async function validateIntegration(
       } catch {}
     }
     if (!referenced && uniqueFiles.length > 0) {
-      contractIssues.push(`⚠️ Contract "${contract.path}" not referenced by any teammate file`);
+      contractIssues.push(`Contract "${contract.path}" not referenced by any teammate file`);
     }
   }
 
-  // Run validation command if provided
   let commandOutput = '';
   if (command) {
     try {
-      const { execSync } = require('child_process');
       const result = execSync(command, {
         cwd: resolvedDir,
         timeout: 60_000,
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
       });
-      commandOutput = `✅ Validation command passed:\n\`\`\`\n${(result || '').slice(0, 2000)}\n\`\`\``;
+      commandOutput = `Validation command passed:\n\`\`\`\n${(result || '').slice(0, 2000)}\n\`\`\``;
     } catch (e: any) {
       const stderr = e?.stderr || '';
       const stdout = e?.stdout || '';
-      commandOutput = `❌ Validation command failed (exit ${e?.status || '?'}):\n\`\`\`\n${(stderr || stdout).slice(0, 2000)}\n\`\`\``;
+      commandOutput = `Validation command failed (exit ${e?.status || '?'}):\n\`\`\`\n${(stderr || stdout).slice(0, 2000)}\n\`\`\``;
     }
   }
 
-  // Build report
   const lines = [
     `**Integration Validation — Team ${teamId}**`,
     '',
@@ -1369,10 +942,9 @@ export async function validateIntegration(
     lines.push('', '**Contract Reference Issues:**');
     lines.push(...contractIssues);
   } else if (team.contracts.length > 0) {
-    lines.push('', '✅ All contracts referenced by teammate code.');
+    lines.push('', 'All contracts referenced by teammate code.');
   }
 
-  // Check for file conflicts (same file touched by multiple teammates)
   const fileOwners = new Map<string, string[]>();
   for (const [, tm] of team.teammates) {
     for (const f of tm.filesWritten || []) {
@@ -1382,7 +954,7 @@ export async function validateIntegration(
   }
   const conflicts = [...fileOwners.entries()].filter(([, owners]) => owners.length > 1);
   if (conflicts.length > 0) {
-    lines.push('', '**⚠️ File Conflicts (multiple teammates wrote same file):**');
+    lines.push('', '**File Conflicts:**');
     for (const [file, owners] of conflicts) {
       lines.push(`  ${file}: ${owners.join(' vs ')}`);
     }
@@ -1397,15 +969,10 @@ export async function validateIntegration(
   return lines.join('\n');
 }
 
-// ─── Worktree File Scanner (Phase 9.096e) ───
+// ─── Worktree File Scanner ───
 
-/**
- * Scan a worktree for new/modified files using `git status --porcelain`.
- * Returns an array of file paths relative to the worktree root.
- */
 function scanWorktreeFiles(worktreePath: string): { count: number; files: string[] } {
   try {
-    const { execSync } = require('child_process');
     const result = execSync('git status --porcelain', {
       cwd: worktreePath,
       encoding: 'utf-8',
@@ -1424,11 +991,11 @@ function scanWorktreeFiles(worktreePath: string): { count: number; files: string
 
 export function getTeamStatus(teamId: string): string {
   const team = activeTeams.get(teamId);
-  if (!team) return `❌ Team "${teamId}" not found.`;
+  if (!team) return `Team "${teamId}" not found.`;
 
   const tasks = getTaskList(teamId);
   const statusEmoji: Record<string, string> = {
-    idle: '⏳', working: '🔄', blocked: '🚫', done: '✅', failed: '❌'
+    idle: '⏸️', working: '🔄', done: '✅', failed: '❌', interrupted: '⚡'
   };
 
   const lines = [
@@ -1437,68 +1004,51 @@ export function getTeamStatus(teamId: string): string {
     `Working dir: ${team.workingDir}`,
   ];
 
-  // Phase 9.096: Show contracts
   if (team.contracts.length > 0) {
     lines.push('', `**Contracts (${team.contracts.length}):**`);
     for (const c of team.contracts) {
-      lines.push(`  📜 ${c.path} — ${c.description} (phase ${c.phase})`);
+      lines.push(`  ${c.path} — ${c.description} (phase ${c.phase})`);
     }
   }
 
   lines.push('', '**Teammates:**');
 
-  let hasWorkingTeammates = false;
   for (const [, tm] of team.teammates) {
-    if (tm.status === 'working') hasWorkingTeammates = true;
-
-    const emoji = statusEmoji[tm.status] || '❓';
+    const emoji = statusEmoji[tm.status] || '?';
     const dur = tm.finishedAt
       ? `${((tm.finishedAt - tm.startedAt) / 1000).toFixed(0)}s`
       : `${((Date.now() - tm.startedAt) / 1000).toFixed(0)}s`;
     const wtLabel = tm.worktreeBranch ? ` [${tm.worktreeBranch}]` : '';
     const toolCount = tm.toolsUsed.length;
-    const passiveFilesCount = tm.filesWritten?.length || 0;
-    const lastTool = toolCount > 0 ? tm.toolsUsed[toolCount - 1] : '';
 
-    // Phase 9.096e: Real worktree file scan
-    let worktreeScan: { count: number; files: string[] } = { count: 0, files: [] };
+    let worktreeScan = { count: 0, files: [] as string[] };
     if (tm.worktreePath) {
       worktreeScan = scanWorktreeFiles(tm.worktreePath);
     }
-    const filesDisplay = tm.worktreePath
-      ? `${worktreeScan.count} worktree files, ${passiveFilesCount} passive`
-      : `${passiveFilesCount} files`;
 
     const activityStr = toolCount > 0
-      ? ` | ${toolCount} tools, ${filesDisplay}${lastTool ? `, last: ${lastTool}` : ''}`
+      ? ` | ${toolCount} tools, ${tm.filesWritten?.length || 0} files`
       : '';
     lines.push(`${emoji} ${tm.name}${wtLabel} (${tm.status}, ${dur}${activityStr}): ${tm.role}`);
-    if (tm.currentTaskText) {
-      lines.push(`   → Task: ${tm.currentTaskText.slice(0, 80)}`);
-    } else if (tm.currentTaskId) {
-      const t = getTask(teamId, tm.currentTaskId);
-      if (t) lines.push(`   → Working on: ${t.title}`);
-    }
+
     if (tm.worktreePath) {
-      lines.push(`   📁 Worktree: ${tm.worktreePath}`);
+      lines.push(`   Worktree: ${tm.worktreePath}`);
       if (worktreeScan.count > 0) {
-        const shown = worktreeScan.files.slice(0, 5).map(f => f.split('/').pop() || f).join(', ');
+        const shown = worktreeScan.files.slice(0, 5).map((f: string) => f.split('/').pop() || f).join(', ');
         const extra = worktreeScan.count > 5 ? ` (+${worktreeScan.count - 5} more)` : '';
-        lines.push(`   📄 Changed files: ${shown}${extra}`);
+        lines.push(`   Changed files: ${shown}${extra}`);
       }
     }
-    // Phase 9.096d: Show pulse activity and interrupt hint for working teammates
-    if (tm.status === 'working') {
-      if (tm.lastPulse) {
-        lines.push(`   🫀 ${tm.lastPulse}`);
-      }
-      lines.push(`   💡 Use team_interrupt to redirect if needed`);
-    }
-    // Phase 9.096e: Show recent activity log entries (last 3)
+
     if (tm._activityLog && tm._activityLog.length > 0) {
       const recent = tm._activityLog.slice(-3);
-      lines.push(`   📋 Recent: ${recent.map(e => e.slice(0, 60)).join(' | ')}`);
+      lines.push(`   Recent: ${recent.map(e => e.slice(0, 60)).join(' | ')}`);
     }
+
+    if (tm._shutdownRequested) {
+      lines.push(`   Shutdown: ${tm._shutdownAcknowledged ? 'acknowledged' : 'requested (pending)'}`);
+    }
+
     if (tm.error) lines.push(`   Error: ${tm.error}`);
   }
 
@@ -1506,60 +1056,53 @@ export function getTeamStatus(teamId: string): string {
     lines.push('', '**Task List:**', formatTaskListForContext(teamId));
   }
 
-  // Detect conflicts
   const conflicts = detectFileConflicts(tasks);
   if (conflicts.length > 0) {
-    lines.push('', '⚠️ **File Conflicts:**');
+    lines.push('', '**File Conflicts:**');
     for (const c of conflicts) {
       lines.push(`  ${c.file}: ${c.taskTitles.join(' vs ')}`);
     }
   }
 
   const pendingWorktrees = getPendingWorktreeNames(team);
+  const hasWorkingTeammates = Array.from(team.teammates.values()).some(t => t.status === 'working');
   if (!hasWorkingTeammates && pendingWorktrees.length > 0) {
-    lines.push(
-      '',
-      `⚠️ Pending merges: ${pendingWorktrees.join(', ')}. Team will not dissolve until these are merged.`,
-      'Use `team_finalize` (recommended) or `worktree_merge` for each worktree.'
-    );
+    lines.push('', `Pending merges: ${pendingWorktrees.join(', ')}.`);
   }
 
-  // Phase 9.096d: Role reminder when teammates are working
   if (hasWorkingTeammates) {
     lines.push(
       '',
-      '📋 **Your role while teammates work:**',
-      '• `team_interrupt @name "instructions"` — redirect a teammate mid-task',
-      '• `team_message @name "text"` — send a message (non-blocking)',
-      '• `team_status` — re-check progress',
-      '⚠️ Do NOT write code in the project directory while teammates are running.',
+      '**Your role while teammates work:**',
+      '- send_message({ recipient: "@name", ... }) — send guidance',
+      '- send_message({ type: "shutdown_request", ... }) — graceful shutdown',
+      '- team_status — re-check progress',
+      'Do NOT write code in the project directory while teammates are running.',
     );
   }
 
   return lines.join('\n');
 }
 
-// ─── Finalize Team (merge + dissolve) ───
+// ─── Finalize & Dissolve ───
 
 export async function finalizeTeam(teamId: string): Promise<string> {
   const team = activeTeams.get(teamId);
-  if (!team) return `❌ Team "${teamId}" not found.`;
+  if (!team) return `Team "${teamId}" not found.`;
 
-  // No worktree isolation: just dissolve
   if (!team.worktreeIsolation || !team.worktreeManager) {
     return dissolveTeam(teamId);
   }
 
-  const lines: string[] = [`🔧 Finalizing team ${teamId}...`];
+  const lines: string[] = [`Finalizing team ${teamId}...`];
   const pending = getPendingWorktreeNames(team);
 
   if (pending.length === 0) {
-    lines.push('✓ No pending worktrees.');
+    lines.push('No pending worktrees.');
     lines.push(await dissolveTeam(teamId));
     return lines.join('\n');
   }
 
-  // Only merge teammates that are terminal; never merge active/interrupted work
   const terminalNames = new Set(
     Array.from(team.teammates.values())
       .filter(t => t.status === 'done' || t.status === 'failed')
@@ -1568,7 +1111,7 @@ export async function finalizeTeam(teamId: string): Promise<string> {
 
   for (const wtName of pending) {
     if (!terminalNames.has(normalizeTeammateName(wtName))) {
-      lines.push(`⏭️ Skipped ${wtName}: teammate not terminal yet.`);
+      lines.push(`Skipped ${wtName}: teammate not terminal yet.`);
       continue;
     }
     try {
@@ -1579,16 +1122,16 @@ export async function finalizeTeam(teamId: string): Promise<string> {
         lines.push(removed.message);
       }
     } catch (e: any) {
-      lines.push(`❌ Finalize failed for ${wtName}: ${e?.message || e}`);
+      lines.push(`Finalize failed for ${wtName}: ${e?.message || e}`);
     }
   }
 
   const remaining = getPendingWorktreeNames(team);
   if (remaining.length === 0) {
-    lines.push('✓ All worktrees merged.');
+    lines.push('All worktrees merged.');
     lines.push(await dissolveTeam(teamId));
   } else {
-    lines.push(`⚠️ Remaining unmerged worktrees: ${remaining.join(', ')}. Resolve conflicts and run team_finalize again.`);
+    lines.push(`Remaining unmerged worktrees: ${remaining.join(', ')}.`);
     team.status = 'completing';
     team._autoDissolveScheduled = false;
     notifyUpdate(teamId);
@@ -1597,16 +1140,12 @@ export async function finalizeTeam(teamId: string): Promise<string> {
   return lines.join('\n');
 }
 
-// ─── Dissolve Team ───
-
 export async function dissolveTeam(teamId: string): Promise<string> {
   const team = activeTeams.get(teamId);
-  if (!team) return `❌ Team "${teamId}" not found.`;
+  if (!team) return `Team "${teamId}" not found.`;
 
-  // Phase 9.096e: Clear contract file path registrations
   clearContractFilePaths();
 
-  // Collect summary
   const taskSummary = getTeamSummary(teamId);
 
   const lines = [
@@ -1632,7 +1171,7 @@ export async function dissolveTeam(teamId: string): Promise<string> {
 
   lines.push('', taskSummary);
 
-  // ─── Persist session memory (coding-memory) ───
+  // Persist session memory
   try {
     const resolvedWorkingDir = team.workingDir.replace(/^~/, process.env.HOME || process.env.USERPROFILE || '.');
     initCodingMemory(team.workingDir);
@@ -1657,7 +1196,7 @@ export async function dissolveTeam(teamId: string): Promise<string> {
     }));
 
     const sessionSummary: TeamSessionSummary = {
-      teamId: teamId,
+      teamId,
       taskDescription: team.taskDescription,
       durationMs,
       createdAt: team.created_at,
@@ -1671,7 +1210,6 @@ export async function dissolveTeam(teamId: string): Promise<string> {
 
     const sessionPath = logTeamSession(team.workingDir, sessionSummary);
 
-    // Build a compact update for main.md
     const allFiles = teammateSummaries.flatMap(tm => tm.filesWritten || []);
     const uniqueFiles = [...new Set(allFiles)];
     const mainUpdate = [
@@ -1687,7 +1225,7 @@ export async function dissolveTeam(teamId: string): Promise<string> {
     updateMainState(team.workingDir, mainUpdate);
 
     if (sessionPath) {
-      lines.push('', `📝 Session logged to: ${sessionPath.replace(resolvedWorkingDir + '/', '')}`);
+      lines.push('', `Session logged to: ${sessionPath.replace(resolvedWorkingDir + '/', '')}`);
     }
   } catch (memErr: any) {
     console.error('[team] coding-memory persist error (non-fatal):', memErr?.message);
@@ -1695,38 +1233,34 @@ export async function dissolveTeam(teamId: string): Promise<string> {
 
   // Cleanup
   for (const [, tm] of team.teammates) {
+    cancelWaiter(teamId, tm.name);
     cleanupSession(tm.sessionId);
     purgeSession(tm.sessionId);
     clearHistory(tm.sessionId);
   }
 
-  // Phase 8.39: Remove worktrees on team dissolve (skip if they have uncommitted changes)
   if (team.worktreeManager) {
     for (const [, tm] of team.teammates) {
       if (tm.worktreePath || tm.worktreeBranch) {
         try {
           const result = await team.worktreeManager.removeWorktree(tm.name, { force: false });
           if (!result.removed && result.hadChanges) {
-            lines.push(`⚠️ Worktree for ${tm.name} has uncommitted changes — kept at: ${tm.worktreePath}`);
+            lines.push(`Worktree for ${tm.name} has uncommitted changes — kept at: ${tm.worktreePath}`);
           }
         } catch (e: any) {
-          lines.push(`⚠️ Failed to remove worktree for ${tm.name}: ${e?.message || e}`);
+          lines.push(`Failed to remove worktree for ${tm.name}: ${e?.message || e}`);
         }
       }
     }
-    // Prune dead git worktree entries
     try { team.worktreeManager.pruneWorktrees(); } catch {}
   }
 
   cleanupTeamMailbox(teamId);
   cleanupTeamTaskList(teamId);
-
-  // Phase 9.096b: Remove working directory protection now that team is dissolved
   removeProtectedPath(team.workingDir);
 
   team.status = 'done';
   activeTeams.delete(teamId);
-  // notifyUpdate won't fire after delete (team gone). Notify directly with null to hide UI.
   if (onTeamUpdate) onTeamUpdate(teamId, null as any);
 
   return lines.join('\n');
@@ -1756,6 +1290,20 @@ export function getTeam(teamId: string): TeamSession | undefined {
   return activeTeams.get(teamId);
 }
 
+/**
+ * Count active (working/idle) teammates across all teams.
+ * Used by agent.ts to suppress idle checks while teammates are active.
+ */
+export function getActiveTeammateCount(): number {
+  let count = 0;
+  for (const team of activeTeams.values()) {
+    for (const tm of team.teammates.values()) {
+      if (tm.status === 'working' || tm.status === 'idle') count++;
+    }
+  }
+  return count;
+}
+
 // ─── Team Status for UI ───
 
 export interface TeamStatusUI {
@@ -1767,21 +1315,19 @@ export interface TeamStatusUI {
     role: string;
     status: string;
     currentTask?: string;
-    worktreeBranch?: string;    // Phase 8.39: branch name for display
-    worktreePath?: string;      // Phase 8.39: absolute path
-    toolCount?: number;         // passive: total tools used
-    lastTool?: string;          // passive: last tool called
-    elapsed?: number;           // seconds since start
-    filesWritten?: number;      // passive: files created/modified
-    // Phase 9.096e: real worktree scan + recent activity
-    worktreeFiles?: number;     // real count from git status --porcelain
-    recentActivity?: string[];  // last 3 activity log entries
+    worktreeBranch?: string;
+    worktreePath?: string;
+    toolCount?: number;
+    lastTool?: string;
+    elapsed?: number;
+    filesWritten?: number;
+    worktreeFiles?: number;
+    recentActivity?: string[];
   }>;
   taskCount: number;
   doneCount: number;
   activeCount: number;
-  worktreeIsolation?: boolean;  // Phase 8.39: whether worktrees are enabled
-  // Phase 9.096: Contract-first
+  worktreeIsolation?: boolean;
   contractCount: number;
   currentPhase: number;
 }
@@ -1791,7 +1337,7 @@ export function getTeamStatusUI(): TeamStatusUI | null {
   if (!team) return null;
 
   const tasks = getTaskList(team.id);
-  const done = tasks.filter(t => t.status === 'done').length;
+  const done = tasks.filter(t => t.status === 'completed').length;
   const active = Array.from(team.teammates.values()).filter(t => t.status === 'working').length;
 
   return {
@@ -1799,18 +1345,15 @@ export function getTeamStatusUI(): TeamStatusUI | null {
     status: team.status,
     taskDescription: team.taskDescription,
     teammates: Array.from(team.teammates.values()).map(tm => {
-      const currentTask = tm.currentTaskId ? getTask(team.id, tm.currentTaskId) : undefined;
       const elapsed = tm.finishedAt
         ? Math.floor((tm.finishedAt - tm.startedAt) / 1000)
         : Math.floor((Date.now() - tm.startedAt) / 1000);
       const lastTool = tm.toolsUsed.length > 0 ? tm.toolsUsed[tm.toolsUsed.length - 1] : undefined;
-      // Phase 9.096e: Scan worktree for real file counts
       const wtScan = tm.worktreePath ? scanWorktreeFiles(tm.worktreePath) : { count: 0, files: [] };
       return {
         name: tm.name,
         role: tm.role,
         status: tm.status,
-        currentTask: currentTask?.title || tm.currentTaskText,
         worktreeBranch: tm.worktreeBranch,
         worktreePath: tm.worktreePath,
         toolCount: tm.toolsUsed.length,
@@ -1825,13 +1368,12 @@ export function getTeamStatusUI(): TeamStatusUI | null {
     doneCount: done,
     activeCount: active,
     worktreeIsolation: team.worktreeIsolation,
-    // Phase 9.096
     contractCount: team.contracts.length,
     currentPhase: team.currentPhase,
   };
 }
 
-// ─── Phase 9.096e: Cascading Human Interrupt ───
+// ─── Cascading Human Interrupt ───
 
 export interface FrozenTeamState {
   teamId: string;
@@ -1845,11 +1387,6 @@ export interface FrozenTeamState {
   }>;
 }
 
-/**
- * Freeze all active teammates — abort their streams, mark as 'interrupted',
- * and preserve all state (history, files, logs) for potential resume.
- * Called by stopAgent() and interruptMainSession() to cascade human interrupt.
- */
 export function freezeAllTeammates(): FrozenTeamState | null {
   const team = getActiveTeam();
   if (!team) return null;
@@ -1858,13 +1395,14 @@ export function freezeAllTeammates(): FrozenTeamState | null {
 
   for (const [, tm] of team.teammates) {
     if (tm.status === 'working') {
-      // Abort the stream but preserve all state
       tm.abortController?.abort();
       tm.status = 'interrupted';
-      // Don't clear _activityLog, filesWritten, partialResponse, conversationHistory
+    }
+    if (tm.status === 'idle') {
+      cancelWaiter(team.id, tm.name);
+      tm.status = 'interrupted';
     }
 
-    // Scan worktree for real file count
     const wtFiles = tm.worktreePath ? scanWorktreeFiles(tm.worktreePath) : { count: 0, files: [] };
     const lastLog = tm._activityLog?.slice(-1)[0] || '';
 
@@ -1878,9 +1416,7 @@ export function freezeAllTeammates(): FrozenTeamState | null {
     });
   }
 
-  // Cancel auto-dissolve if scheduled
   team._autoDissolveScheduled = false;
-
   notifyUpdate(team.id);
 
   return { teamId: team.id, teammates: frozenTeammates };
@@ -1891,28 +1427,22 @@ export function freezeAllTeammates(): FrozenTeamState | null {
 export function cleanupAllTeams(): void {
   for (const [teamId, team] of activeTeams) {
     for (const [, tm] of team.teammates) {
+      try { cancelWaiter(teamId, tm.name); } catch {}
       try { cleanupSession(tm.sessionId); } catch {}
       try { purgeSession(tm.sessionId); } catch {}
       try { clearHistory(tm.sessionId); } catch {}
 
-      // Phase 8.39: Cleanup worktrees that have no uncommitted changes
       if (team.worktreeManager && (tm.worktreePath || tm.worktreeBranch)) {
         try {
-          // Use sync-style removal (force=false so we don't blow away uncommitted work)
-          const worktreeDir = tm.worktreePath || '';
-          if (worktreeDir) {
-            team.worktreeManager.removeWorktree(tm.name, { force: false }).catch(() => {});
-          }
+          team.worktreeManager.removeWorktree(tm.name, { force: false }).catch(() => {});
         } catch {}
       }
     }
-    // Prune stale git worktree refs
     if (team.worktreeManager) {
       try { team.worktreeManager.pruneWorktrees(); } catch {}
     }
     cleanupTeamMailbox(teamId);
     cleanupTeamTaskList(teamId);
-    // Phase 9.096b: Remove working dir protection on cleanup
     removeProtectedPath(team.workingDir);
   }
   activeTeams.clear();
@@ -1921,7 +1451,6 @@ export function cleanupAllTeams(): void {
 // ─── Helpers ───
 
 function defaultTeammates(taskDescription: string): Array<{ name: string; role: string; model?: string }> {
-  // Simple heuristic: always provide at least a backend and frontend teammate
   const lower = taskDescription.toLowerCase();
   const mates: Array<{ name: string; role: string; model?: string }> = [];
 
@@ -1935,7 +1464,6 @@ function defaultTeammates(taskDescription: string): Array<{ name: string; role: 
     mates.push({ name: '@tester', role: 'QA engineer — writes and runs tests, verifies functionality' });
   }
 
-  // Default: one backend + one frontend
   if (mates.length === 0) {
     mates.push(
       { name: '@backend', role: 'Backend engineer — handles server logic, APIs, databases' },
@@ -1955,19 +1483,16 @@ You have your own branch — make changes freely without affecting teammates.
 `
     : '';
 
-  // Phase 9.096: Inject contract files into teammate context
   const contractsContext = getContractsContext(teamId);
   const contractsSection = contractsContext
     ? `\n${contractsContext}
 **CRITICAL:** These contract files define the shared API surface. You MUST:
 - Import types/interfaces from the contract files — do NOT redefine them.
 - Use the exact function signatures specified in contracts.
-- If a contract specifies a data shape, use it as-is.
 - If you need something not in the contracts, message @lead to update them.
 `
     : '';
 
-  // Phase 9.097: Date grounding for LLMs without native time awareness
   const now = new Date();
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const dateContext = `## Current Time
@@ -1980,12 +1505,26 @@ Timezone: ${tz}
 
 Your role: ${role}
 ${cwdSection}${contractsSection}
-## Team Collaboration Rules — MANDATORY
-1. Check your inbox before starting work — teammates may have sent relevant info.
-2. **ALWAYS call team_task_update** when you start a task (status: "in-progress") and when you finish (status: "done" with result summary and files_touched). This drives the progress bar — if you don't update, the team looks stuck.
-3. If you need info from another teammate, send them a message with team_message.
-4. If you're blocked, update the task status to "blocked" with a clear reason.
-5. When done with ALL your work: update every task you worked on to "done", then send a completion summary to @lead via team_message.
+## Team Collaboration — Turn-Based Model
+You operate in a turn-based loop:
+1. You work on your task (using tools, writing code, running tests).
+2. When your turn ends, you go idle.
+3. Messages from teammates/lead arrive between turns as new messages.
+4. You wake up and process the new messages.
+
+## Communication Tools
+- **send_message** — Send DMs to teammates or lead. Messages delivered between turns.
+- **task_create** — Create new tasks for the team.
+- **task_update** — Update task status (in_progress/completed), set owner, add results and files.
+- **task_list** — See all tasks and their status.
+- **task_get** — Get full details of a specific task.
+
+## Rules
+1. **ALWAYS call task_update** when you start a task (status: "in_progress") and finish (status: "completed" with result and files_touched).
+2. If you need info from another teammate, use send_message.
+3. When you receive a shutdown_request, finish critical work, then respond with send_message (type: "shutdown_response", approve: true).
+4. If blocked, update task status and message @lead.
+5. When done with ALL work, update all your tasks to "completed" and send a summary to @lead.
 
 ## Current Task List
 ${taskList}
@@ -1993,18 +1532,15 @@ ${taskList}
 ## Coding Standards
 - Preserve existing code style and conventions.
 - Write clean, documented code.
-- Report what files you modified and what tests you ran.
-- If you discover new tasks needed, add them with team_task_add.
+- Report what files you modified.
 - **Commit your work** with git when you finish (if in a git worktree).
 
 ## Problem-Solving
-If stuck: re-read your task → identify what's blocking → try 1-2 alternatives → ask @lead if still blocked.
+If stuck: re-read your task → identify what's blocking → try 1-2 alternatives → message @lead if still blocked.
 
 ## Tools Available
-You have full access to: page tools, browser tools (you can browse docs!), HTTP tools, file tools, and shell tools.
-Use them freely — especially: browse docs, read files, run tests, check build output.
-
-The page is a black box — use elements/text tools to see it.
+You have full access to: page tools, browser tools, HTTP tools, file tools, and shell tools.
+Use them freely — browse docs, read files, run tests, check build output.
 Be efficient: grep before reading entire files.
 `;
 }

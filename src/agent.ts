@@ -68,7 +68,7 @@ import { getLoginHint } from './login-state';
 import { profileManager } from './profile-manager';
 import { sessionManager } from './session-manager';
 import { listIdentities } from './password-vault';
-import { getActiveSubAgentCount } from './sub-agent';
+import { getActiveTeammateCount } from './team-manager';
 import { forceCompaction } from './conversation';
 import {
   classifyError,
@@ -266,11 +266,6 @@ For EVERY request, follow this process:
 
 For straightforward factual questions or simple lookups, compress steps 2–4.
 
-## Sub-Agent Debugging
-When a sub-agent's result is incomplete or unclear:
-- \`sub_agent_status({ id })\` → see result summary + status
-- \`sub_agent_transcript({ id })\` → see FULL conversation (tool calls, results, thoughts)
-- Use transcript to understand what sub-agent tried and why it may have stopped early.
 `;
 
 export const SYSTEM_PROMPT = `You are Aria 🪷, an AI agent built into a web browser. You control the browser through tools.
@@ -343,8 +338,7 @@ interface AgentRunOptions {
   cliAuth?: any;  // CLI auth config for post-execution reconciliation LLM call
 }
 
-// Task-type addendums removed (Phase 9.12) — the agent decides when/if to spawn sub-agents.
-// No forced orchestration. spawn_agent is a tool the agent can use when it makes sense.
+// The main agent decides: single-agent task or multi-agent teams.
 
 let activeRun: AbortController | null = null;
 let _lastStopReason: string | null = null; // Phase 8.40: track why agent stopped
@@ -513,7 +507,6 @@ export async function runAgent(opts: AgentRunOptions): Promise<void> {
       developerMode, llmConfig, worktreeIsolation, agentBrowsingDataAccess, conversationId, projectWorkingDir,
       scriptId: opts.scriptId,
       domainsVisited, domainToolCounts,
-      onSubAgentProgress: (data) => broadcast('agent:subagent-progress', data),
       onProfileSwitch: (name: string) => new Promise((resolve) => {
         agentEvents.emit('profile:switch-request', name, (result: any) => {
           resolve(result);
@@ -737,11 +730,11 @@ Timezone: ${tz}
           console.log(`[agent] STEP FINISH — step: ${event.stepNumber ?? '?'}, finishReason: ${finishReason}, tools: ${toolResults.length}, parsed_calls: ${toolCalls.length}, tool_intent: ${toolIntent ? 'yes' : 'no'}, text: ${(event.text?.length ?? 0)} chars, reasoning: ${(event.reasoningText?.length ?? 0)} chars`);
 
           // Update progress state (replaces simple idleCount)
-          const hasActiveSubAgents = getActiveSubAgentCount(sessionId) > 0;
+          const hasActiveTeammates = getActiveTeammateCount() > 0;
           updateProgressState(progressState, {
             toolCalls: toolCalls.map((tc: any) => ({ toolName: tc.toolName, args: tc.args })),
             toolResults: toolResults.map((tr: any) => ({ toolName: tr.toolName || 'unknown', result: tr.output ?? tr.result })),
-            hasActiveSubAgents,
+            hasActiveTeammates,
           });
 
           // Detect anomalous "finishReason=tool-calls but 0 actual calls" — always a bug
@@ -792,7 +785,7 @@ Timezone: ${tz}
 
             // Status/info tools get full display; action tools get truncated
             // present_download returns HTML that the UI parses — must not be truncated
-            const isInfoTool = /^(team_status|team_task_list|list_|file_list|exec_list|sub_agent_status|browsing_history|downloads|present_download)/.test(toolName);
+            const isInfoTool = /^(team_status|task_list|task_get|list_|file_list|exec_list|browsing_history|downloads|present_download)/.test(toolName);
             const maxDisplay = isInfoTool ? 1500 : 200;
             const display = `🔧 ${toolName}${resultStr.length > maxDisplay ? '\n' + resultStr.slice(0, maxDisplay) + '...' : resultStr.length > 50 ? '\n' + resultStr : ' → ' + resultStr}`;
             broadcast('agent:tool-result', { toolName, result: resultStr, display });
@@ -848,9 +841,9 @@ Timezone: ${tz}
               abortController.abort();
               return undefined;
             }
-            // Sub-agent-aware idle suppression + progress assessment
-            const hasActiveSubAgents = getActiveSubAgentCount(sessionId) > 0;
-            if (!hasActiveSubAgents) {
+            // Team-aware idle suppression + progress assessment
+            const hasActiveTeammates = getActiveTeammateCount() > 0;
+            if (!hasActiveTeammates) {
               const assessment = assessProgress(progressState);
               if (assessment.action === 'abort') {
                 console.log(`[agent] Progress assessment: ABORT — ${assessment.reason}`);
@@ -983,11 +976,11 @@ Timezone: ${tz}
               return undefined;
             }
 
-            // ─── Sub-agent-aware idle suppression ────────────────────────
-            // When sub-agents are running, suppress idle/progress checks entirely.
-            // The main agent IS making progress — its sub-agents are working.
-            const hasActiveSubAgents = getActiveSubAgentCount(sessionId) > 0;
-            if (!hasActiveSubAgents) {
+            // ─── Team-aware idle suppression ────────────────────────
+            // When teammates are running, suppress idle/progress checks entirely.
+            // The main agent IS making progress — its teammates are working.
+            const hasActiveTeammates = getActiveTeammateCount() > 0;
+            if (!hasActiveTeammates) {
               // Progress assessment (replaces crude idleCount >= 5 → abort)
               const assessment = assessProgress(progressState);
               if (assessment.action === 'abort') {

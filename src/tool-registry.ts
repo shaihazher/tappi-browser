@@ -14,7 +14,7 @@ import * as httpTools from './http-tools';
 import * as fileTools from './file-tools';
 import * as shellTools from './shell-tools';
 import * as toolManager from './tool-manager';
-import * as subAgent from './sub-agent';
+import { createTeamTools as createNewTeamTools, type TeamToolsContext } from './team-tools';
 import * as cronManager from './cron-manager';
 import { searchHistory } from './conversation';
 import { agentListConversations, agentSearchConversations, agentReadConversation, addConversationMessage } from './conversation-store';
@@ -61,9 +61,7 @@ export interface ToolRegistryOptions {
   conversationId?: string;     // Bug 4 fix: current conversation ID for project auto-linking
   projectWorkingDir?: string;  // Phase 9.099: project-scoped CWD for exec/file tools
   lockedTabId?: string;        // Sub-agent tab isolation: force all browser tools to this tab
-  subAgentTaskType?: string;   // Sub-agent task type — used to filter tools down to what's needed
   scriptId?: string;           // Set when executing a stored script — enables script_persist_fix tool
-  onSubAgentProgress?: (data: any) => void;  // Progress callback for sub-agent UI chips
   onProfileSwitch?: (name: string) => Promise<{ success: boolean; error?: string }>;  // Profile switch callback
   domainsVisited?: Set<string>;              // Domain playbook: tracks domains navigated to
   domainToolCounts?: Map<string, number>;    // Domain playbook: non-navigate tool calls per domain
@@ -723,7 +721,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
             if (tm.worktreePath && resolvedPath.startsWith(tm.worktreePath + path.sep)) {
               // Allow if the caller is this teammate (writing to their own worktree is fine)
               if (callerName && callerName === tm.name) break;
-              return `❌ That path is inside ${tm.name}'s worktree (${tm.worktreePath}). The lead doesn't write code in teammate worktrees — assign tasks via team_run_teammate and let the teammate write their own files.`;
+              return `❌ That path is inside ${tm.name}'s worktree (${tm.worktreePath}). The lead doesn't write code in teammate worktrees — assign tasks via spawn_teammate and let the teammate write their own files.`;
             }
           }
           // Phase 9.096d: Gate — block writes into team working dir while teammates are running (lead only)
@@ -733,7 +731,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
             const hasRunningTeammates = Array.from(activeTeam.teammates.values()).some(tm => tm.status === 'working');
             if (hasRunningTeammates) {
               if (resolvedPath.startsWith(resolvedTeamDir)) {
-                return `❌ Write blocked: "${filePath}" is inside the team's working directory (${activeTeam.workingDir}). Teammates are currently writing files there. Writing from the lead while teammates are running causes merge conflicts. Wait for teammates to finish, or use team_interrupt to redirect them.`;
+                return `❌ Write blocked: "${filePath}" is inside the team's working directory (${activeTeam.workingDir}). Teammates are currently writing files there. Writing from the lead while teammates are running causes merge conflicts. Wait for teammates to finish, or use send_message with type shutdown_request to redirect them.`;
               }
             }
           }
@@ -746,7 +744,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
           const relPath = path.relative(resolvedTeamDir, resolvedPath);
           const isInContractsDir = !relPath.startsWith('..') && (relPath.startsWith('contracts/') || relPath.startsWith('contracts\\'));
           if (isContractFile || isInContractsDir) {
-            // Auto-register as a team contract so team_run_teammate doesn't gate
+            // Auto-register as a team contract so spawn_teammate doesn't gate
             const teamId = teamManager.getActiveTeamId()!;
             const result = teamManager.writeContract(
               teamId,
@@ -754,7 +752,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
               content,
               `Auto-registered from file_write to ${relPath}`,
             );
-            return result + '\n\n💡 Auto-registered as a team contract. Next time, use team_write_contracts directly — it auto-copies to all teammate worktrees.';
+            return result + '\n\n💡 Auto-registered as a team contract. Next time, use write_contracts directly — it auto-copies to all teammate worktrees.';
           }
         }
         return fileTools.fileWrite(filePath, content, { sessionId });
@@ -766,7 +764,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
       inputSchema: z.object({
         path: z.string().describe('File path'),
         grep: z.string().optional().describe('Search the file for this text — returns matching lines with ±2 context lines (recommended for large files)'),
-        offset: z.number().optional().describe('Byte offset to start reading from (for chunked reading by sub-agents)'),
+        offset: z.number().optional().describe('Byte offset to start reading from (for chunked reading)'),
         limit: z.number().optional().describe('Max bytes to read (default/max ~40KB ≈ 10K tokens)'),
       }),
       execute: async ({ path, grep, offset, limit }: { path: string; grep?: string; offset?: number; limit?: number }) => {
@@ -831,7 +829,7 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
                 resolvedWritePath = nodePath.join(os.homedir(), path.slice(2));
               }
               if (resolvedWritePath.startsWith(resolvedTeamDir)) {
-                return `❌ Append blocked: "${path}" is inside the team's working directory (${activeTeam.workingDir}). Teammates are currently writing files there. Writing from the lead while teammates are running causes merge conflicts. Wait for teammates to finish, or use team_interrupt to redirect them.`;
+                return `❌ Append blocked: "${path}" is inside the team's working directory (${activeTeam.workingDir}). Teammates are currently writing files there. Writing from the lead while teammates are running causes merge conflicts. Wait for teammates to finish, or use send_message with type shutdown_request to redirect them.`;
               }
             }
           }
@@ -1204,10 +1202,15 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
     // ═══ SHELL TOOLS (Developer Mode only — conditionally included) ═══
     ...(options?.developerMode ? createShellTools(sessionId, browserCtx, options.llmConfig, options) : {}),
 
-    // ═══ TEAM TOOLS (Developer Mode — always included when dev mode is on) ═══
-    // Previously gated behind coding mode toggle — now available for any coding task.
+    // ═══ TEAM TOOLS (Developer Mode — agent teams orchestration) ═══
     ...(options?.developerMode
-      ? createTeamTools(sessionId, browserCtx, options.llmConfig, options.teamId, options.agentName, options.worktreeIsolation)
+      ? createNewTeamTools({
+          teamId: options.teamId,
+          agentName: options.agentName,
+          browserCtx,
+          llmConfig: options.llmConfig,
+          sessionId,
+        })
       : {}),
 
     // ═══ WORKTREE TOOLS (Developer Mode + git repo) ═══
@@ -1431,7 +1434,7 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
             if (resolvedCwd.startsWith(resolvedTeamDir)) {
               const modifyPatterns = /\b(echo\s.*>\s|cat\s.*>\s|sed\s+-i|tee\s|mv\s|cp\s|mkdir\s|touch\s)/;
               if (modifyPatterns.test(command)) {
-                const warning = `⚠️ WARNING: You are running a file-modifying command in the team's working directory while teammates are active. This may cause merge conflicts.\nCommand: ${command}\nCwd: ${cwd}\n\nProceed anyway? (Command executed — but consider using team_interrupt to redirect teammates instead.)`;
+                const warning = `⚠️ WARNING: You are running a file-modifying command in the team's working directory while teammates are active. This may cause merge conflicts.\nCommand: ${command}\nCwd: ${cwd}\n\nProceed anyway? (Command executed — but consider using send_message with type shutdown_request to redirect teammates instead.)`;
                 const execResult = await shellTools.shellExec(sessionId, command, { cwd, timeout });
                 return `${warning}\n\n${execResult}`;
               }
@@ -1507,371 +1510,10 @@ function createShellTools(sessionId: string, browserCtx: BrowserContext, llmConf
       execute: async () => shellTools.shellExecList(sessionId),
     }),
 
-    // ═══ SUB-AGENT (requires shell/dev mode) ═══
-
-    spawn_agent: tool({
-      description: `Spawn a background sub-agent for parallel work. USE WHEN: (1) Task can run independently without your help, (2) You need to do multiple things at once, (3) Task benefits from isolated browser tab. DO NOT USE FOR: Simple lookups, single-page tasks, anything you can do in 2-3 tool calls yourself. Returns immediately with agent ID — check results with sub_agent_status(). Max 5 concurrent. Sub-agent saves files to working_dir (default: <workspace>). Example: spawn_agent({ task: "Research competitor pricing for 5 HVAC companies", depth: "quick" })`,
-      inputSchema: z.object({
-        task: z.string().describe('Clear, self-contained task description for the sub-agent'),
-        task_type: z.enum(['research', 'coding', 'story-writing', 'normal']).optional().describe('Task type — determines contract/scaffolding. Default: auto-detect.'),
-        model: z.enum(['primary', 'secondary']).optional().describe('Model tier: "primary" (default, same as main agent) or "secondary" (if configured, cheaper/faster)'),
-        depth: z.enum(['quick', 'standard', 'deep']).optional().describe('Budget: "quick" (5 steps, 1 source), "standard" (15 steps, 3 sources, default), "deep" (30 steps, 5 sources). Quick is great for simple lookups.'),
-        working_dir: z.string().optional().describe('Working directory for file operations. Default: <workspace>. Use same dir as project to access outputs later.'),
-      }),
-      execute: async ({ task, task_type, model, depth, working_dir }: { task: string; task_type?: 'research' | 'coding' | 'story-writing' | 'normal'; model?: 'primary' | 'secondary'; depth?: 'quick' | 'standard' | 'deep'; working_dir?: string }) => {
-        if (!llmConfig) return '❌ No LLM config available for sub-agent.';
-        const resolvedType = task_type || subAgent.classifyTask(task);
-        // Use provided working_dir, or project's working dir if available, or default
-        const resolvedWorkingDir = working_dir || toolOptions?.projectWorkingDir || undefined;
-        return subAgent.spawnSubAgent(task, browserCtx, llmConfig, sessionId, model || 'primary', resolvedType, toolOptions?.onSubAgentProgress, depth || 'standard', resolvedWorkingDir ? { workingDir: resolvedWorkingDir } : undefined);
-      },
-    }),
-
-    sub_agent_status: tool({
-      description: `Check sub-agent status and results. Call after spawn_agent to see if complete. Shows: steps used/remaining, recent tools, **work in progress snippet**, and **latest transcript tail** from the sub-agent loop. No id = list all agents. With id = detailed status + result. Statuses: "running" (still working), "completed" (done), "killed" (stopped, partial preserved). Example: sub_agent_status({ id: "sub-1" })`,
-      inputSchema: z.object({
-        id: z.string().optional().describe('Sub-agent ID (e.g. "sub-1")'),
-      }),
-      execute: async ({ id }: { id?: string }) => subAgent.getSubAgentStatus(id),
-    }),
-
-    kill_agent: tool({
-      description: `Kill a running sub-agent immediately. Partial result is preserved — check sub_agent_status after killing to see what the sub-agent found. Use only when explicitly needed (user cancellation or clearly wrong/off-track execution). Prerequisite: Agent must be running. Example: kill_agent({ id: "sub-2" }) then sub_agent_status({ id: "sub-2" }) for partial result`,
-      inputSchema: z.object({
-        id: z.string().describe('Sub-agent ID to kill (e.g. "sub-1")'),
-      }),
-      execute: async ({ id }: { id: string }) => subAgent.killSubAgent(id, browserCtx),
-    }),
-
-    sub_agent_transcript: tool({
-      description: `Get the FULL transcript of a sub-agent (all messages, tool calls, tool results). Works both while running (live transcript so far) and after completion/kill (archived transcript). USE WHEN: (1) result is incomplete or unclear, (2) debugging behavior, (3) you need intermediate tool evidence. Returns: Array of messages in conversation order. Example: sub_agent_transcript({ id: "sub-1" })`,
-      inputSchema: z.object({
-        id: z.string().describe('Sub-agent ID (e.g. "sub-1")'),
-      }),
-      execute: async ({ id }: { id: string }) => {
-        const result = subAgent.getSubAgentTranscript(id);
-        if (result.error) return result.error;
-        if (!result.transcript) return 'No transcript available.';
-        // Format transcript for readability
-        const lines: string[] = [`📝 Transcript for ${id} (${result.transcript.length} messages):`];
-        for (const msg of result.transcript) {
-          if ('role' in msg) {
-            const role = msg.role;
-            if (role === 'user') {
-              lines.push(`\n[USER]: ${(msg as any).content}`);
-            } else if (role === 'assistant') {
-              const content = (msg as any).content;
-              if (typeof content === 'string') {
-                lines.push(`\n[ASSISTANT]: ${content.slice(0, 500)}${content.length > 500 ? '...' : ''}`);
-              } else if (Array.isArray(content)) {
-                // Tool calls
-                for (const part of content) {
-                  if (part.type === 'tool-call') {
-                    lines.push(`\n[TOOL CALL]: ${part.toolName}(${JSON.stringify(part.args).slice(0, 200)})`);
-                  } else if (part.type === 'text') {
-                    lines.push(`\n[ASSISTANT]: ${part.text?.slice(0, 300)}${(part.text?.length || 0) > 300 ? '...' : ''}`);
-                  }
-                }
-              }
-            } else if (role === 'tool') {
-              const toolResult = (msg as any).content;
-              lines.push(`\n[TOOL RESULT]: ${typeof toolResult === 'string' ? toolResult.slice(0, 500) : JSON.stringify(toolResult).slice(0, 500)}`);
-            }
-          }
-        }
-        return lines.join('\n');
-      },
-    }),
+    // Sub-agent tools removed — all agent spawning goes through team tools.
   };
 }
 
-/**
- * Team tools — only created when Coding Mode + Developer Mode are both ON.
- * Lead gets team tools (no dissolve — auto-handled). Teammates get 4 (no create).
- */
-function createTeamTools(
-  sessionId: string,
-  browserCtx: BrowserContext,
-  llmConfig?: LLMConfig,
-  teamId?: string,
-  agentName?: string,
-  worktreeIsolation?: boolean,
-) {
-  const isTeammate = !!agentName && agentName !== '@lead';
-
-  // ─── Helper: resolve team ID ───
-  // MUST call getActiveTeamId() dynamically — NOT cache at tool-creation time.
-  // The lead creates the team AFTER tools are registered, so a cached value would be stale (null).
-  function resolveTeamId(provided?: string): string | null {
-    return provided || teamId || teamManager.getActiveTeamId();
-  }
-
-  // ─── Helper: broadcast team status to both chrome and Aria webContents ───
-  function broadcastTeamUpdate(): void {
-    try {
-      const status = teamManager.getTeamStatusUI();
-      try { browserCtx.window.webContents.send('team:updated', status); } catch {}
-      try {
-        const aw = (browserCtx.tabManager as any).ariaWebContents;
-        if (aw && !aw.isDestroyed()) aw.send('team:updated', status);
-      } catch {}
-    } catch {}
-  }
-
-  const tools: Record<string, any> = {
-
-    // ─── Available to all (lead + teammates) ───
-
-    team_status: tool({
-      description: `Get team overview: teammates status, task list, recent messages, file conflicts. USE TO: Check progress before assigning new tasks, see if teammates are blocked, review file conflicts. Returns: Each teammate's status (idle/working/done), task completion, unread messages. Example: team_status()`,
-      inputSchema: z.object({
-        team_id: z.string().optional().describe('Team ID (default: active team)'),
-      }),
-      execute: async ({ team_id }: { team_id?: string }) => {
-        const tid = resolveTeamId(team_id);
-        if (!tid) return '❌ No active team. Use team_create to start one.';
-        return teamManager.getTeamStatus(tid);
-      },
-    }),
-
-    team_message: tool({
-      description: `Send a message to a teammate (@name) or everyone (@all). USE TO: Provide guidance, answer questions, redirect work. Messages appear in teammate's context immediately. Example: team_message({ to: "@backend", content: "Use PostgreSQL instead of SQLite for this project" })`,
-      inputSchema: z.object({
-        to: z.string().describe('Recipient: "@backend", "@frontend", "@lead", "@all"'),
-        content: z.string().describe('Message content'),
-        team_id: z.string().optional().describe('Team ID (default: active team)'),
-      }),
-      execute: async ({ to, content, team_id }: { to: string; content: string; team_id?: string }) => {
-        const tid = resolveTeamId(team_id);
-        if (!tid) return '❌ No active team.';
-        const from = agentName || '@lead';
-        return mailbox.sendMessage(tid, from, to, content);
-      },
-    }),
-
-    team_task_update: tool({
-      description: `Update a task status, result, or files touched. USE WHEN: Starting work (status: "in-progress"), finishing (status: "done" with result), or blocked (status: "blocked" with reason). ALWAYS include files_touched when done — enables conflict detection. Example: team_task_update({ task_id: "task-1", status: "done", result: "Created User model", files_touched: ["src/models/User.ts"] })`,
-      inputSchema: z.object({
-        task_id: z.string().describe('Task ID (e.g. "task-1")'),
-        status: z.enum(['pending', 'in-progress', 'done', 'blocked']).optional(),
-        result: z.string().optional().describe('Completion summary (for done status)'),
-        files_touched: z.array(z.string()).optional().describe('Files you modified'),
-        blocked_by: z.string().optional().describe('Why you\'re blocked'),
-        team_id: z.string().optional().describe('Team ID (default: active team)'),
-      }),
-      execute: async ({ task_id, status, result, files_touched, blocked_by, team_id }: {
-        task_id: string; status?: any; result?: string; files_touched?: string[]; blocked_by?: string; team_id?: string;
-      }) => {
-        const tid = resolveTeamId(team_id);
-        if (!tid) return '❌ No active team.';
-        const { message, conflicts } = taskList.updateTask(tid, task_id, {
-          status,
-          result,
-          files_touched,
-          blockedBy: blocked_by,
-        });
-        broadcastTeamUpdate();
-        if (conflicts.length > 0) {
-          const conflictLines = conflicts.map(c =>
-            `⚠️ File conflict: ${c.file} touched by ${c.taskTitles.join(' and ')}`
-          ).join('\n');
-          return `${message}\n\n${conflictLines}`;
-        }
-        return message;
-      },
-    }),
-
-    team_task_add: tool({
-      description: `Add a new task to the team's shared task list. USE TO: Break down work for teammates, assign responsibilities. Tasks can have dependencies (must complete before starting). Example: team_task_add({ title: "Create User API", description: "REST endpoints for user CRUD", assignee: "@backend", dependencies: ["task-1"] })`,
-      inputSchema: z.object({
-        title: z.string().describe('Short task title'),
-        description: z.string().describe('Detailed task description'),
-        assignee: z.string().optional().describe('Who should do this (@backend, @frontend, etc.)'),
-        dependencies: z.array(z.string()).optional().describe('Task IDs that must complete first'),
-        team_id: z.string().optional().describe('Team ID (default: active team)'),
-      }),
-      execute: async ({ title, description, assignee, dependencies, team_id }: {
-        title: string; description: string; assignee?: string; dependencies?: string[]; team_id?: string;
-      }) => {
-        const tid = resolveTeamId(team_id);
-        if (!tid) return '❌ No active team.';
-        const from = agentName || '@lead';
-        const task = taskList.createTask(tid, { title, description, assignee, dependencies, created_by: from });
-        broadcastTeamUpdate();
-        return `✓ Task "${task.id}" created: ${task.title} (status: ${task.status})`;
-      },
-    }),
-  };
-
-  // ─── Lead-only tools ───
-  if (!isTeammate) {
-    tools.team_create = tool({
-      description: `Create a coding team for parallel development. USE WHEN: (1) Large task with independent modules, (2) Multiple files need simultaneous changes, (3) Task benefits from specialized roles (frontend, backend, tests). DO NOT USE FOR: Small fixes, single-file changes, quick prototypes. WORKFLOW: Create team → Write contracts → Run teammates → Validate → Merge worktrees. Git worktree isolation prevents file conflicts. Example: team_create({ task: "Build REST API with auth system", working_dir: "~/projects/myapp" })`,
-      inputSchema: z.object({
-        task: z.string().describe('High-level task description'),
-        working_dir: z.string().describe('Project root directory (e.g. ~/projects/myapp)'),
-        teammates: z.array(z.object({
-          name: z.string().describe('Agent name starting with @ (e.g. "@backend")'),
-          role: z.string().describe('Role description'),
-          model: z.string().optional().describe('Optional: use a different/cheaper model for this teammate'),
-        })).optional().describe('Teammate configs. If omitted, auto-determined from task.'),
-        model: z.string().optional().describe('Model for all teammates (default: same as lead)'),
-        worktree_isolation: z.boolean().optional().describe('Phase 8.39: Give each teammate an isolated git worktree (default: true when working_dir is a git repo). Set false to share the working directory.'),
-      }),
-      execute: async ({ task, working_dir, teammates, model, worktree_isolation }: {
-        task: string; working_dir: string;
-        teammates?: Array<{ name: string; role: string; model?: string }>;
-        model?: string;
-        worktree_isolation?: boolean;
-      }) => {
-        if (!llmConfig) return '❌ No LLM config available.';
-        const tmConfigs = teammates?.map(t => ({
-          ...t,
-          model: t.model || model,
-        }));
-        // Use tool param if provided, otherwise fall back to registry option (from config)
-        const useWorktrees = worktree_isolation ?? worktreeIsolation ?? true;
-        const aw = (browserCtx.tabManager as any).ariaWebContents ?? null;
-        const { teamId, summary } = await teamManager.createTeam(
-          task, working_dir, browserCtx, llmConfig, tmConfigs, useWorktrees, aw
-        );
-        try { browserCtx.window.webContents.send('team:updated', teamManager.getTeamStatusUI()); } catch {}
-        try { const aw = browserCtx.tabManager.ariaWebContents; if (aw && !aw.isDestroyed()) aw.send('team:updated', teamManager.getTeamStatusUI()); } catch {}
-        return summary;
-      },
-    });
-
-    tools.team_run_teammate = tool({
-      description: `Assign a task to a teammate and start their session. PREREQUISITE: Team must exist (team_create), contracts should be written (team_write_contracts) for shared interfaces. Teammate works in parallel in isolated worktree. Monitor with team_status(). Example: team_run_teammate({ teammate_name: "@backend", task: "Create User API with auth" })`,
-      inputSchema: z.object({
-        teammate_name: z.string().describe('Teammate name (e.g. "@backend")'),
-        task: z.string().describe('Task description for this teammate'),
-        team_id: z.string().optional().describe('Team ID (default: active team)'),
-      }),
-      execute: async ({ teammate_name, task, team_id }: {
-        teammate_name: string; task: string; team_id?: string;
-      }) => {
-        const tid = resolveTeamId(team_id);
-        if (!tid) return '❌ No active team.';
-        if (!llmConfig) return '❌ No LLM config available.';
-        const team = teamManager.getTeam(tid);
-        if (!team) return `❌ Team "${tid}" not found.`;
-        const teammate = team.teammates.get(teammate_name);
-        if (!teammate) {
-          const available = Array.from(team.teammates.keys()).join(', ');
-          return `❌ Teammate "${teammate_name}" not found in team "${tid}". Available teammates: ${available || '(none)'}. Use team_status to see the full team composition.`;
-        }
-        const aw = (browserCtx.tabManager as any).ariaWebContents ?? null;
-        const result = await teamManager.runTeammate({ teammate, teamId: tid, task, browserCtx, llmConfig, ariaWebContents: aw });
-        broadcastTeamUpdate();
-        return result;
-      },
-    });
-
-    // Phase 9.096e: team_dissolve removed from lead tools. Dissolve is internal
-    // housekeeping — fires automatically when all teammates reach terminal state.
-    // User can hard-abort via UI button (IPC: team:abort) which calls dissolveTeam directly.
-    // The lead should NEVER decide to destroy its own team.
-
-    // ─── Phase 9.096: Contract-First Tools (Lead only) ───
-
-    tools.team_write_contracts = tool({
-      description: `Write shared contracts/interfaces that all teammates must follow. CRITICAL: Call this BEFORE team_run_teammate. Contracts define the shared API surface: type definitions, interfaces, function signatures. Teammates receive these in their system prompt and MUST use them — not redefine their own. Prevents integration failures. Example: team_write_contracts({ path: "contracts/api.ts", content: "export interface User {...}", description: "User types and API signatures" })`,
-      inputSchema: z.object({
-        path: z.string().describe('Relative path from working dir (e.g. "contracts/types.ts", "shared/api.py", "interfaces/cart.go")'),
-        content: z.string().describe('Contract file content — type defs, interfaces, function stubs. Keep it lean (~20 lines per file). NO implementations, just signatures and shapes.'),
-        description: z.string().describe('What this contract defines (e.g. "Cart data types and API function signatures")'),
-        team_id: z.string().optional().describe('Team ID (default: active team)'),
-      }),
-      execute: async ({ path: filePath, content, description, team_id }: {
-        path: string; content: string; description: string; team_id?: string;
-      }) => {
-        const tid = resolveTeamId(team_id);
-        if (!tid) return '❌ No active team. Use team_create first.';
-        const result = teamManager.writeContract(tid, filePath, content, description);
-        // Register this contract path so shell writes to it trigger a soft warning
-        const team = teamManager.getTeam(tid);
-        if (team) {
-          const absolutePath = path.isAbsolute(filePath)
-            ? filePath
-            : path.join(team.workingDir.replace(/^~/, os.homedir()), filePath);
-          shellTools.addContractFilePath(absolutePath);
-        }
-        broadcastTeamUpdate();
-        return result;
-      },
-    });
-
-    tools.team_validate = tool({
-      description: `Run integration validation after teammates finish. PREREQUISITE: Teammates must be done (check with team_status). Checks: (1) contracts are referenced by code, (2) no file conflicts, (3) build/test passes. Call AFTER merging worktrees. Example: team_validate({ command: "npm run build" })`,
-      inputSchema: z.object({
-        command: z.string().optional().describe('Build/test command to run (e.g. "npm run build", "python -m pytest", "go build ./..."). Runs in the working directory with 60s timeout.'),
-        team_id: z.string().optional().describe('Team ID (default: active team)'),
-      }),
-      execute: async ({ command, team_id }: { command?: string; team_id?: string }) => {
-        const tid = resolveTeamId(team_id);
-        if (!tid) return '❌ No active team.';
-        // State gate: at least one teammate must have completed
-        const team = teamManager.getTeam(tid);
-        if (team) {
-          const doneTeammates = Array.from(team.teammates.values()).filter(t => t.status === 'done');
-          if (doneTeammates.length === 0) {
-            const states = Array.from(team.teammates.values()).map(t => `${t.name}: ${t.status}`).join(', ');
-            return `❌ No completed work to validate yet. Run team_validate after teammates finish their tasks. Current states: ${states || '(no teammates)'}. Use team_status to monitor progress.`;
-          }
-        }
-        return teamManager.validateIntegration(tid, command);
-      },
-    });
-
-    tools.team_advance_phase = tool({
-      description: `Advance to next phase after merging. USE WHEN: Current phase complete, ready for next round of parallel work. PREREQUISITE: All worktrees merged (worktree_merge for each). Later phases build on real merged code. Example: team_advance_phase()`,
-      inputSchema: z.object({
-        team_id: z.string().optional().describe('Team ID (default: active team)'),
-      }),
-      execute: async ({ team_id }: { team_id?: string }) => {
-        const tid = resolveTeamId(team_id);
-        if (!tid) return '❌ No active team.';
-        // State gate: check for unmerged worktrees before advancing phase
-        const team = teamManager.getTeam(tid);
-        if (team?.worktreeIsolation && team.worktreeManager) {
-          const activeWorktrees = team.worktreeManager.listWorktrees();
-          if (activeWorktrees.length > 0) {
-            const names = activeWorktrees.map(w => w.name).join(', ');
-            return `❌ Unmerged worktrees detected: ${names}. Run worktree_merge for each before advancing to the next phase — advancing with unmerged branches will lose those changes.`;
-          }
-        }
-        return teamManager.advancePhase(tid);
-      },
-    });
-
-    // ─── Phase 9.096d: Interrupt Tool (Lead only) ───
-
-    tools.team_interrupt = tool({
-      description: `Interrupt a running teammate and redirect them. USE WHEN: Teammate going off track, needs correction, or priorities changed. Preserves their work — they resume with your new instructions. Softer than kill_agent. Example: team_interrupt({ name: "@backend", message: "Switch to PostgreSQL instead of SQLite" })`,
-      inputSchema: z.object({
-        name: z.string().describe('Teammate name (e.g. "@ui", "@backend")'),
-        message: z.string().describe('Redirect instruction — what they should do instead'),
-        team_id: z.string().optional().describe('Team ID (default: active team)'),
-      }),
-      execute: async ({ name, message, team_id }: { name: string; message: string; team_id?: string }) => {
-        const tid = resolveTeamId(team_id);
-        if (!tid) return '❌ No active team.';
-        const result = await teamManager.interruptTeammate(tid, name, message);
-        broadcastTeamUpdate();
-        return result;
-      },
-    });
-  }
-
-  return tools;
-}
-
-/**
- * Worktree tools — Phase 8.39. Created when Coding Mode + Developer Mode are ON.
- * Requires a git repository as the working directory.
- * Gated lazily: if repoPath is not a git repo, tools return an informative error.
- */
 function createWorktreeTools(repoPath?: string) {
   // Lazy-resolve manager per invocation so the active team's working dir is always used
   function getManager(providedPath?: string): WorktreeManager | null {
@@ -1937,7 +1579,7 @@ function createWorktreeTools(repoPath?: string) {
           for (const [, tm] of activeTeam.teammates) {
             const tmNorm = tm.name.replace(/^@/, '');
             if (tmNorm === normalizedName && tm.status === 'working') {
-              runningWarn = `\n\n⚠️ @${normalizedName} is still running — merging now will capture partial (incomplete) work only. Wait for the teammate to finish or use team_interrupt to stop them first.`;
+              runningWarn = `\n\n⚠️ @${normalizedName} is still running — merging now will capture partial (incomplete) work only. Wait for the teammate to finish or use send_message with type shutdown_request to stop them first.`;
               break;
             }
           }
@@ -2603,57 +2245,28 @@ export const TOOL_USAGE_GUIDE = `
 Case-insensitive text search. Available in: elements, text, links, file_read, file_grep, history.
 All work the same: \`grep: "search term"\` returns matching results.
 
-### SUB-AGENT WORKFLOW (PARALLEL TASKS)
-USE WHEN: Task can run independently, you need to do multiple things at once.
-DO NOT USE FOR: Simple lookups, single-page tasks, anything you can do in 2-3 tool calls.
+### AGENT TEAMS (PARALLEL MULTI-AGENT WORK)
+USE WHEN: Large task with independent modules, multiple things need to happen in parallel.
+DO NOT USE FOR: Small fixes, single-file changes, quick prototypes — handle those yourself.
+
+**Turn-based model:** Teammates work in turns. After each turn they go idle, then wake when messages arrive.
 
 **Workflow:**
-1. \`spawn_agent({ task: "...", working_dir: "~/my-project", depth: "standard" })\` → returns agent ID + timing hint
-2. **BE PATIENT** — sub-agent has its own step budget and will run until done or timeout
-3. **Wait the suggested time** (quick=15s, standard=30s, deep=60s) before checking
-4. \`sub_agent_status({ id: "sub-1" })\` → see progress + **work in progress snippet**
-5. If still running: check again in ~30s or when steps exhausted
-6. When \`status: "completed"\` → access outputs from \`working_dir\`
-7. When \`status: "killed"\` → partial result is preserved in status output
+1. \`team_create({ team_name: "...", task: "...", working_dir: "..." })\` → create team with teammates
+2. \`write_contracts({ path: "...", content: "..." })\` → define shared interfaces (CRITICAL — before spawning)
+3. \`task_create({ subject: "...", description: "...", owner: "@backend" })\` → create tasks
+4. \`spawn_teammate({ teammate_name: "@backend", task: "..." })\` → start teammate's turn loop
+5. \`team_status()\` → monitor progress (shows idle/working status)
+6. \`send_message({ recipient: "@backend", content: "..." })\` → send guidance between turns
+7. \`send_message({ type: "shutdown_request", recipient: "@backend", content: "Done" })\` → graceful shutdown
+8. \`worktree_merge({ name: "@backend" })\` → merge completed work
+9. \`validate_integration({ command: "npm run build" })\` → verify integration
+10. \`team_delete()\` → clean up
 
-**What You See When Checking Status:**
-- Steps used/remaining (budget progress)
-- Recent tools (activity indicator)
-- **Work in progress snippet**
-- **Latest transcript tail** (most recent loop messages)
-- When to check again
-
-**Patience Guidelines:**
-- **Wait for completion** — sub-agents have strict budgets and WILL finish
-- Depth budgets: "quick"=5 steps, "standard"=15 steps, "deep"=30 steps
-- Each tool call = 1 step. Research tasks typically use 5-10 steps.
-
-**Transcript Visibility:**
-- \`sub_agent_transcript({ id: "sub-1" })\` gives full transcript at any time
-- While running: returns live transcript so far
-- After done/killed/failed: returns archived full transcript
-
-**Partial Results:**
-- If a sub-agent is killed, the partial result is preserved in status
-- Read it before starting fresh — you may have useful findings already
-- Example: \`sub_agent_status({ id: "sub-1" })\` → check "Result:" section
-
-**Accessing Outputs:**
-- Use same \`working_dir\` as sub-agent: \`file_list({ path: "~/my-project" })\`
-- Sub-agent saves files to its working directory
-- Example: \`file_read({ path: "~/my-project/research-findings.md" })\`
-
-### TEAM WORKFLOW (PARALLEL CODING)
-USE WHEN: Large coding task with independent modules, multiple files need simultaneous changes.
-DO NOT USE FOR: Small fixes, single-file changes, quick prototypes.
-
-Workflow:
-1. \`team_create({ task: "...", working_dir: "..." })\` → create team
-2. \`team_write_contracts({ path: "...", content: "..." })\` → define shared interfaces (CRITICAL)
-3. \`team_run_teammate({ teammate_name: "@backend", task: "..." })\` → assign work
-4. \`team_status()\` → monitor progress
-5. \`worktree_merge({ name: "@backend" })\` → merge completed work
-6. \`team_validate({ command: "npm run build" })\` → verify integration
+**Communication:**
+- Messages are delivered between turns — teammate wakes up when a message arrives
+- Use \`task_update\` to track progress, not messages
+- Teammates go idle after each turn — this is normal, send a message to wake them
 
 ### GIT WORKTREE (PARALLEL DEVELOPMENT)
 Each teammate gets an isolated git worktree — separate branch, separate files.
@@ -2663,7 +2276,7 @@ Each teammate gets an isolated git worktree — separate branch, separate files.
 
 ### CRON TOOLS (SCHEDULED TASKS)
 USE WHEN: User wants recurring tasks, reminders, periodic checks.
-DO NOT USE FOR: One-time tasks (use sub-agent instead).
+DO NOT USE FOR: One-time tasks.
 
 **Workflow:**
 1. \`cron_list()\` → see existing jobs first

@@ -62,8 +62,8 @@ import { loadTools, verifyAllTools } from './tool-manager';
 import { setProjectUpdateCallback } from './tool-registry';
 import { cleanupAll as cleanupShell } from './shell-tools';
 import { listPlaybooks, getPlaybook, upsertPlaybook, deletePlaybook } from './domain-playbook';
-import { cleanupAllSubAgents } from './sub-agent';
-import { cleanupAllTeams, getActiveTeam, getTeamStatusUI, setTeamUpdateCallback, interruptTeammate, getActiveTeamId } from './team-manager';
+import { cleanupAllTeams, getActiveTeam, getTeamStatusUI, setTeamUpdateCallback, getActiveTeamId } from './team-manager';
+import { sendMessage as sendMailboxMessage } from './mailbox';
 import { scheduleProfileUpdate, deleteProfile, loadUserProfileTxt, saveUserProfileTxt, loadProfile, generateProfile } from './user-profile';
 import { purgeSession } from './output-buffer';
 import { installExtension, installFromCrx, listExtensions, getExtension, removeExtension, enableExtension, disableExtension, loadPersistedExtensionsForProfile, extensionHasPermission } from './extension-manager';
@@ -225,7 +225,7 @@ function normalizeLoadedConfig(raw: any): TappiConfig {
   };
 
   // Phase 10: Secondary model routing re-enabled for token efficiency.
-  // Users can configure a cheaper secondary model (e.g., Haiku) for sub-agents.
+  // Users can configure a cheaper secondary model (e.g., Haiku) for teammates.
 
   return merged;
 }
@@ -3260,7 +3260,7 @@ Rules:
         case 'teammate': {
           const teamId = getActiveTeamId();
           if (!teamId) return '❌ No active team';
-          return await interruptTeammate(teamId, targetName || '', message);
+          return sendMailboxMessage(teamId, '@lead', targetName || '', message, { type: 'shutdown_request' });
         }
         default:
           return `❌ Unknown interrupt target: ${target}`;
@@ -4402,7 +4402,6 @@ app.whenReady().then(createWindow);
 app.on('window-all-closed', () => {
   cleanupCron();
   cleanupShell();
-  cleanupAllSubAgents();
   cleanupAllTeams();
   captureCleanupOnQuit(); // Phase 8.6: stop any in-progress recording
   stopApiServer();        // Phase 8.45: stop HTTP API server

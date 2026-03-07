@@ -6,7 +6,7 @@
  * avoiding the need to re-discover paths via file_list.
  *
  * Key design: Each session has its own isolated context.
- * Sub-agents inherit parent's working dir at spawn time (handled in sub-agent.ts).
+ * Teammates inherit parent's working dir at spawn time (handled in team-manager.ts).
  */
 
 interface WorkingContext {

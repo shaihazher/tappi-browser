@@ -4,7 +4,7 @@
  * Provides: error classification, retry logic, tool result truncation,
  * progress assessment (replaces crude idle detection), and continuation state.
  *
- * Used by: agent.ts, sub-agent.ts, team-manager.ts.
+ * Used by: agent.ts, team-manager.ts.
  * NOT used by: claude-code-provider.ts (has its own subprocess model).
  */
 
@@ -177,7 +177,7 @@ export function truncateToolResults(
 // ─── Progress Assessment ─────────────────────────────────────────────────────
 
 export interface ProgressState {
-  /** Consecutive steps with 0 tool calls (no active sub-agents) */
+  /** Consecutive steps with 0 tool calls (no active teammates) */
   textOnlySteps: number;
   /** Consecutive steps calling the exact same tool+args */
   repeatedToolSteps: number;
@@ -282,13 +282,13 @@ export function updateProgressState(
   event: {
     toolCalls: Array<{ toolName: string; args?: any }>;
     toolResults: Array<{ toolName: string; result?: any; output?: any }>;
-    hasActiveSubAgents: boolean;
+    hasActiveTeammates: boolean;
     hasError?: boolean;
   },
 ): boolean {
   state.totalSteps++;
 
-  const { toolCalls, toolResults, hasActiveSubAgents, hasError } = event;
+  const { toolCalls, toolResults, hasActiveTeammates, hasError } = event;
 
   // Track errors
   if (hasError) {
@@ -298,13 +298,13 @@ export function updateProgressState(
     state.recentErrors = Math.max(0, state.recentErrors - 1);
   }
 
-  // Text-only step tracking — suppress when sub-agents are active
-  if (toolResults.length === 0 && !hasActiveSubAgents) {
+  // Text-only step tracking — suppress when teammates are active
+  if (toolResults.length === 0 && !hasActiveTeammates) {
     state.textOnlySteps++;
   } else if (toolResults.length > 0) {
     state.textOnlySteps = 0;
   }
-  // When sub-agents are active and no tool results, don't increment (waiting is expected)
+  // When teammates are active and no tool results, don't increment (waiting is expected)
 
   // Repeated tool detection
   if (toolCalls.length === 1) {

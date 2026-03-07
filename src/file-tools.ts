@@ -109,7 +109,7 @@ export function fileRead(filePath: string, options?: FileReadOptions): string {
     return fileGrepInternal(resolved, options.grep, 2, GREP_CHAR_CAP);
   }
 
-  // ── Chunked read mode: byte offset + limit for sub-agent parallelism ──
+  // ── Chunked read mode: byte offset + limit for parallel reading ──
   if (options?.offset !== undefined || options?.limit !== undefined) {
     const byteOffset = options.offset || 0;
     const byteLimit = Math.min(options.limit || BYTE_THRESHOLD, BYTE_THRESHOLD);
