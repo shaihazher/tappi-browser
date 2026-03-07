@@ -166,6 +166,17 @@ contextBridge.exposeInMainWorld('aria', {
     ipcRenderer.on('aria:cc-mode-switched', (_e, data) => cb(data));
   },
 
+  // ─── Claude Code Tool Cards ───
+  onCCToolStart: (cb: (data: { toolId: string; toolName: string }) => void) => {
+    ipcRenderer.on('cc:tool-start', (_e, data) => cb(data));
+  },
+  onCCToolComplete: (cb: (data: { toolId: string; toolName: string; input: any }) => void) => {
+    ipcRenderer.on('cc:tool-complete', (_e, data) => cb(data));
+  },
+  onCCToolResult: (cb: (data: { toolId: string; toolName: string; content: string; isError?: boolean }) => void) => {
+    ipcRenderer.on('cc:tool-result', (_e, data) => cb(data));
+  },
+
   // ─── Vercel SDK Plan Mode ───
   approveAgentPlan: () => ipcRenderer.invoke('aria:approve-plan'),
   editAgentPlan: (feedback: string) => ipcRenderer.invoke('aria:edit-plan', { feedback }),

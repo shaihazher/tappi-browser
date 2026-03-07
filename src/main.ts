@@ -1423,10 +1423,45 @@ function createWindow() {
         try { mainWindow.webContents.send('agent:stream-chunk', errChunk); } catch {}
       };
 
+      const _ccToolInputCache = new Map<string, any>(); // toolId -> input from tool-complete
+      const onToolStart = (data: any) => {
+        // Save any text accumulated before this tool as a partial assistant message
+        if (ccResponseBuffer.trim()) {
+          addConversationMessage(effectiveConvId, 'assistant', ccResponseBuffer);
+          ccResponseBuffer = '';
+        }
+        try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('cc:tool-start', data); } catch {}
+      };
+      const onToolComplete = (data: any) => {
+        if (data?.toolId) _ccToolInputCache.set(data.toolId, data.input);
+        try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('cc:tool-complete', data); } catch {}
+      };
+      const onToolResult = (data: any) => {
+        try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('cc:tool-result', data); } catch {}
+        // Persist tool card
+        if (data?.toolId || data?.toolName) {
+          const persistData = {
+            toolId: data.toolId || '',
+            toolName: data.toolName || '',
+            input: _ccToolInputCache.get(data.toolId) || {},
+            result: data.content || '',
+            isError: data.isError || false,
+          };
+          addConversationMessage(effectiveConvId, 'cc-tool-card', JSON.stringify(persistData));
+          _ccToolInputCache.delete(data.toolId);
+        }
+      };
+
       activeClaudeCodeProvider.removeAllListeners('chunk');
       activeClaudeCodeProvider.removeAllListeners('error');
+      activeClaudeCodeProvider.removeAllListeners('tool-start');
+      activeClaudeCodeProvider.removeAllListeners('tool-complete');
+      activeClaudeCodeProvider.removeAllListeners('tool-result');
       activeClaudeCodeProvider.on('chunk', onChunk);
       activeClaudeCodeProvider.on('error', onError);
+      activeClaudeCodeProvider.on('tool-start', onToolStart);
+      activeClaudeCodeProvider.on('tool-complete', onToolComplete);
+      activeClaudeCodeProvider.on('tool-result', onToolResult);
 
       // Persist user message (with attachment metadata if present, no base64)
       if (processedAttachments && processedAttachments.length > 0) {
@@ -1627,10 +1662,26 @@ function createWindow() {
       try { mainWindow.webContents.send('agent:stream-chunk', errChunk); } catch {}
     };
 
+    const onToolStart = (data: any) => {
+      try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('cc:tool-start', data); } catch {}
+    };
+    const onToolComplete = (data: any) => {
+      try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('cc:tool-complete', data); } catch {}
+    };
+    const onToolResult = (data: any) => {
+      try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('cc:tool-result', data); } catch {}
+    };
+
     activeClaudeCodeProvider.removeAllListeners('chunk');
     activeClaudeCodeProvider.removeAllListeners('error');
+    activeClaudeCodeProvider.removeAllListeners('tool-start');
+    activeClaudeCodeProvider.removeAllListeners('tool-complete');
+    activeClaudeCodeProvider.removeAllListeners('tool-result');
     activeClaudeCodeProvider.on('chunk', onChunk);
     activeClaudeCodeProvider.on('error', onError);
+    activeClaudeCodeProvider.on('tool-start', onToolStart);
+    activeClaudeCodeProvider.on('tool-complete', onToolComplete);
+    activeClaudeCodeProvider.on('tool-result', onToolResult);
 
     try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-start', {}); } catch {}
     try { mainWindow.webContents.send('agent:stream-start', {}); } catch {}
@@ -1665,10 +1716,26 @@ function createWindow() {
       try { mainWindow.webContents.send('agent:stream-chunk', errChunk); } catch {}
     };
 
+    const onToolStart2 = (data: any) => {
+      try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('cc:tool-start', data); } catch {}
+    };
+    const onToolComplete2 = (data: any) => {
+      try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('cc:tool-complete', data); } catch {}
+    };
+    const onToolResult2 = (data: any) => {
+      try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('cc:tool-result', data); } catch {}
+    };
+
     activeClaudeCodeProvider.removeAllListeners('chunk');
     activeClaudeCodeProvider.removeAllListeners('error');
+    activeClaudeCodeProvider.removeAllListeners('tool-start');
+    activeClaudeCodeProvider.removeAllListeners('tool-complete');
+    activeClaudeCodeProvider.removeAllListeners('tool-result');
     activeClaudeCodeProvider.on('chunk', onChunk);
     activeClaudeCodeProvider.on('error', onError);
+    activeClaudeCodeProvider.on('tool-start', onToolStart2);
+    activeClaudeCodeProvider.on('tool-complete', onToolComplete2);
+    activeClaudeCodeProvider.on('tool-result', onToolResult2);
 
     try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('agent:stream-start', {}); } catch {}
     try { mainWindow.webContents.send('agent:stream-start', {}); } catch {}

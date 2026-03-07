@@ -64,6 +64,24 @@ export interface CCChunkEvent {
   done: boolean;
 }
 
+export interface CCToolStartEvent {
+  toolId: string;
+  toolName: string;
+}
+
+export interface CCToolCompleteEvent {
+  toolId: string;
+  toolName: string;
+  input: Record<string, any>;
+}
+
+export interface CCToolResultEvent {
+  toolId: string;
+  toolName: string;
+  content: string;
+  isError?: boolean;
+}
+
 /** Attachment processed for Claude Code CLI consumption */
 export interface CCProcessedAttachment {
   name: string;
@@ -1238,6 +1256,8 @@ export class ClaudeCodeProvider extends EventEmitter {
   private _pendingToolName?: string;
   private _pendingToolId?: string;
   private _pendingToolInput: string = '';
+  private _lastCompletedToolId?: string;
+  private _lastCompletedToolName?: string;
 
   constructor(config: CCProviderConfig) {
     super();
@@ -1510,8 +1530,10 @@ export class ClaudeCodeProvider extends EventEmitter {
         if (block.type === 'text' && block.text) {
           this.emit('chunk', { text: block.text, done: false } as CCChunkEvent);
         } else if (block.type === 'tool_use') {
-          const toolMd = this._formatToolUse(block.name, block.input);
-          this.emit('chunk', { text: toolMd, done: false } as CCChunkEvent);
+          this.emit('tool-start', { toolId: block.id, toolName: block.name } as CCToolStartEvent);
+          this.emit('tool-complete', { toolId: block.id, toolName: block.name, input: block.input || {} } as CCToolCompleteEvent);
+          this._lastCompletedToolId = block.id;
+          this._lastCompletedToolName = block.name;
         }
       }
       return;
@@ -1523,20 +1545,20 @@ export class ClaudeCodeProvider extends EventEmitter {
       this._pendingToolName = block.name;
       this._pendingToolId = block.id;
       this._pendingToolInput = '';
-      this.emit('chunk', { text: `\n\n> **🔧 ${block.name}**\n`, done: false } as CCChunkEvent);
+      this.emit('tool-start', { toolId: block.id, toolName: block.name } as CCToolStartEvent);
       return;
     }
 
     // Content block finished — if tool_use, emit the formatted input details
     if (msg.type === 'content_block_stop') {
-      if (this._pendingToolName && this._pendingToolInput) {
-        try {
-          const input = JSON.parse(this._pendingToolInput);
-          const detail = this._formatToolInput(this._pendingToolName, input);
-          if (detail) {
-            this.emit('chunk', { text: detail, done: false } as CCChunkEvent);
-          }
-        } catch { /* partial JSON — skip detail formatting */ }
+      if (this._pendingToolName) {
+        let parsedInput: Record<string, any> = {};
+        if (this._pendingToolInput) {
+          try { parsedInput = JSON.parse(this._pendingToolInput); } catch { /* partial JSON */ }
+        }
+        this._lastCompletedToolId = this._pendingToolId;
+        this._lastCompletedToolName = this._pendingToolName;
+        this.emit('tool-complete', { toolId: this._pendingToolId, toolName: this._pendingToolName, input: parsedInput } as CCToolCompleteEvent);
       }
       this._pendingToolName = undefined;
       this._pendingToolId = undefined;
@@ -1544,18 +1566,22 @@ export class ClaudeCodeProvider extends EventEmitter {
       return;
     }
 
-    // Tool result — show output of tool execution
+    // Tool result — emit structured tool result event
     if (msg.type === 'tool_result' || (msg.role === 'user' && msg.content && Array.isArray(msg.content))) {
       const content = msg.content;
       if (typeof content === 'string' && content.trim()) {
-        this.emit('chunk', { text: '\n' + this._blockquotify('_Result:_ ' + this._truncate(content, 500)) + '\n\n', done: false } as CCChunkEvent);
+        this.emit('tool-result', { toolId: this._lastCompletedToolId || '', toolName: this._lastCompletedToolName || '', content: content, isError: false } as CCToolResultEvent);
+        this._lastCompletedToolId = undefined;
+        this._lastCompletedToolName = undefined;
       } else if (Array.isArray(content)) {
         for (const block of content) {
           if (block.type === 'tool_result' && block.content) {
             const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
-            this.emit('chunk', { text: '\n' + this._blockquotify('_Result:_ ' + this._truncate(text, 500)) + '\n\n', done: false } as CCChunkEvent);
+            this.emit('tool-result', { toolId: this._lastCompletedToolId || '', toolName: this._lastCompletedToolName || '', content: text, isError: false } as CCToolResultEvent);
           }
         }
+        this._lastCompletedToolId = undefined;
+        this._lastCompletedToolName = undefined;
       }
       return;
     }

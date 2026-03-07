@@ -2540,6 +2540,67 @@ body.coding-mode .thinking-chip-header:hover {
 }
 
 /* ═══════════════════════════════════════════
+   Claude Code Tool Cards
+   ═══════════════════════════════════════════ */
+
+.cc-tool-card-wrapper { max-width: 640px; }
+.cc-tool-card-wrapper .aria-bubble { background: transparent; padding: 0; box-shadow: none; }
+
+.cc-tool-card {
+  margin: 6px 0;
+  border: 1px solid var(--border-light, #e5e7eb);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 13px;
+}
+.cc-tool-card-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  background: rgba(59, 130, 246, 0.04);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.cc-tool-card-header:hover { background: rgba(59, 130, 246, 0.08); }
+.cc-tool-icon { font-family: monospace; font-weight: 600; min-width: 20px; text-align: center; }
+.cc-tool-name { font-weight: 600; color: var(--text); }
+.cc-tool-summary { color: var(--text-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 12px; }
+.cc-tool-status { margin-left: auto; font-size: 12px; }
+.cc-tool-toggle { color: var(--text-dim); font-size: 11px; }
+
+/* Spinner */
+.cc-tool-spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border-light, #e5e7eb); border-top-color: var(--lotus, #8b5cf6); border-radius: 50%; animation: cc-spin 0.6s linear infinite; }
+@keyframes cc-spin { to { transform: rotate(360deg); } }
+
+/* Body */
+.cc-tool-card-body { display: none; border-top: 1px solid var(--border-light, #e5e7eb); padding: 8px 12px; }
+.cc-tool-card-body.expanded { display: block; }
+.cc-tool-input { font-size: 12px; }
+.cc-tool-input pre { margin: 0; padding: 6px 8px; background: var(--bg-code, #f5f5f5); border-radius: 4px; font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+.cc-tool-input code { background: var(--bg-code, #f5f5f5); padding: 2px 5px; border-radius: 3px; font-size: 12px; }
+.cc-tool-result { margin-top: 8px; }
+.cc-tool-result pre { max-height: 200px; overflow-y: auto; margin: 0; padding: 6px 8px; background: var(--bg-code, #f5f5f5); border-radius: 4px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+.cc-tool-result-count { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+
+/* State colors */
+.cc-tool-card[data-state="done"] .cc-tool-status::before { content: '\2713'; color: #22c55e; font-weight: bold; }
+.cc-tool-card[data-state="error"] .cc-tool-status::before { content: '\2715'; color: #ef4444; font-weight: bold; }
+.cc-tool-card[data-state="error"] { border-color: rgba(239, 68, 68, 0.3); }
+.cc-tool-card[data-state="error"] .cc-tool-card-header { background: rgba(239, 68, 68, 0.04); }
+.cc-tool-card[data-state="error"] .cc-tool-result pre { background: rgba(239, 68, 68, 0.05); }
+
+/* "Show more" for long results */
+.cc-tool-result-expand { color: var(--lotus, #8b5cf6); cursor: pointer; font-size: 12px; margin-top: 4px; }
+.cc-tool-result-expand:hover { text-decoration: underline; }
+
+/* Dark / coding mode */
+body.coding-mode .cc-tool-card { border-color: rgba(137, 180, 250, 0.12); }
+body.coding-mode .cc-tool-card-header { background: rgba(137, 180, 250, 0.04); }
+body.coding-mode .cc-tool-card-header:hover { background: rgba(137, 180, 250, 0.08); }
+body.coding-mode .cc-tool-input pre,
+body.coding-mode .cc-tool-result pre { background: rgba(255, 255, 255, 0.04); }
+
+/* ═══════════════════════════════════════════
    Sub-agent progress chip (Aria chat)
    ═══════════════════════════════════════════ */
 .aria-subagent-chip {

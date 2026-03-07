@@ -1893,6 +1893,23 @@ function appendMessageEl(msg) {
     } catch {
       bubble.textContent = msg.content || '';
     }
+  } else if (role === 'cc-tool-card') {
+    // Persisted Claude Code tool card — render collapsed with full data
+    try {
+      const data = JSON.parse(msg.content || '{}');
+      wrapper.className = 'aria-msg assistant cc-tool-card-wrapper';
+      const card = _buildToolCard(data.toolId || '', data.toolName || 'Tool', {
+        state: data.isError ? 'error' : 'done',
+        summary: _getToolSummary(data.toolName, data.input),
+        collapsed: true,
+      });
+      if (data.input) _renderToolInput(card, data.toolName, data.input);
+      if (data.result) _renderToolResult(card, data.toolName, data.result, data.isError);
+      bubble.innerHTML = '';
+      bubble.appendChild(card);
+    } catch {
+      bubble.textContent = msg.content || '';
+    }
   } else if (role === 'tool') {
     // Render tool results with markdown for multi-line outputs (team_status etc.)
     const content = msg.content || '';
@@ -2886,6 +2903,223 @@ window.aria.onToolResult(result => {
   appendMessage('tool', display);
 });
 
+// ─── Claude Code Tool Cards ───────────────
+
+const _activeToolCards = new Map(); // toolId -> { cardEl, state, toolName, input }
+
+const _ccToolIcons = {
+  Bash: '>_', Read: '\u{1F4D6}', Write: '\u{270F}\u{FE0F}', Edit: '\u{1F4DD}',
+  Grep: '\u{1F50D}', Glob: '\u{1F4C2}', WebFetch: '\u{1F310}', TodoWrite: '\u{2705}',
+};
+
+function _getToolIcon(name) {
+  return _ccToolIcons[name] || '\u{1F527}';
+}
+
+function _getToolSummary(name, input) {
+  if (!input) return '';
+  switch (name) {
+    case 'Bash': return (input.command || '').slice(0, 80);
+    case 'Read': case 'Write': case 'Edit': return input.file_path || '';
+    case 'Grep': return (input.pattern || '') + (input.path ? ' in ' + input.path : '');
+    case 'Glob': return input.pattern || '';
+    case 'WebFetch': return input.url || '';
+    case 'TodoWrite': return 'Updating task list';
+    default: {
+      const keys = Object.keys(input).slice(0, 1);
+      return keys.length ? `${keys[0]}: ${String(input[keys[0]] ?? '').slice(0, 80)}` : '';
+    }
+  }
+}
+
+function _buildToolCard(toolId, toolName, opts = {}) {
+  const card = document.createElement('div');
+  card.className = 'cc-tool-card';
+  card.dataset.toolId = toolId;
+  card.dataset.state = opts.state || 'running';
+
+  const icon = _getToolIcon(toolName);
+  const summary = opts.summary || '';
+
+  card.innerHTML = `
+    <div class="cc-tool-card-header">
+      <span class="cc-tool-icon">${icon}</span>
+      <span class="cc-tool-name">${toolName}</span>
+      <span class="cc-tool-summary">${summary}</span>
+      <span class="cc-tool-status">${opts.state === 'done' || opts.state === 'error' ? '' : '<span class="cc-tool-spinner"></span>'}</span>
+      <span class="cc-tool-toggle">${opts.collapsed ? '\u{25B8}' : '\u{25BE}'}</span>
+    </div>
+    <div class="cc-tool-card-body${opts.collapsed ? '' : ' expanded'}">
+      <div class="cc-tool-input"></div>
+      <div class="cc-tool-result"></div>
+    </div>`;
+
+  return card;
+}
+
+function _renderToolInput(card, toolName, input) {
+  const inputEl = card.querySelector('.cc-tool-input');
+  if (!inputEl || !input) return;
+  let html = '';
+  switch (toolName) {
+    case 'Bash':
+      html = `<pre>${_escHtml((input.command || '').slice(0, 500))}</pre>`;
+      break;
+    case 'Read': case 'Write': case 'Edit':
+      html = `<code>${_escHtml(input.file_path || '')}</code>`;
+      break;
+    case 'Grep':
+      html = `<code>${_escHtml(input.pattern || '')}</code>${input.path ? ` in <code>${_escHtml(input.path)}</code>` : ''}`;
+      break;
+    case 'Glob':
+      html = `<code>${_escHtml(input.pattern || '')}</code>`;
+      break;
+    case 'WebFetch':
+      html = `<code>${_escHtml(input.url || '')}</code>`;
+      break;
+    default: {
+      const keys = Object.keys(input).slice(0, 3);
+      const pairs = keys.map(k => `<b>${_escHtml(k)}:</b> ${_escHtml(String(input[k] ?? '').slice(0, 200))}`);
+      html = pairs.join('<br>');
+    }
+  }
+  inputEl.innerHTML = html;
+}
+
+function _renderToolResult(card, toolName, content, isError) {
+  const resultEl = card.querySelector('.cc-tool-result');
+  if (!resultEl) return;
+  const truncated = content.length > 2000;
+  const display = truncated ? content.slice(0, 2000) : content;
+
+  if (toolName === 'Bash') {
+    resultEl.innerHTML = `<pre>${_escHtml(display)}</pre>`;
+  } else if (['Read', 'Write', 'Edit'].includes(toolName)) {
+    resultEl.innerHTML = `<pre>${_escHtml(display)}</pre>`;
+  } else if (['Grep', 'Glob'].includes(toolName)) {
+    const lines = display.split('\n');
+    const count = lines.length;
+    resultEl.innerHTML = `<div class="cc-tool-result-count">${count} result${count !== 1 ? 's' : ''}</div><pre>${_escHtml(display)}</pre>`;
+  } else {
+    resultEl.innerHTML = `<pre>${_escHtml(display)}</pre>`;
+  }
+
+  if (truncated) {
+    const expandBtn = document.createElement('div');
+    expandBtn.className = 'cc-tool-result-expand';
+    expandBtn.textContent = 'Show more...';
+    expandBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      resultEl.querySelector('pre').textContent = content;
+      expandBtn.remove();
+    });
+    resultEl.appendChild(expandBtn);
+  }
+}
+
+function _escHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function _interruptStreamForToolCard() {
+  // Same pattern as onToolResult: finalize active stream bubble so tool card inserts below
+  if (_streamBubbleEl && streamBuffer.trim()) {
+    _updateStreamBubble(streamBuffer, true);
+    const cursor = _streamBubbleEl.querySelector('.streaming-cursor');
+    if (cursor) cursor.remove();
+    const wrapper = document.getElementById('aria-stream-bubble');
+    if (wrapper) wrapper.removeAttribute('id');
+    messages.push({ role: 'assistant', content: streamBuffer, timestamp: Date.now() });
+    _streamTextSavedUpTo = streamBuffer.length;
+    _streamBubbleEl = null;
+    _streamMdDiv = null;
+  }
+}
+
+if (window.aria.onCCToolStart) {
+  window.aria.onCCToolStart(data => {
+    if (!data || !data.toolId) return;
+    _interruptStreamForToolCard();
+
+    const card = _buildToolCard(data.toolId, data.toolName);
+    const wrapper = document.createElement('div');
+    wrapper.className = 'aria-msg assistant cc-tool-card-wrapper';
+    wrapper.appendChild(card);
+    ariaMessages.appendChild(wrapper);
+
+    _activeToolCards.set(data.toolId, { cardEl: card, state: 'started', toolName: data.toolName, input: null });
+    scrollToBottom();
+  });
+}
+
+if (window.aria.onCCToolComplete) {
+  window.aria.onCCToolComplete(data => {
+    if (!data || !data.toolId) return;
+    const entry = _activeToolCards.get(data.toolId);
+    if (!entry) return;
+
+    entry.input = data.input;
+    entry.state = 'running';
+    const card = entry.cardEl;
+
+    // Update summary
+    const summaryEl = card.querySelector('.cc-tool-summary');
+    if (summaryEl) summaryEl.textContent = _getToolSummary(data.toolName, data.input);
+
+    // Render input details
+    _renderToolInput(card, data.toolName, data.input);
+    scrollToBottom();
+  });
+}
+
+if (window.aria.onCCToolResult) {
+  window.aria.onCCToolResult(data => {
+    if (!data) return;
+    // Find card — try by toolId, fall back to last active
+    let entry = data.toolId ? _activeToolCards.get(data.toolId) : null;
+    if (!entry && _activeToolCards.size > 0) {
+      const lastKey = [..._activeToolCards.keys()].pop();
+      entry = _activeToolCards.get(lastKey);
+      if (entry) data.toolId = lastKey;
+    }
+    if (!entry) return;
+
+    const card = entry.cardEl;
+    const isError = data.isError || false;
+
+    // Render result
+    _renderToolResult(card, entry.toolName, data.content || '', isError);
+
+    // Update state
+    card.dataset.state = isError ? 'error' : 'done';
+
+    // Remove spinner, state pseudo-element handles checkmark/X
+    const statusEl = card.querySelector('.cc-tool-status');
+    if (statusEl) statusEl.innerHTML = '';
+
+    // Auto-collapse
+    const body = card.querySelector('.cc-tool-card-body');
+    if (body) body.classList.remove('expanded');
+    const toggle = card.querySelector('.cc-tool-toggle');
+    if (toggle) toggle.textContent = '\u{25B8}';
+
+    // Persist as cc-tool-card message
+    const persistData = {
+      toolId: data.toolId,
+      toolName: entry.toolName,
+      input: entry.input,
+      result: data.content,
+      isError: isError,
+    };
+    messages.push({ role: 'cc-tool-card', content: JSON.stringify(persistData), timestamp: Date.now() });
+
+    _activeToolCards.delete(data.toolId);
+    scrollToBottom();
+  });
+}
+
 // ─── Token usage ──────────────────────────
 
 window.aria.onTokenUsage(data => {
@@ -3370,6 +3604,19 @@ window._ariaDownloadReport = async function(format) {
 // This handles deep-step-header toggles and download button clicks
 // regardless of when the elements are inserted into the DOM.
 ariaMessages.addEventListener('click', (e) => {
+  // CC Tool card header toggle
+  const toolCardHeader = e.target.closest('.cc-tool-card-header');
+  if (toolCardHeader) {
+    const card = toolCardHeader.closest('.cc-tool-card');
+    if (card) {
+      const body = card.querySelector('.cc-tool-card-body');
+      if (body) body.classList.toggle('expanded');
+      const toggle = card.querySelector('.cc-tool-toggle');
+      if (toggle) toggle.textContent = body && body.classList.contains('expanded') ? '\u{25BE}' : '\u{25B8}';
+    }
+    return;
+  }
+
   // Phase 9.096d: Deep mode redirect button — must check BEFORE header toggle
   const deepRedirectBtn = e.target.closest('.deep-redirect-btn');
   if (deepRedirectBtn) {
