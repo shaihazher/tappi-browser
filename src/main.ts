@@ -44,7 +44,8 @@ import { createHash, randomBytes } from 'crypto';
 import { TabManager } from './tab-manager';
 import { executeCommand, getMenu, type ExecutorContext } from './command-executor';
 import type { BrowserContext } from './browser-tools';
-import { runAgent, stopAgent, clearHistory, agentProgressData, interruptMainSession, generateQuickTitle } from './agent';
+import { runAgent, stopAgent, clearHistory, agentProgressData, interruptMainSession, generateQuickTitle, detectPlanIntent, isPlanPending, resetAgentPlanState, getPendingPlanOpts } from './agent';
+import { addMessage } from './conversation';
 import { agentEvents } from './agent-bus';
 import { loadServices, registerService, removeService, storeApiKey, getApiKey, listApiKeys, deleteApiKey } from './http-tools';
 import { initDatabase, getDb, closeDatabase, reinitDatabase, addHistory, searchHistory, getRecentHistory, clearHistory as clearDbHistory, migrateBookmarksFromJson, getPermission, setPermission, getAllBookmarks, searchBookmarks, removeBookmark } from './database';
@@ -1494,8 +1495,13 @@ function createWindow() {
     pendingScriptId = null;
     pendingScriptInputs = null;
 
+    // Reset any stale plan state when user sends a new message
+    resetAgentPlanState();
+
+    const planMode = currentConfig.llm.provider !== 'claude-code' && detectPlanIntent(message);
+
     const browserCtx: BrowserContext = { window: mainWindow, tabManager, config: currentConfig };
-    runAgent({
+    await runAgent({
       userMessage: message,
       browserCtx,
       llmConfig: {
@@ -1527,7 +1533,15 @@ function createWindow() {
       scriptId: scriptId || undefined,
       scriptInputs: scriptInputs || undefined,
       cliAuth: currentConfig.llm.provider === 'claude-code' ? buildCliAuthConfig() : undefined,
+      planMode,
     });
+
+    // After runAgent completes: if plan mode produced a plan, notify UI
+    if (isPlanPending()) {
+      const ariaWC = tabManager?.ariaWebContents;
+      const effectiveConvId = convId || activeConversationId;
+      try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('aria:plan-complete', { conversationId: effectiveConvId }); } catch {}
+    }
   });
 
   ipcMain.on('aria:stop', () => {
@@ -1628,6 +1642,66 @@ function createWindow() {
       activeClaudeCodeProvider.resetPlanState();
       activeClaudeCodeProvider.resetSession(); // Don't resume old plan-mode session
     }
+    return { success: true };
+  });
+
+  // ─── Vercel SDK Plan Mode: Approve & Edit ─────────────────────────────
+
+  ipcMain.handle('aria:approve-plan', async () => {
+    const pendingOpts = getPendingPlanOpts();
+    if (!pendingOpts) return;
+    resetAgentPlanState();
+
+    const ariaWC = tabManager?.ariaWebContents;
+    const effectiveConvId = activeConversationId || 'default';
+
+    // Add approval message to conversation history
+    addMessage(pendingOpts.sessionId || 'default', {
+      role: 'user', content: 'Approved. Execute the plan.',
+    });
+    if (effectiveConvId) {
+      addConversationMessage(effectiveConvId, 'user', 'Approved. Execute the plan.');
+    }
+
+    // Re-run agent with full tools (planMode=false), same session
+    await runAgent({
+      ...pendingOpts,
+      userMessage: 'Approved. Execute the plan.',
+      planMode: false,
+    });
+  });
+
+  ipcMain.handle('aria:edit-plan', async (_e, { feedback }: { feedback: string }) => {
+    const pendingOpts = getPendingPlanOpts();
+    if (!pendingOpts) return;
+    resetAgentPlanState();
+
+    const ariaWC = tabManager?.ariaWebContents;
+    const effectiveConvId = activeConversationId || 'default';
+
+    // Persist feedback
+    addMessage(pendingOpts.sessionId || 'default', {
+      role: 'user', content: feedback,
+    });
+    if (effectiveConvId) {
+      addConversationMessage(effectiveConvId, 'user', feedback);
+    }
+
+    // Re-run in plan mode with feedback as the new message
+    await runAgent({
+      ...pendingOpts,
+      userMessage: feedback,
+      planMode: true,
+    });
+
+    // If plan completed again, notify UI for another cycle
+    if (isPlanPending()) {
+      try { if (ariaWC && !ariaWC.isDestroyed()) ariaWC.send('aria:plan-complete', { conversationId: effectiveConvId }); } catch {}
+    }
+  });
+
+  ipcMain.handle('aria:reset-plan', () => {
+    resetAgentPlanState();
     return { success: true };
   });
 

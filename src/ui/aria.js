@@ -2141,6 +2141,7 @@ async function sendMessage(text) {
 
   // Remove plan action bar if present (user is sending a new message)
   _removePlanActionBar();
+  _planProvider = null;
 
   // Hide welcome screen if visible
   hideWelcome();
@@ -2597,7 +2598,8 @@ function _finalizeStreamBubble() {
   streamBuffer = '';
 }
 
-// ─── Claude Code Plan Action Bar ──────────────────────────────────────────────
+// ─── Plan Action Bar (shared by CC and Vercel SDK plan modes) ─────────────────
+let _planProvider = null; // 'cc' | 'agent'
 
 /** Remove any existing plan action bar from the chat. */
 function _removePlanActionBar() {
@@ -2670,7 +2672,11 @@ document.getElementById('aria-messages')?.addEventListener('click', (e) => {
     if (editBtn) editBtn.disabled = true;
 
     setStreamingState(true);
-    window.aria.approvePlan();
+    if (_planProvider === 'agent') {
+      window.aria.approveAgentPlan();
+    } else {
+      window.aria.approvePlan();
+    }
     return;
   }
 
@@ -2696,13 +2702,24 @@ document.getElementById('aria-messages')?.addEventListener('click', (e) => {
     // Show the user's feedback as a message bubble
     appendMessage('user', feedback);
     setStreamingState(true);
-    window.aria.editPlan(feedback);
+    if (_planProvider === 'agent') {
+      window.aria.editAgentPlan(feedback);
+    } else {
+      window.aria.editPlan(feedback);
+    }
     return;
   }
 });
 
 // Listen for plan-complete from main process (after initial send or after edit feedback)
 window.aria?.onPlanComplete?.(() => {
+  _planProvider = 'cc';
+  _showPlanActionBar();
+});
+
+// Vercel SDK plan-complete listener
+window.aria?.onAgentPlanComplete?.(() => {
+  _planProvider = 'agent';
   _showPlanActionBar();
 });
 

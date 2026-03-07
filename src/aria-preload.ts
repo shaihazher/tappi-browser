@@ -163,6 +163,14 @@ contextBridge.exposeInMainWorld('aria', {
     ipcRenderer.on('aria:cc-plan-complete', (_e, data) => cb(data));
   },
 
+  // ─── Vercel SDK Plan Mode ───
+  approveAgentPlan: () => ipcRenderer.invoke('aria:approve-plan'),
+  editAgentPlan: (feedback: string) => ipcRenderer.invoke('aria:edit-plan', { feedback }),
+  resetAgentPlan: () => ipcRenderer.invoke('aria:reset-plan'),
+  onAgentPlanComplete: (cb: (data: any) => void) => {
+    ipcRenderer.on('aria:plan-complete', (_e, data) => cb(data));
+  },
+
   // ─── Projects (Phase 9.07) ───
   listProjects: (includeArchived?: boolean) =>
     ipcRenderer.invoke('projects:list', includeArchived ?? false),

@@ -342,12 +342,43 @@ interface AgentRunOptions {
   scriptId?: string;  // Script ID when executing a stored script — enables script_persist_fix tool
   scriptInputs?: Record<string, any>;  // Input values used for this script run — for auto-reconciliation
   cliAuth?: any;  // CLI auth config for post-execution reconciliation LLM call
+  planMode?: boolean; // Vercel SDK plan mode — text-only plan generation, no tool calls
 }
 
 // The main agent decides: single-agent task or multi-agent teams.
 
 let activeRun: AbortController | null = null;
 let _lastStopReason: string | null = null; // Phase 8.40: track why agent stopped
+
+// ── Vercel SDK Plan Mode state ──
+const PLAN_PATTERNS = [
+  /\bplan\s+(this|how|for|out|it)\b/i,
+  /\bfigure\s+out\b/i,
+  /\bhow\s+should\s+(i|we)\b/i,
+  /\bwhat('s| is)\s+the\s+best\s+(approach|way|strategy|method)\b/i,
+  /\bdesign\s+(a|an|the)\s+\w/i,
+  /\bmap\s+out\b/i,
+  /\bbreak\s+(this|it)\s+down\b/i,
+  /\boutline\s+(the|a|an)\s+\w/i,
+  /\bwhat\s+steps\b/i,
+  /\bcome\s+up\s+with\s+(a\s+)?plan\b/i,
+  /\bthink\s+through\b/i,
+  /\bplan\s+mode\b/i,
+];
+
+export function detectPlanIntent(message: string): boolean {
+  return PLAN_PATTERNS.some(p => p.test(message));
+}
+
+let _pendingPlanApproval = false;
+let _pendingPlanOpts: AgentRunOptions | null = null;
+
+export function isPlanPending(): boolean { return _pendingPlanApproval; }
+export function resetAgentPlanState(): void {
+  _pendingPlanApproval = false;
+  _pendingPlanOpts = null;
+}
+export function getPendingPlanOpts(): AgentRunOptions | null { return _pendingPlanOpts; }
 
 // ── Phase 9.096d: Interrupt/Redirect support ──
 let _activeRunOptions: AgentRunOptions | null = null;
@@ -943,14 +974,19 @@ Timezone: ${tz}
           response: Promise.resolve({ messages: codexRun.responseMessages || [] }),
         };
       } else {
+        // ── Plan mode overrides ─────────────────────────────────────────
+        const planModeSystemPrefix = opts.planMode ? `\n## PLAN MODE ACTIVE\nYou are in planning mode. The user wants you to think through an approach before executing.\n\nREQUIREMENTS:\n1. Analyze the request thoroughly\n2. Produce a clear, numbered plan with concrete steps\n3. If steps can be parallelized, indicate which ones (these will use agent teams)\n4. Be specific about which tools and actions each step would use\n5. Do NOT execute any actions — only describe what you WOULD do\n6. End with: "Ready to execute when you approve."\n\n` : '';
+        const effectiveTools = opts.planMode ? {} : tools;
+        const effectiveStopWhen = opts.planMode ? stepCountIs(1) : stepCountIs(200);
+
         const llmCallBase: Record<string, any> = {
           model,
-          system: activeSystemPrompt,
+          system: planModeSystemPrefix + activeSystemPrompt,
           messages: messages as any,
-          tools,
+          tools: effectiveTools,
           ...(llmConfig.provider !== 'openai-codex' ? { maxOutputTokens: 30000 } : {}),
           ...(Object.keys(callProviderOptions).length > 0 ? { providerOptions: callProviderOptions } : {}),
-          stopWhen: stepCountIs(200),
+          stopWhen: effectiveStopWhen,
           abortSignal: abortController.signal,
           prepareStep: async ({ messages: currentMessages }: { messages: any[] }) => {
             let injectedMessages = [...currentMessages];
@@ -1635,6 +1671,12 @@ Timezone: ${tz}
       // No text and no tools — shouldn't happen but handle gracefully
       if (!streamStarted) broadcast('agent:stream-start', {});
       sendChunk(mainWindow, '✓ Done.', true, ariaWebContents);
+    }
+
+    // ─── Vercel SDK Plan Mode: mark pending if plan completed successfully ──
+    if (opts.planMode && fullResponse && !errorSent) {
+      _pendingPlanApproval = true;
+      _pendingPlanOpts = opts;
     }
 
     // ─── Eviction summary (async, non-blocking) ────────────────────────────
