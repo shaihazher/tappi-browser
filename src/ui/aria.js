@@ -1905,6 +1905,15 @@ function appendMessageEl(msg) {
       });
       if (data.input) _renderToolInput(card, data.toolName, data.input);
       if (data.result) _renderToolResult(card, data.toolName, data.result, data.isError);
+
+      // ExitPlanMode persisted cards stay expanded with plan content visible
+      if (data.toolName === 'ExitPlanMode') {
+        const body = card.querySelector('.cc-tool-card-body');
+        if (body) body.classList.add('expanded');
+        const toggle = card.querySelector('.cc-tool-toggle');
+        if (toggle) toggle.textContent = '\u{25BE}';
+      }
+
       bubble.innerHTML = '';
       bubble.appendChild(card);
     } catch {
@@ -2911,6 +2920,7 @@ const _ccToolIcons = {
   Bash: '>_', Read: '\u{1F4D6}', Write: '\u{270F}\u{FE0F}', Edit: '\u{1F4DD}',
   Grep: '\u{1F50D}', Glob: '\u{1F4C2}', WebFetch: '\u{1F310}', TodoWrite: '\u{2705}',
   AskUserQuestion: '\u{2753}',
+  ExitPlanMode: '\u{1F4CB}',
 };
 
 function _getToolIcon(name) {
@@ -2931,6 +2941,7 @@ function _getToolSummary(name, input) {
       if (questions.length === 1) return questions[0].question || 'Question';
       return `${questions.length} questions`;
     }
+    case 'ExitPlanMode': return 'Plan ready for review';
     default: {
       const keys = Object.keys(input).slice(0, 1);
       return keys.length ? `${keys[0]}: ${String(input[keys[0]] ?? '').slice(0, 80)}` : '';
@@ -2986,10 +2997,26 @@ function _renderToolInput(card, toolName, input) {
       break;
     case 'AskUserQuestion': {
       const questions = input.questions || [];
+      const isMulti = questions.length > 1;
       const container = document.createElement('div');
       container.className = 'cc-ask-questions';
+      if (isMulti) container._selections = {};
 
-      questions.forEach((q) => {
+      const _updateSubmitBtn = () => {
+        if (!isMulti) return;
+        const submitBtn = container.querySelector('.cc-ask-submit-all');
+        if (!submitBtn) return;
+        const allAnswered = questions.every((_, i) => container._selections[i] != null && container._selections[i] !== '');
+        if (allAnswered) {
+          submitBtn.disabled = false;
+          submitBtn.classList.add('cc-ask-submit-ready');
+        } else {
+          submitBtn.disabled = true;
+          submitBtn.classList.remove('cc-ask-submit-ready');
+        }
+      };
+
+      questions.forEach((q, qIdx) => {
         const qDiv = document.createElement('div');
         qDiv.className = 'cc-ask-question';
 
@@ -3014,7 +3041,20 @@ function _renderToolInput(card, toolName, input) {
           const cardState = card.dataset.state;
           if (cardState === 'done' || cardState === 'error') {
             chip.disabled = true;
+          } else if (isMulti) {
+            // Multi-question: toggle selection, don't send yet
+            chip.addEventListener('click', () => {
+              // Remove inline input if it exists for this question
+              const inlineInput = qDiv.querySelector('.cc-ask-inline-input');
+              if (inlineInput) inlineInput.remove();
+              // Deselect siblings
+              optsDiv.querySelectorAll('.cc-ask-option-chip').forEach(c => c.classList.remove('cc-ask-selected'));
+              chip.classList.add('cc-ask-selected');
+              container._selections[qIdx] = opt.label;
+              _updateSubmitBtn();
+            });
           } else {
+            // Single question: auto-send immediately
             chip.addEventListener('click', () => {
               const chatInput = document.getElementById('aria-input');
               if (chatInput) {
@@ -3035,6 +3075,25 @@ function _renderToolInput(card, toolName, input) {
         const cardState = card.dataset.state;
         if (cardState === 'done' || cardState === 'error') {
           otherChip.disabled = true;
+        } else if (isMulti) {
+          otherChip.addEventListener('click', () => {
+            // Deselect sibling chips
+            optsDiv.querySelectorAll('.cc-ask-option-chip').forEach(c => c.classList.remove('cc-ask-selected'));
+            otherChip.classList.add('cc-ask-selected');
+            // Insert inline input if not already present
+            if (!qDiv.querySelector('.cc-ask-inline-input')) {
+              const inlineInput = document.createElement('input');
+              inlineInput.type = 'text';
+              inlineInput.className = 'cc-ask-inline-input';
+              inlineInput.placeholder = 'Type your answer...';
+              inlineInput.addEventListener('input', () => {
+                container._selections[qIdx] = inlineInput.value;
+                _updateSubmitBtn();
+              });
+              qDiv.appendChild(inlineInput);
+              inlineInput.focus();
+            }
+          });
         } else {
           otherChip.addEventListener('click', () => {
             const chatInput = document.getElementById('aria-input');
@@ -3046,6 +3105,26 @@ function _renderToolInput(card, toolName, input) {
         qDiv.appendChild(optsDiv);
         container.appendChild(qDiv);
       });
+
+      // Multi-question: add "Submit All Answers" button
+      if (isMulti) {
+        const submitBtn = document.createElement('button');
+        submitBtn.className = 'cc-ask-submit-all';
+        submitBtn.textContent = 'Submit All Answers';
+        submitBtn.disabled = true;
+        submitBtn.addEventListener('click', () => {
+          const parts = questions.map((q, i) => `${q.question || `Q${i+1}`}: ${container._selections[i] || ''}`);
+          const answer = parts.join('\n');
+          const chatInput = document.getElementById('aria-input');
+          if (chatInput) {
+            chatInput.value = answer;
+            chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+            const sendBtn = document.getElementById('aria-send-btn');
+            if (sendBtn) sendBtn.click();
+          }
+        });
+        container.appendChild(submitBtn);
+      }
 
       inputEl.innerHTML = '';
       inputEl.appendChild(container);
@@ -3074,6 +3153,11 @@ function _renderToolResult(card, toolName, content, isError) {
     const lines = display.split('\n');
     const count = lines.length;
     resultEl.innerHTML = `<div class="cc-tool-result-count">${count} result${count !== 1 ? 's' : ''}</div><pre>${_escHtml(display)}</pre>`;
+  } else if (toolName === 'ExitPlanMode') {
+    let html = marked.parse(content);
+    html = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html;
+    resultEl.innerHTML = `<div class="cc-plan-content">${html}</div>`;
+    return;
   } else {
     resultEl.innerHTML = `<pre>${_escHtml(display)}</pre>`;
   }
@@ -3153,6 +3237,14 @@ if (window.aria.onCCToolComplete) {
       if (toggle) toggle.textContent = '\u{25BE}';
     }
 
+    // Auto-expand ExitPlanMode so user sees the plan
+    if (data.toolName === 'ExitPlanMode') {
+      const body = card.querySelector('.cc-tool-card-body');
+      if (body) body.classList.add('expanded');
+      const toggle = card.querySelector('.cc-tool-toggle');
+      if (toggle) toggle.textContent = '\u{25BE}';
+    }
+
     scrollToBottom();
   });
 }
@@ -3178,6 +3270,30 @@ if (window.aria.onCCToolResult) {
       const statusEl = card.querySelector('.cc-tool-status');
       if (statusEl) statusEl.innerHTML = '';
       card.querySelectorAll('.cc-ask-option-chip').forEach(c => c.disabled = true);
+
+      const persistData = {
+        toolId: data.toolId,
+        toolName: entry.toolName,
+        input: entry.input,
+        result: data.content,
+        isError: isError,
+      };
+      messages.push({ role: 'cc-tool-card', content: JSON.stringify(persistData), timestamp: Date.now() });
+      _activeToolCards.delete(data.toolId);
+      scrollToBottom();
+      return;
+    }
+
+    // ExitPlanMode: render plan content, keep expanded, skip auto-collapse
+    if (entry.toolName === 'ExitPlanMode') {
+      card.dataset.state = 'done';
+      const statusEl = card.querySelector('.cc-tool-status');
+      if (statusEl) statusEl.innerHTML = '';
+      _renderToolResult(card, entry.toolName, data.content || '', isError);
+      const body = card.querySelector('.cc-tool-card-body');
+      if (body) body.classList.add('expanded');
+      const toggle = card.querySelector('.cc-tool-toggle');
+      if (toggle) toggle.textContent = '\u{25BE}';
 
       const persistData = {
         toolId: data.toolId,
