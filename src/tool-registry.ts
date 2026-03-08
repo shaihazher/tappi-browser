@@ -2442,4 +2442,5 @@ DO NOT USE FOR: Reading page content (use \`text\` and \`elements\` instead).
 - "Tab not found" → call \`tab({ action: "list" })\` to see available tabs
 - "File not found" → use absolute path or check with \`file_list()\`
 - "Permission denied" → check if file is in a teammate's worktree (lead can't write there directly)
+- Page broken, blank, or action had no effect → use \`js_errors\` + \`console_logs\` to see what went wrong. If an API call failed silently → \`network_requests\` shows the status and error response.
 `.trim();

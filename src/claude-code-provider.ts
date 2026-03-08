@@ -107,8 +107,10 @@ const TAPPI_CLAUDE_BIN = path.join(CLI_INSTALL_DIR, 'node_modules', '.bin', 'cla
  * Convert CCMode to CLI flags for the `claude` command.
  */
 function getCliModeArgs(mode: CCMode): string[] {
+  // Both modes run with full permissions — plan mode still plans but
+  // executes without per-action permission prompts.
   switch (mode) {
-    case 'plan': return ['--permission-mode', 'plan'];
+    case 'plan': return ['--dangerously-skip-permissions'];
     case 'full': return ['--dangerously-skip-permissions'];
   }
 }

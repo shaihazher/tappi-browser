@@ -1006,8 +1006,11 @@ Timezone: ${tz}
       } else {
         // ── Plan mode overrides ─────────────────────────────────────────
         const planModeSystemPrefix = opts.planMode ? `\n## PLAN MODE ACTIVE\nYou are in planning mode. The user wants you to think through an approach before executing.\n\nREQUIREMENTS:\n1. Analyze the request thoroughly\n2. Produce a clear, numbered plan with concrete steps\n3. If steps can be parallelized, indicate which ones (these will use agent teams)\n4. Be specific about which tools and actions each step would use\n5. Do NOT execute any actions — only describe what you WOULD do\n6. End with: "Ready to execute when you approve."\n\n` : '';
-        const effectiveTools = opts.planMode ? {} : tools;
-        const effectiveStopWhen = opts.planMode ? stepCountIs(1) : stepCountIs(200);
+        // Plan mode keeps full tool access and step budget — the planning system
+        // prompt guides the agent to plan first, but it can use tools to gather
+        // context (browse, read files, etc.) while formulating the plan.
+        const effectiveTools = tools;
+        const effectiveStopWhen = stepCountIs(200);
 
         const llmCallBase: Record<string, any> = {
           model,
