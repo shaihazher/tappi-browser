@@ -61,12 +61,14 @@ export class TabManager {
   private preFullscreenLayoutHeight: number = 0;
   private preFullscreenStatusBarHeight: number = 0;
   private onWebContentsReady?: (wc: Electron.WebContents) => void;
+  private onTabClose?: (tabId: string) => void;
   public ariaTabId: string | null = null;  // Phase 8.35
   // F8: Rate-limit window.open — max 3 new tabs per second per source
   private windowOpenTimestamps: Map<number, number[]> = new Map();
 
-  constructor(window: BrowserWindow, chromeHeight: number, onWebContentsReady?: (wc: Electron.WebContents) => void) {
+  constructor(window: BrowserWindow, chromeHeight: number, onWebContentsReady?: (wc: Electron.WebContents) => void, onTabClose?: (tabId: string) => void) {
     this.onWebContentsReady = onWebContentsReady;
+    this.onTabClose = onTabClose;
     this.window = window;
     this.chromeHeight = chromeHeight;
     this.bookmarksPath = path.join(
@@ -505,6 +507,7 @@ export class TabManager {
       if (this.closedStack.length > 20) this.closedStack.shift();
     }
 
+    this.onTabClose?.(id);
     this.window.contentView.removeChildView(tab.view);
     tab.view.webContents.close();
 

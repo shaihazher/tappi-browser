@@ -61,6 +61,7 @@ import { getDefaultModel } from './llm-client';
 import { listModelsForProvider } from './model-list';
 import { loadTools, verifyAllTools } from './tool-manager';
 import { setProjectUpdateCallback } from './tool-registry';
+import { cdpManager } from './cdp-manager';
 import { cleanupAll as cleanupShell } from './shell-tools';
 import { listPlaybooks, getPlaybook, upsertPlaybook, deletePlaybook } from './domain-playbook';
 import { cleanupAllTeams, getActiveTeam, getTeamStatusUI, setTeamUpdateCallback, getActiveTeamId } from './team-manager';
@@ -690,6 +691,8 @@ function createWindow() {
   // Tab manager uses BrowserViews for web content
   tabManager = new TabManager(mainWindow, CHROME_HEIGHT, (wc) => {
     setupPageContextMenu(wc);
+  }, (tabId) => {
+    cdpManager.destroySession(tabId);
   });
 
   // Layout on resize

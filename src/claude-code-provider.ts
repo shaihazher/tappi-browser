@@ -669,6 +669,13 @@ You have a single conversation context window. It does not reset between tool ca
 - The same session with screenshots after every navigation: ~6K+ tokens of images → context pressure
 - When in doubt, use text. You can always take ONE screenshot at the end to verify visually.
 
+### DevTools
+POST /api/tools/console_logs \`{ "level": "error", "grep": "fetch" }\` — page console output
+POST /api/tools/network_requests \`{ "status": "4xx", "grep": "/api/" }\` — HTTP requests with status/timing
+POST /api/tools/js_errors \`{}\` — uncaught exceptions + stack traces
+POST /api/tools/devtools_inspect \`{ "target": "storage", "storageType": "local" }\` — DOM, perf, storage, resources
+Action fails → check js_errors + console_logs. API issue → network_requests. Auth debug → devtools_inspect storage.
+
 ## Problem-Solving Directive
 For EVERY request:
 1. **Understand** this request clearly.
@@ -710,30 +717,58 @@ function writeClaudeCodeBedrockSettings(awsAuthRefresh: string, projectDir: stri
 }
 
 /**
- * Write a CLAUDE.md file to a temp directory for the CLI.
- * The CLI reads CLAUDE.md from its CWD for project instructions.
- * Returns the directory path where CLAUDE.md was written.
+ * Write a CLAUDE.md file for the CLI.
+ *
+ * When `workingDir` is provided, CLAUDE.md is written into that directory
+ * (the user's workspace) using marker comments so Tappi content can be
+ * updated without clobbering any existing CLAUDE.md the project may have.
+ *
+ * When `workingDir` is omitted, falls back to a temp directory (legacy path).
+ *
+ * Returns the directory path where CLAUDE.md lives — used as spawn CWD.
  */
-function writeTappiClaudeMd(tappiApiToken: string): string {
-  const dir = path.join(os.tmpdir(), 'tappi-claude-code');
+const TAPPI_MARKER_START = '<!-- TAPPI-START -->';
+const TAPPI_MARKER_END   = '<!-- TAPPI-END -->';
+
+function writeTappiClaudeMd(tappiApiToken: string, workingDir?: string): string {
+  const dir = workingDir || path.join(os.tmpdir(), 'tappi-claude-code');
   fs.mkdirSync(dir, { recursive: true });
 
-  let content = buildTappiSystemPrompt()
-    // Replace the env var reference with the actual token for the CLI path,
-    // since we can't guarantee the CLI inherits the env var in all contexts.
-    // The CLAUDE.md is in a temp dir with restricted access.
+  let tappiContent = buildTappiSystemPrompt()
     .replace(/\$TAPPI_API_TOKEN/g, tappiApiToken);
 
-  // Inject user profile into CLAUDE.md so the CLI has it in context
+  // Inject user profile into Tappi content
   try {
     const { loadUserProfileTxt } = require('./user-profile');
     const profileTxt = loadUserProfileTxt();
     if (profileTxt) {
-      content += `\n\n## User Profile\nThe user has saved the following profile. Use it to personalize responses, remember preferences, and navigate to their known URLs/tools without asking.\n\n${profileTxt}\n`;
+      tappiContent += `\n\n## User Profile\nThe user has saved the following profile. Use it to personalize responses, remember preferences, and navigate to their known URLs/tools without asking.\n\n${profileTxt}\n`;
     }
   } catch {}
 
-  fs.writeFileSync(path.join(dir, 'CLAUDE.md'), content, 'utf-8');
+  const claudeMdPath = path.join(dir, 'CLAUDE.md');
+  const markedBlock = `${TAPPI_MARKER_START}\n${tappiContent}\n${TAPPI_MARKER_END}`;
+
+  if (workingDir && fs.existsSync(claudeMdPath)) {
+    // Workspace already has a CLAUDE.md — merge with markers
+    const existing = fs.readFileSync(claudeMdPath, 'utf-8');
+    const startIdx = existing.indexOf(TAPPI_MARKER_START);
+    const endIdx   = existing.indexOf(TAPPI_MARKER_END);
+
+    if (startIdx !== -1 && endIdx !== -1) {
+      // Markers already present — replace the marked section
+      const before = existing.substring(0, startIdx);
+      const after  = existing.substring(endIdx + TAPPI_MARKER_END.length);
+      fs.writeFileSync(claudeMdPath, before + markedBlock + after, 'utf-8');
+    } else {
+      // No markers yet — prepend Tappi content above existing content
+      fs.writeFileSync(claudeMdPath, markedBlock + '\n\n' + existing, 'utf-8');
+    }
+  } else {
+    // No existing file (or temp dir) — write fresh
+    fs.writeFileSync(claudeMdPath, markedBlock, 'utf-8');
+  }
+
   return dir;
 }
 
@@ -1147,7 +1182,8 @@ export async function executeCronViaCli(
 
   const { ensureApiToken } = await import('./api-server');
   const tappiToken = ensureApiToken();
-  const claudeMdDir = writeTappiClaudeMd(tappiToken);
+  const { getWorkspacePath } = require('./workspace-resolver');
+  const claudeMdDir = writeTappiClaudeMd(tappiToken, getWorkspacePath());
 
   const fullPrompt = `${systemPrefix}\n\n${taskPrompt}`;
 
@@ -1303,27 +1339,30 @@ export class ClaudeCodeProvider extends EventEmitter {
       return;
     }
 
-    // Write CLAUDE.md to a temp dir so the CLI picks up Tappi's HTTP API instructions
+    // Write CLAUDE.md — uses workspace dir when available, otherwise temp dir
     const tappiToken = this.config.tappiApiToken || '';
-    const claudeMdDir = writeTappiClaudeMd(tappiToken);
+    const claudeMdDir = writeTappiClaudeMd(tappiToken, this.config.workingDir);
 
     const hasAttachments = attachments && attachments.length > 0;
     const hasImages = hasAttachments && attachments.some(a => a.category === 'image');
 
-    // Save non-image files to CWD so Claude Code can read them with its Read tool
+    // Save non-image files to a temp dir (not the workspace) so Claude Code can read them
     let augmentedText = message;
     if (hasAttachments) {
       const nonImageFiles = attachments.filter(a => a.category !== 'image');
       if (nonImageFiles.length > 0) {
+        const attachTmpDir = path.join(os.tmpdir(), 'tappi-claude-attachments');
+        fs.mkdirSync(attachTmpDir, { recursive: true });
         for (const att of nonImageFiles) {
           const safeName = att.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-          const filePath = path.join(claudeMdDir, safeName);
+          const filePath = path.join(attachTmpDir, safeName);
           fs.writeFileSync(filePath, Buffer.from(att.base64, 'base64'));
           att.tempPath = filePath;
         }
-        const fileList = nonImageFiles.map(a =>
-          `- ${a.name} (${a.mimeType}): ./${a.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-        ).join('\n');
+        const fileList = nonImageFiles.map(a => {
+          const safeName = a.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+          return `- ${a.name} (${a.mimeType}): ${path.join(os.tmpdir(), 'tappi-claude-attachments', safeName)}`;
+        }).join('\n');
         augmentedText += `\n\nAttached files (read them with your Read tool):\n${fileList}`;
       }
     }

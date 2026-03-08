@@ -36,6 +36,7 @@ import { listIdentities } from './password-vault';
 import { createRecipeTools } from './recipes';
 import { updateScript } from './script-store';
 import { getPlaybook, extractDomain, isDomainExcluded } from './domain-playbook';
+import { createDevtoolsTools } from './devtools-tools';
 import * as path from 'path';
 import * as os from 'os';
 import { getWorkspacePath, expandTilde, DEFAULT_WORKSPACE } from './workspace-resolver';
@@ -1399,6 +1400,9 @@ export function createTools(browserCtx: BrowserContext, sessionId = 'default', o
         },
       }),
     } : {}),
+
+    // ═══ DEVTOOLS / DEBUGGING ═══
+    ...createDevtoolsTools(getWC, browserCtx.tabManager),
   };
 }
 
@@ -2102,6 +2106,7 @@ function createCodingMemoryTools() {
         return codingMemory.logDecision(projectDir, content, type);
       },
     }),
+
   };
 }
 
@@ -2418,6 +2423,19 @@ DO NOT USE FOR: Browser settings or preferences (use config tools instead).
 - .crx files downloaded in the browser are auto-installed
 - CRX-sourced extensions are fully cleaned up on removal (extracted directory deleted)
 - Disabled extensions stay in persistence but are not loaded into the session
+
+### DEVTOOLS / DEBUGGING
+USE WHEN: Pages break, buttons don't work, forms fail silently, need to find hidden APIs, debug auth flows.
+DO NOT USE FOR: Reading page content (use \`text\` and \`elements\` instead).
+
+**Tools:**
+- \`console_logs({ level?, grep? })\` — page console output. Check after failed clicks, broken pages, silent errors.
+- \`network_requests({ status?, grep? })\` — HTTP requests with status/timing. Check after form submits, find hidden APIs, debug auth redirects.
+- \`js_errors\` — uncaught exceptions + stack traces. Check when pages break or render blank.
+- \`devtools_inspect({ target })\` — one-shot inspection: \`dom\`, \`performance\`, \`storage\` (localStorage/cookies), \`resources\`.
+
+**Debugging workflow:** action fails → \`js_errors\` + \`console_logs\` → if API issue → \`network_requests\`.
+**Scraping tip:** \`network_requests({ grep: "/api/" })\` reveals the site's own APIs — call them with \`http_request\` instead of scraping DOM.
 
 ### ERROR RECOVERY
 - "Element not found" or wrong index → call \`elements()\` again (indexes shift after page changes)

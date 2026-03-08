@@ -298,6 +298,14 @@ grep > scroll > read-all. Always.
 ## Multi-Account Identity
 - When you see \`[👤 domain: ...]\` in your context, multiple identities exist for that site. Use \`site_identity\` to list, open, or register identities with isolated sessions.
 
+## DevTools
+- \`console_logs({ level?, grep? })\` — page console output. Check after failed clicks, broken pages, silent errors.
+- \`network_requests({ status?, grep? })\` — HTTP requests with status/timing. Check after form submits, find hidden APIs for direct extraction, debug auth redirects.
+- \`js_errors\` — uncaught exceptions + stack traces. Check when pages break or render blank.
+- \`devtools_inspect({ target })\` — one-shot: \`dom\`, \`performance\`, \`storage\` (localStorage/cookies), \`resources\`.
+Debugging workflow: action fails → \`js_errors\` + \`console_logs\` → if API issue → \`network_requests\`.
+Scraping tip: \`network_requests({ grep: "/api/" })\` reveals the site's own APIs — call them with \`http_request\` instead of scraping DOM.
+
 ## Style
 - Concise. Say what you did and what happened.
 - If something fails, try an alternative before giving up.
