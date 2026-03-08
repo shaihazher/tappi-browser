@@ -1,7 +1,7 @@
 /**
  * user-profile.ts — Two-layer user profile system.
  *
- * Layer 1 (Phase 9.096c): User-written plain text (~750 words max).
+ * Layer 1 (Phase 9.096c): User-written plain text (~2000 words max, supports markdown).
  *   Storage: ~/.tappi-browser/user-profile.txt (profile-aware)
  *   Editable in Settings "My Profile" tab or via agent update_user_profile tool.
  *   Always injected into agent system prompt.
@@ -39,7 +39,7 @@ const PROFILE_PATH = path.join(CONFIG_DIR, 'user_profile.json');
 
 // ─── Layer 1: User-written profile text (Phase 9.096c) ───
 
-const MAX_PROFILE_WORDS = 750;
+const MAX_PROFILE_WORDS = 2000;
 
 /**
  * Get the path for user-written profile text (profile-aware).

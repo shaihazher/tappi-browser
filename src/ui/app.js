@@ -3625,11 +3625,11 @@ function updateProfileWordCount() {
 
   const text = textarea.value.trim();
   const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
-  wordCountEl.textContent = `${words} / 750 words`;
+  wordCountEl.textContent = `${words} / 2000 words`;
   wordCountEl.classList.remove('warning', 'limit');
-  if (words >= 750) {
+  if (words >= 2000) {
     wordCountEl.classList.add('limit');
-  } else if (words >= 650) {
+  } else if (words >= 1800) {
     wordCountEl.classList.add('warning');
   }
 }
